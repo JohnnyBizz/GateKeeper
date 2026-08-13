@@ -58,7 +58,22 @@ def build_source(config: Config) -> ChartSource:
     max_candles = int(config.get("market.max_candles", 600))
     min_candles = int(config.get("market.min_candles", 60))
 
-    if kind == "screen":
+    if kind == "feed":
+        # The platform's own socket: exact prices, exact symbol, exact period,
+        # and none of the ways reading pixels can be wrong.
+        try:
+            from ..feed.source import FeedChartSource
+
+            return FeedChartSource(
+                port=int(config.get("capture.debug_port", 9222)),
+                match=str(config.get("capture.match", "pocketoption")),
+                min_candles=min_candles,
+                max_candles=max_candles,
+            )
+        except (ChartSourceError, ImportError) as exc:
+            log.error("Feed source unavailable (%s); falling back to synthetic.", exc)
+
+    elif kind == "screen":
         try:
             from .screen import Region, ScreenChartSource
 

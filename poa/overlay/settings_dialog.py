@@ -19,6 +19,7 @@ from .viewmodel import COLORS
 log = get_logger(__name__)
 
 SOURCE_LABELS = {
+    "feed": "Read the platform's data (most accurate)",
     "screen": "Read my screen (live chart)",
     "synthetic": "Demo data (practice, not a real market)",
     "csv": "Replay a recorded CSV file",

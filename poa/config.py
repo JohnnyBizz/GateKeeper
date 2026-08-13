@@ -92,7 +92,7 @@ DEFAULTS: dict[str, Any] = {
         "open_browser": False,
     },
     "capture": {
-        # "synthetic" | "csv" | "screen"
+        # "feed" | "synthetic" | "csv" | "screen"
         #
         # Demo data by default so a first run has something to show before any
         # setup. Scan replaces it with the real chart the moment it finds one —
@@ -100,6 +100,10 @@ DEFAULTS: dict[str, Any] = {
         # case it is left alone.
         "source": "synthetic",
         "source_chosen": False,
+        # Where the browser listens for the DevTools connection the feed source
+        # reads. Only used by the "feed" source.
+        "debug_port": 9222,
+        "match": "pocketoption",
         "poll_seconds": 2.0,
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},

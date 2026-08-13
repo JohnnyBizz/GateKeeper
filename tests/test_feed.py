@@ -291,3 +291,177 @@ class TestCandleBuilder:
         builder.extend(self._ticks([1.10, 1.15]))
         builder.add(Tick("GBPJPY_otc", 1_786_662_005, 999.0))
         assert builder.forming.high == 1.15
+
+
+class TestProtocol:
+    """Message shapes copied verbatim from a live capture."""
+
+    HISTORY = {
+        "asset": "AUDUSD_otc",
+        "index": 178666390886,
+        "data": [
+            {"symbol_id": 1, "time": 1786648980, "open": 0.70396, "close": 0.70362,
+             "high": 0.70406, "low": 0.7036, "volume": 90},
+            {"symbol_id": 1, "time": 1786649040, "open": 0.70362, "close": 0.70392,
+             "high": 0.70392, "low": 0.70351, "volume": 105},
+            {"symbol_id": 1, "time": 1786649100, "open": 0.70393, "close": 0.70402,
+             "high": 0.7043, "low": 0.70386, "volume": 99},
+            {"symbol_id": 1, "time": 1786649160, "open": 0.70404, "close": 0.70438,
+             "high": 0.70444, "low": 0.70403, "volume": 96},
+        ],
+    }
+
+    def test_history_becomes_real_candles_with_volume(self):
+        from poa.feed.protocol import parse_history_candles
+
+        asset, candles = parse_history_candles(self.HISTORY)
+        assert asset == "AUDUSD_otc"
+        assert len(candles) == 4
+        assert candles[0].open == 0.70396
+        assert candles[0].high == 0.70406
+        assert candles[0].low == 0.7036
+        assert candles[0].close == 0.70362
+        # Volume is in the feed and was never available from the screen.
+        assert candles[0].volume == 90
+
+    def test_the_timeframe_can_be_inferred_from_history(self):
+        from poa.feed.protocol import infer_period, parse_history_candles
+
+        _asset, candles = parse_history_candles(self.HISTORY)
+        assert infer_period(candles) == 60
+
+    def test_a_symbol_change_names_the_instrument_and_the_timeframe(self):
+        from poa.feed.protocol import parse_symbol_change
+
+        change = parse_symbol_change(
+            ["changeSymbol", {"asset": "AUDUSD_otc", "period": 60}]
+        )
+        assert change.asset == "AUDUSD_otc"
+        assert change.period_seconds == 60
+        assert change.display == "AUD/USD OTC"
+
+    def test_tick_history_is_read(self):
+        from poa.feed.protocol import parse_tick_history
+
+        asset, period, ticks = parse_tick_history(
+            {
+                "asset": "AUDUSD_otc",
+                "period": 60,
+                "history": [[1786663113.601, 0.70069], [1786663114.101, 0.70066]],
+            }
+        )
+        assert asset == "AUDUSD_otc"
+        assert period == 60
+        assert [tick.price for tick in ticks] == [0.70069, 0.70066]
+
+    def test_unrecognised_shapes_yield_nothing_rather_than_guesses(self):
+        """A renamed field must stop the feed, not invent candles."""
+        from poa.feed.protocol import (
+            parse_history_candles,
+            parse_symbol_change,
+            parse_tick_history,
+        )
+
+        assert parse_history_candles({"asset": "X", "data": "nope"}) == ("X", [])
+        assert parse_history_candles({"data": [{"time": 1, "open": 2}]})[1] == []
+        assert parse_symbol_change({"asset": "X"}) is None
+        assert parse_symbol_change("nonsense") is None
+        assert parse_tick_history({"history": [[1, 2]]})[2] == []
+
+    def test_history_and_live_ticks_combine_into_one_series(self):
+        from poa.feed.protocol import parse_history_candles, parse_tick_history
+        from poa.feed.ticks import CandleBuilder
+
+        _asset, candles = parse_history_candles(self.HISTORY)
+        _a, _p, ticks = parse_tick_history(
+            {
+                "asset": "AUDUSD_otc",
+                "period": 60,
+                "history": [[1786649220.5, 0.70450], [1786649221.0, 0.70460]],
+            }
+        )
+        builder = CandleBuilder(period_seconds=60, symbol="AUDUSD_otc")
+        builder.seed(candles)
+        builder.extend(ticks)
+
+        series = builder.series()
+        assert len(series) == 5  # four settled plus the one forming
+        assert series.symbol == "AUD/USD OTC"
+        assert series.timeframe_seconds == 60
+        assert series.last_price == 0.70460
+
+
+class TestFeedSource:
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        return FeedChartSource(port=59999)
+
+    def test_it_is_not_vision_based(self):
+        """The whole point: nothing here can misread a chart."""
+        source = self._source()
+        assert source.vision_based is False
+        assert source.name == "feed"
+
+    def test_a_disconnected_feed_is_never_called_usable(self):
+        """80 perfect candles from a socket that has dropped are still stale."""
+        source = self._source()
+        source.start = lambda: None
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}])
+        source._handle("updateStream", [["EURUSD_otc", 1786663900.0, 1.16]])
+        assert not source.capture().quality.ok
+
+    def test_before_any_message_it_says_so_rather_than_inventing_candles(self):
+        source = self._source()
+        source.start = lambda: None  # do not reach for a browser in a test
+        capture = source.capture()
+        assert capture.series is None
+        assert not capture.quality.ok
+        assert capture.quality.confidence == 0.0
+
+    def test_a_symbol_change_starts_a_fresh_chart(self):
+        source = self._source()
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 30}])
+        source._handle("updateStream", [["EURUSD_otc", 1786663900.0, 1.16]])
+        assert source._asset == "EURUSD_otc"
+        assert source._period == 30
+
+        # Switching instrument must not carry the old candles across.
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "AUDCAD_otc", "period": 60}])
+        assert source._builder.settled == []
+        assert source._builder.forming is None
+
+    def test_ticks_for_another_instrument_are_ignored(self):
+        source = self._source()
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}])
+        source._handle("updateStream", [["EURUSD_otc", 1786663900.0, 1.16]])
+        source._handle("updateStream", [["GBPJPY_otc", 1786663901.0, 999.0]])
+        assert source._builder.forming.high == 1.16
+
+    def test_history_for_a_pair_already_left_is_dropped(self):
+        source = self._source()
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}])
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)  # AUDUSD
+        assert source._builder.settled == []
+
+    def test_a_full_chart_reports_itself_usable(self):
+        from poa.models import Candle
+        from datetime import datetime, timedelta, timezone
+
+        source = self._source()
+        source.start = lambda: None
+        source._connected = True  # the listener would have set this
+        source._handle("changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}])
+
+        start = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+        source._builder.seed(
+            [
+                Candle(start + timedelta(minutes=i), 1.1, 1.2, 1.0, 1.15, 10.0)
+                for i in range(80)
+            ]
+        )
+        capture = source.capture()
+        assert capture.asset == "EUR/USD OTC"
+        assert capture.timeframe_seconds == 60
+        assert len(capture.series) == 80
+        assert capture.quality.ok
