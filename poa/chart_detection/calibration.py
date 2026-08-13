@@ -37,6 +37,18 @@ except ImportError:  # pragma: no cover
 
 _PRICE_PATTERN = re.compile(r"^\d{1,7}(?:[.,]\d{1,6})?$")
 
+# What the last calibration attempt actually saw. Purely diagnostic, and it
+# exists because the failures that matter are invisible from the outside:
+# "price scale is not calibrated" is the same message whether no labels were
+# found, four were found and disagreed, or they were read as the wrong
+# numbers entirely. Knowing which turns a guess into a fix.
+_LAST_READ: dict[str, Any] = {}
+
+
+def last_read() -> dict[str, Any]:
+    """A snapshot of the most recent calibration attempt."""
+    return dict(_LAST_READ)
+
 
 @dataclass
 class PriceCalibration:
@@ -241,7 +253,10 @@ def calibrate_with_ocr(
     Returns ``None`` when OCR is unavailable or the labels it found do not form
     a consistent linear scale — a wrong calibration is far worse than none.
     """
+    _LAST_READ.clear()
+    _LAST_READ["outcome"] = "not attempted"
     if pytesseract is None or cv2 is None:
+        _LAST_READ["outcome"] = "OCR unavailable"
         return None
     if image is None or image.size == 0:
         return None
@@ -268,6 +283,9 @@ def calibrate_with_ocr(
             continue
         reads.append((box[1] + box[3] / 2.0, text.strip().replace(",", "."), price))
 
+    _LAST_READ["axis_strip_px"] = axis_width
+    _LAST_READ["axis_labels"] = [text for _row, text, _price in reads]
+
     reads = _consistent_format(reads)
     axis_only = len(reads) >= 2
 
@@ -278,8 +296,10 @@ def calibrate_with_ocr(
         # rows, which is all a calibration needs, so when the axis turns up
         # nothing the whole chart is searched instead.
         reads = _price_labels_anywhere(image)
+        _LAST_READ["chart_labels"] = [text for _row, text, _price in reads]
 
     if len(reads) < 2:
+        _LAST_READ["outcome"] = "too few price labels"
         return None
 
     if axis_only:
@@ -302,6 +322,7 @@ def calibrate_with_ocr(
         residual_limit = 0.08
 
     if not np.isfinite(slope) or slope >= 0:
+        _LAST_READ["outcome"] = "prices do not fall as rows increase"
         return None
 
     predicted = slope * rows + intercept
@@ -311,6 +332,7 @@ def calibrate_with_ocr(
     residual = float(np.max(np.abs(predicted - prices)) / spread)
     if residual > residual_limit:
         # The labels do not sit on a straight line, so at least one was misread.
+        _LAST_READ["outcome"] = f"labels not collinear (residual {residual:.2f})"
         return None
 
     confidence = float(max(40.0, min(95.0, 95.0 - residual * 600.0)))
@@ -333,6 +355,7 @@ def calibrate_with_ocr(
             "chart, and set the scale by hand in settings if it disagrees."
         )
 
+    _LAST_READ["outcome"] = "calibrated"
     return PriceCalibration(
         top_pixel=0.0,
         top_price=float(intercept),

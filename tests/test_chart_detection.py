@@ -1186,3 +1186,31 @@ class TestChartsWithNoPriceAxis:
         style = RenderStyle(candle_width=7, candle_gap=4, draw_axis=False)
         image, _mapping = render_series(series, height=500, style=style)
         assert resolve_calibration(image, None, use_ocr=True).method == "uncalibrated"
+
+
+class TestCalibrationExplainsItself:
+    """"Not calibrated" is the same message for several different faults."""
+
+    def test_the_reason_is_recorded_when_no_labels_are_found(self):
+        from poa.chart_detection.calibration import calibrate_with_ocr, last_read
+
+        series = generate_series(80, seed=3)
+        style = RenderStyle(candle_width=7, candle_gap=4, draw_axis=False)
+        image, _mapping = render_series(series, height=500, style=style)
+
+        assert calibrate_with_ocr(image) is None
+        read = last_read()
+        assert read["outcome"] == "too few price labels"
+        assert read["axis_labels"] == []
+        assert "axis_strip_px" in read
+
+    def test_a_successful_read_records_what_it_saw(self):
+        from poa.chart_detection.calibration import calibrate_with_ocr, last_read
+
+        series = generate_series(80, seed=3)
+        image, _mapping = render_series(series, height=500)
+
+        assert calibrate_with_ocr(image) is not None
+        read = last_read()
+        assert read["outcome"] == "calibrated"
+        assert len(read["axis_labels"]) >= 2

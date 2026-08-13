@@ -29,7 +29,11 @@ from ..logging_setup import get_logger
 from ..models import Series
 from .base import Capture, ChartSource, ChartSourceError
 from .asset_label import AssetLabelReader
-from .calibration import PriceCalibration, resolve_calibration
+from .calibration import (
+    PriceCalibration,
+    last_read as calibration_last_read,
+    resolve_calibration,
+)
 from .timeframe_label import TimeframeLabelReader
 from .candles import (
     CandleExtractionError,
@@ -274,10 +278,20 @@ class ScreenChartSource(ChartSource):
         if calibration.note:
             quality.issues.append(calibration.note)
         if calibration.method == "uncalibrated":
+            # Say *why*, not just that. "Not calibrated" reads identically
+            # whether no price labels were found at all, several were found and
+            # disagreed, or they were read as the wrong numbers — and those need
+            # completely different fixes.
+            read = calibration_last_read()
+            found = read.get("axis_labels") or []
+            elsewhere = read.get("chart_labels") or []
+            detail = read.get("outcome", "no attempt recorded")
+            sample = ", ".join((found + elsewhere)[:5]) or "none"
             quality.issues.append(
-                "Price scale is not calibrated — levels shown are relative, not "
-                "real prices. Open settings, press Select next to Chart area, "
-                "and click two prices when asked."
+                f"Price scale is not calibrated ({detail}). Prices read in a "
+                f"{read.get('axis_strip_px', '?')}px strip: {len(found)}; "
+                f"elsewhere on the chart: {len(elsewhere)}; values seen: {sample}. "
+                "Levels shown are relative, not real prices."
             )
 
         self._consecutive_failures = 0
