@@ -212,6 +212,49 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(self.data)
 
+    def save(self, path: str | Path | None = None) -> Path:
+        """Write the current settings back to disk.
+
+        Settings changed in the app must survive a restart, otherwise the user
+        is back to hand-editing YAML. Writes to ``config.yaml`` by default —
+        never to ``config.example.yaml``, which is shipped documentation and
+        must stay pristine even when it was the file we loaded from.
+        """
+        target = Path(path) if path is not None else self.path
+        if target is None or target.name == EXAMPLE_CONFIG_PATH.name:
+            target = DEFAULT_CONFIG_PATH
+        target = Path(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write to a temporary file and move it into place, so an interrupted
+        # write cannot leave a half-written config that fails to parse.
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(self.data, handle, sort_keys=False, allow_unicode=True)
+        temporary.replace(target)
+
+        self.path = target
+        return target
+
+
+def ensure_config_file() -> Path | None:
+    """Create ``config.yaml`` from the shipped example on first run.
+
+    Without this the user has to copy a file by hand before they can change a
+    setting — exactly the kind of chore the app should absorb.
+    """
+    if DEFAULT_CONFIG_PATH.exists():
+        return DEFAULT_CONFIG_PATH
+    if not EXAMPLE_CONFIG_PATH.exists():  # pragma: no cover - broken install
+        return None
+    try:
+        DEFAULT_CONFIG_PATH.write_text(
+            EXAMPLE_CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    except OSError:  # pragma: no cover - read-only install directory
+        return None
+    return DEFAULT_CONFIG_PATH
+
 
 def load_config(path: str | Path | None = None) -> Config:
     """Load configuration, layering file settings and env vars over defaults."""

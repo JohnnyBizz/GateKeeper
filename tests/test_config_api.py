@@ -252,3 +252,68 @@ class TestEngineDegradation:
             assert engine.state.consecutive_errors >= 2
         finally:
             engine.close()
+
+
+class TestConfigPersistence:
+    """Settings changed in the app must survive a restart."""
+
+    def test_save_round_trips(self, tmp_path):
+        config = load_config(tmp_path / "missing.yaml")
+        config.set("market.asset", "GBP/JPY")
+        config.set("market.trade_duration", 600)
+        target = config.save(tmp_path / "config.yaml")
+
+        reloaded = load_config(target)
+        assert reloaded.get("market.asset") == "GBP/JPY"
+        assert reloaded.get("market.trade_duration") == 600
+
+    def test_save_never_overwrites_the_shipped_example(self, tmp_path, monkeypatch):
+        # The example is documentation; clobbering it would lose the comments
+        # that explain every setting.
+        from poa import config as config_module
+
+        example = tmp_path / "config.example.yaml"
+        example.write_text("market:\n  asset: EUR/USD\n")
+        default = tmp_path / "config.yaml"
+        monkeypatch.setattr(config_module, "EXAMPLE_CONFIG_PATH", example)
+        monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", default)
+
+        config = load_config(example)
+        config.set("market.asset", "CHANGED")
+        written = config.save()
+
+        assert written == default
+        assert "CHANGED" not in example.read_text()
+
+    def test_save_is_atomic(self, tmp_path):
+        # A half-written config that fails to parse would break the next start.
+        config = load_config(tmp_path / "missing.yaml")
+        target = config.save(tmp_path / "config.yaml")
+        assert target.exists()
+        assert not target.with_suffix(".yaml.tmp").exists()
+
+    def test_ensure_creates_the_config_on_first_run(self, tmp_path, monkeypatch):
+        from poa import config as config_module
+
+        example = tmp_path / "config.example.yaml"
+        example.write_text("market:\n  asset: EUR/USD\n")
+        default = tmp_path / "config.yaml"
+        monkeypatch.setattr(config_module, "EXAMPLE_CONFIG_PATH", example)
+        monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", default)
+
+        assert not default.exists()
+        assert config_module.ensure_config_file() == default
+        assert default.exists()
+
+    def test_ensure_does_not_clobber_an_existing_config(self, tmp_path, monkeypatch):
+        from poa import config as config_module
+
+        example = tmp_path / "config.example.yaml"
+        example.write_text("market:\n  asset: EUR/USD\n")
+        default = tmp_path / "config.yaml"
+        default.write_text("market:\n  asset: MINE\n")
+        monkeypatch.setattr(config_module, "EXAMPLE_CONFIG_PATH", example)
+        monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", default)
+
+        config_module.ensure_config_file()
+        assert "MINE" in default.read_text()

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from .backtesting import Backtester
 from .chart_detection.csv_source import load_csv
-from .config import Config, load_config
+from .config import Config, ensure_config_file, load_config
 from .engine import AnalysisEngine
 from .logging_setup import get_logger, setup_logging
 from .models import format_duration
@@ -309,6 +309,8 @@ def run(config_path: str | None = None) -> None:
     """Entry point used by ``run.py`` and ``python -m poa``."""
     import uvicorn
 
+    if config_path is None:
+        ensure_config_file()
     config = load_config(config_path)
     setup_logging(
         level=str(config.get("logging.level", "INFO")),

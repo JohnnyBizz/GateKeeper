@@ -324,12 +324,24 @@ and needs none of this.
 
 Two front ends share the same engine — run whichever suits, or both:
 
-```bash
-cp config.example.yaml config.yaml     # optional; defaults work as-is
+**No terminal needed.** Double-click **`GateKeeper.bat`** (Windows) or
+**`GateKeeper.command`** (macOS/Linux). The first run installs what it needs
+and starts the overlay; later runs just start it. Right-click the launcher →
+*Send to* → *Desktop (create shortcut)* for a desktop icon.
 
+For a true standalone app that needs no Python installed at all, see
+[BUILD.md](BUILD.md) — one command produces `GateKeeper.exe`, and GitHub
+Actions builds it automatically on every push.
+
+From a terminal, if you prefer:
+
+```bash
 python overlay.py     # compact always-on-top panel, drag it next to your chart
 python run.py         # full browser dashboard at http://127.0.0.1:8765
 ```
+
+`config.yaml` is created for you on first run — you never have to copy or edit
+it by hand, because everything in it is editable from the app's ⚙ settings.
 
 Out of the box both run on synthetic demo data so you can see everything
 working before wiring anything to a real chart.
@@ -372,6 +384,16 @@ buttons adjust it for trades you took that the assistant never signalled. The
 win rate is shown against the **break-even rate for your configured payout**
 (52.1% at 92%), and greyed out below 20 trades because a rate over a handful
 of trades means nothing.
+
+### Settings, without touching a file
+
+The **⚙ button** in the panel header opens settings: which chart to read
+(live screen / demo / CSV), the asset, both timeframes, payout, balance, the
+confidence floors, and alerts. **Select…** next to *Chart area* freezes the
+screen so you can drag a box around your chart and click two known prices to
+calibrate the scale — the same job `tools/select_region.py` does, without
+leaving the app. Everything is applied immediately and saved to `config.yaml`,
+so it survives a restart.
 
 The overlay needs Tkinter, which ships with Python on Windows/macOS; on Linux
 it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
@@ -525,7 +547,7 @@ settled signals, because a win rate over ten trades says close to nothing.
 ## 12. Tests
 
 ```bash
-pytest -q                    # 346 tests
+pytest -q                    # 351 tests
 pytest tests/test_signals.py -v
 ```
 
@@ -566,11 +588,15 @@ pocket-option-assistant/
 │   ├── dashboard/         index.html, app.js, styles.css
 │   ├── overlay/           always-on-top panel (view model + Tk renderer)
 │   ├── config.py  engine.py  server.py  models.py  risk.py  logging_setup.py
-├── tests/                 346 tests
+├── tests/                 351 tests
 ├── tools/                 select_region.py, make_sample_data.py, backtest.py
 ├── data/                  sample candle CSV
 ├── config.example.yaml    fully commented
 ├── requirements.txt
+├── GateKeeper.bat         double-click launcher (Windows)
+├── GateKeeper.command     double-click launcher (macOS/Linux)
+├── gatekeeper.spec        PyInstaller build for a standalone app
+├── BUILD.md               how to build the standalone app
 ├── run.py                 browser dashboard
 └── overlay.py             overlay panel
 ```

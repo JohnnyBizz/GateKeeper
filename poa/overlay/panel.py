@@ -33,6 +33,7 @@ class OverlayPanel:
         on_asset: Callable[[str], None] | None = None,
         on_stake: Callable[[float | None], None] | None = None,
         on_balance: Callable[[float], None] | None = None,
+        on_settings: Callable[[], None] | None = None,
         on_close: Callable[[], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
@@ -44,6 +45,7 @@ class OverlayPanel:
         self.on_asset = on_asset or (lambda a: None)
         self.on_stake = on_stake or (lambda s: None)
         self.on_balance = on_balance or (lambda b: None)
+        self.on_settings = on_settings or (lambda: None)
         self.on_close = on_close or (lambda: None)
 
         self.root = tk.Tk()
@@ -162,6 +164,7 @@ class OverlayPanel:
 
         controls = tk.Frame(header, bg=COLORS["raised"])
         controls.pack(side="right", padx=6)
+        self._icon_button(controls, "⚙", self.on_settings)
         self._icon_button(controls, "–", self.toggle_collapse)
         self._icon_button(controls, "✕", self._close)
 

@@ -12,7 +12,7 @@ raising alerts, while the Scan button forces an immediate fresh evaluation.
 from __future__ import annotations
 
 import queue
-from typing import Any
+from typing import Any, Callable
 
 from ..config import Config, load_config
 from ..engine import AnalysisEngine
@@ -166,6 +166,106 @@ class OverlayApp:
             self.vm.balance = balance
             self.config.set("risk.balance", balance)
 
+    # -- settings -----------------------------------------------------------
+
+    def _open_settings(self) -> None:
+        from .settings_dialog import SettingsDialog
+
+        SettingsDialog(
+            self.panel.root,
+            self.config,
+            on_apply=self._apply_settings,
+            on_pick_region=self._pick_region,
+        )
+
+    def _apply_settings(self, changes: dict[str, Any]) -> None:
+        """Apply settings from the dialog, then persist them."""
+        source = changes.pop("source", None)
+        payout = changes.pop("payout", None)
+        balance = changes.pop("balance", None)
+
+        if payout is not None:
+            self.config.set("market.payout", payout)
+            self.vm.payout = payout
+        if balance is not None:
+            self.config.set("risk.balance", balance)
+            self.vm.balance = balance
+        if source is not None and source != self.config.get("capture.source"):
+            self.config.set("capture.source", source)
+            # A different source means different candles entirely.
+            self.engine._rebuild_source()
+            self.vm.signal = None
+
+        if changes:
+            self.engine.update_settings(changes)
+
+        self.vm.asset = self.engine.asset
+        self.vm.chart_timeframe = self.engine.chart_timeframe
+        self.vm.trade_duration = self.engine.trade_duration
+
+        try:
+            saved = self.config.save()
+            log.info("settings saved to %s", saved)
+        except OSError as exc:
+            # Not fatal: the change is live, it just will not survive a restart.
+            log.warning("could not save settings: %s", exc)
+
+    def _pick_region(self, done: Callable[[str], None]) -> None:
+        """Run the chart-area picker, then the optional price calibration."""
+        from .region_picker import CalibrationPicker, RegionPicker
+
+        def after_calibration(selection) -> None:
+            if selection is None:
+                done("Selection cancelled.")
+                return
+            self.config.set("capture.region", selection.region_dict())
+            self.config.set("capture.calibration", selection.calibration_dict())
+            self.config.set("capture.source", "screen")
+            try:
+                self.config.save()
+            except OSError as exc:  # pragma: no cover - filesystem dependent
+                log.warning("could not save region: %s", exc)
+
+            self.engine._rebuild_source()
+            self.vm.signal = None
+
+            message = (
+                f"Found {selection.candles_found} candles at "
+                f"{selection.confidence:.0f}% confidence."
+            )
+            if not selection.calibrated:
+                message += " Price scale not calibrated — levels will be relative."
+            if selection.candles_found < 30:
+                message += (
+                    " That is fewer than 30 — widen the box or zoom the chart out."
+                )
+            if selection.issues:
+                message += " " + " ".join(selection.issues[:2])
+            done(message)
+
+        def after_region(selection) -> None:
+            if selection is None:
+                done("Selection cancelled.")
+                return
+            try:
+                CalibrationPicker(
+                    self.panel.root, selection, on_done=after_calibration
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("calibration failed: %s", exc)
+                after_calibration(selection)
+
+        try:
+            RegionPicker(
+                self.panel.root,
+                monitor_index=int(self.config.get("capture.monitor", 1)),
+                colors=self.config.get("capture.colors"),
+                on_done=after_region,
+            )
+        except Exception as exc:
+            log.warning("region picker failed: %s", exc)
+            done(f"Could not open the picker: {exc}")
+
     # -- lifecycle ----------------------------------------------------------
 
     def _tick(self) -> None:
@@ -193,6 +293,7 @@ class OverlayApp:
             on_asset=self._set_asset,
             on_stake=self._set_stake,
             on_balance=self._set_balance,
+            on_settings=self._open_settings,
             on_close=self.shutdown,
             position=(
                 int(self.config.get("overlay.x", 40)),

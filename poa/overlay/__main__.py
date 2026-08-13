@@ -30,7 +30,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    from ..config import ensure_config_file
     from .app import run
+
+    # So a first-time user never has to copy a file by hand before they can
+    # change a setting in the app.
+    if args.config is None:
+        ensure_config_file()
 
     try:
         run(args.config)
