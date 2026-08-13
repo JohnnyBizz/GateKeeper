@@ -120,8 +120,8 @@ class ScreenChartSource(ChartSource):
             )
         if not region.valid:
             raise ChartSourceError(
-                "No chart region is configured. Run 'python tools/select_region.py' "
-                "and copy the result into config.yaml."
+                "No chart area has been selected yet. Open settings (the gear "
+                "button) and press Select next to Chart area."
             )
 
         self.region = region
@@ -274,7 +274,8 @@ class ScreenChartSource(ChartSource):
         if calibration.method == "uncalibrated":
             quality.issues.append(
                 "Price scale is not calibrated — levels shown are relative, not "
-                "real prices. Set capture.calibration in config.yaml."
+                "real prices. Open settings, press Select next to Chart area, "
+                "and click two prices when asked."
             )
 
         self._consecutive_failures = 0

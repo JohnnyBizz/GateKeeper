@@ -14,6 +14,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Below this many settled trades a win rate says essentially nothing, so the
+# app neither highlights it nor warns about it.
+MIN_MEANINGFUL_SAMPLE = 20
+
+
 def breakeven_win_rate(payout: float) -> float:
     """The win rate needed to break even at ``payout``, as a percentage.
 
@@ -69,6 +74,7 @@ def assess_risk(
     *,
     observed_win_rate: float | None = None,
     stake_override: float | None = None,
+    observed_sample: int = 0,
 ) -> RiskAssessment:
     """Size a stake and report what it needs to achieve to be worth placing.
 
@@ -121,10 +127,18 @@ def assess_risk(
             f"A {payout * 100:.0f}% payout needs a {breakeven:.1f}% win rate just "
             "to break even."
         )
-    if observed_win_rate is not None and observed_win_rate < breakeven:
+    # Only worth saying once there are enough settled trades for the rate to
+    # mean anything. Two trades at 50% is not a losing streak, it is a coin
+    # landing twice, and warning about it trains the user to ignore warnings.
+    if (
+        observed_win_rate is not None
+        and observed_win_rate < breakeven
+        and observed_sample >= MIN_MEANINGFUL_SAMPLE
+    ):
         warnings.append(
-            f"This session's {observed_win_rate:.1f}% win rate is below the "
-            f"{breakeven:.1f}% needed to break even at this payout."
+            f"This session's {observed_win_rate:.1f}% win rate over "
+            f"{observed_sample} trades is below the {breakeven:.1f}% needed to "
+            "break even at this payout."
         )
 
     return RiskAssessment(

@@ -208,8 +208,18 @@ class TestRiskAssessment:
         assert any("high" in w.lower() for w in risk.warnings)
 
     def test_a_session_below_breakeven_is_warned_about(self):
-        risk = assess_risk(1000.0, 2.0, 0.92, observed_win_rate=45.0)
+        risk = assess_risk(
+            1000.0, 2.0, 0.92, observed_win_rate=45.0, observed_sample=40
+        )
         assert any("break even" in w.lower() for w in risk.warnings)
+
+    def test_a_losing_rate_over_a_handful_of_trades_is_not_warned_about(self):
+        # Two trades at 50% is a coin landing twice, not a losing streak.
+        # Warning about it trains the user to ignore warnings.
+        risk = assess_risk(
+            1000.0, 2.0, 0.92, observed_win_rate=50.0, observed_sample=2
+        )
+        assert not any("break even" in w.lower() for w in risk.warnings)
 
     def test_a_session_above_breakeven_is_not_warned_about(self):
         risk = assess_risk(1000.0, 2.0, 0.92, observed_win_rate=65.0)

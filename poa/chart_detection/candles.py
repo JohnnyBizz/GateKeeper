@@ -299,7 +299,11 @@ def extract_pixel_candles(
     width_spread = float(np.std([b.width for b in merged]))
     if typical_width > 0 and width_spread / typical_width > 0.5:
         confidence -= 15.0
-        issues.append("Candle widths vary widely; the region may include other UI elements.")
+        issues.append(
+            f"Candle widths vary widely ({typical_width:.0f}px typical, "
+            f"{width_spread:.0f}px spread) — the selected area probably "
+            "includes buttons, the sidebar or the time axis as well as candles."
+        )
 
     # Candles pinned to the very top or bottom of the region are almost
     # certainly clipped, which corrupts their high or low.

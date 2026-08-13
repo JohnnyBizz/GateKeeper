@@ -159,6 +159,7 @@ class OverlayViewModel:
             self.payout,
             observed_win_rate=self.session.win_rate,
             stake_override=self.stake_override,
+            observed_sample=self.session.total,
         )
 
     def render(self) -> dict[str, Any]:
