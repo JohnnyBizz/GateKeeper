@@ -427,6 +427,15 @@ class AnalysisEngine:
             self.state.candles = []
             self.state.heikin_ashi_candles = []
 
+            # A source that names its own chart and has just failed to name one
+            # knows something: that it does not know. Leaving the last pair on
+            # the panel turns that into a confident label over an unreadable
+            # market — the exact failure this source exists to end.
+            if getattr(self.source, "names_own_chart", False):
+                meta = dict(self.state.capture_meta or {})
+                meta.update({"asset": None, "quality": quality.to_dict()})
+                self.state.capture_meta = meta
+
         if change.material:
             for alert in self.alerts.evaluate(signal, change):
                 log.debug("degraded-state alert: %s", alert.kind)

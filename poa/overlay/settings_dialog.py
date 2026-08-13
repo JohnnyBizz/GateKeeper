@@ -161,7 +161,30 @@ class SettingsDialog:
         menu["menu"].configure(bg=COLORS["raised"], fg=COLORS["text"])
         menu.pack(side="right")
 
+    def _feed_row(self, parent: tk.Widget) -> None:
+        """What "find the chart" means when nothing on screen is being read.
+
+        The same button used to run a screen search the feed has no use for, so
+        pressing it did nothing at all — indistinguishable from a broken app.
+        Here it re-reads which chart the platform has open.
+        """
+        row = self._row(parent, "Chart")
+        tk.Label(
+            row, text="from the platform", bg=COLORS["panel"], fg=COLORS["dim"],
+            font=("TkDefaultFont", 8),
+        ).pack(side="right", padx=(6, 0))
+        self._button(row, "Re-read chart", self._locate_chart, primary=True).pack(
+            side="right"
+        )
+
     def _region_row(self, parent: tk.Widget) -> None:
+        # Reading the platform's own data means there is no region on screen to
+        # pick or find. Offering controls for one is how a button ends up doing
+        # nothing when pressed.
+        if str(self.config.get("capture.source", "feed")) == "feed":
+            self._feed_row(parent)
+            return
+
         row = self._row(parent, "Chart area")
         region = self.config.get("capture.region") or {}
         has_region = int(region.get("width", 0)) > 50
@@ -249,10 +272,18 @@ class SettingsDialog:
         if self.on_locate_chart is None:
             self._status.configure(text="Automatic detection is unavailable.")
             return
-        self._status.configure(text="Looking for a chart on screen…")
-        # Out of the way so the panel is not photographed as part of the chart,
-        # but still on screen, so the window is visibly alive while it works.
-        self.window.withdraw()
+        reads_screen = str(self.config.get("capture.source", "feed")) != "feed"
+        self._status.configure(
+            text="Looking for a chart on screen…"
+            if reads_screen
+            else "Asking the platform which chart is open…"
+        )
+        if reads_screen:
+            # Out of the way so the panel is not photographed as part of the
+            # chart, but still on screen, so the window is visibly alive while
+            # it works. Nothing is photographed when reading the feed, so
+            # hiding the dialog would only make it look like it vanished.
+            self.window.withdraw()
         self.window.update_idletasks()
 
         try:
@@ -265,8 +296,9 @@ class SettingsDialog:
         try:
             self.window.deiconify()
             region = self.config.get("capture.region") or {}
-            if int(region.get("width", 0)) > 50:
-                self._region_label.configure(
+            label = getattr(self, "_region_label", None)  # absent for the feed
+            if label is not None and int(region.get("width", 0)) > 50:
+                label.configure(
                     text=f"{region.get('width')}×{region.get('height')}",
                     fg=COLORS["call"],
                 )

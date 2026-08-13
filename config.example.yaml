@@ -26,6 +26,12 @@ capture:
   auto_launch_browser: true
   match: pocketoption
 
+  # The messages that name the open chart and carry its history are sent when
+  # the chart loads. Attaching to a tab that loaded minutes ago misses them, so
+  # the page is asked to reload — at most twice — rather than asking you to
+  # switch timeframe to shake them loose. Set false to never touch the page.
+  refresh_chart: true
+
   poll_seconds: 2.0       # how often to re-read the chart
 
   # -- screen source ---------------------------------------------------------

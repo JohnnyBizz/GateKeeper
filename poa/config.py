@@ -108,6 +108,12 @@ DEFAULTS: dict[str, Any] = {
         # Start the debuggable browser if none is running. Opening
         # GateKeeper should be the only thing the user has to do.
         "auto_launch_browser": True,
+        # Reload the platform's page when it has not said which chart is open.
+        # Attaching to a tab that loaded its chart minutes ago means the
+        # messages naming the instrument and carrying its history are long
+        # gone; asking the page to load again recovers them without the user
+        # having to touch anything.
+        "refresh_chart": True,
         "poll_seconds": 2.0,
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},

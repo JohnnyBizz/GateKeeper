@@ -34,6 +34,11 @@ TICK_MS = 80
 # thrown away, and above the 35 a badly-placed region typically scores.
 RELOCATE_BELOW_CONFIDENCE = 45.0
 
+# Shown in place of the pair when the source knows which instrument it reads
+# and currently does not know. Naming one anyway is how the panel came to
+# report a market the user was not looking at.
+UNKNOWN_ASSET = "—"
+
 
 class OverlayApp:
     """The overlay application: engine + panel + the glue between them."""
@@ -131,7 +136,14 @@ class OverlayApp:
         # screen it is the truth, and the config value is just the last name
         # the user typed.
         captured_asset = meta.get("asset")
-        self.vm.asset = captured_asset or self.engine.asset
+        if captured_asset:
+            self.vm.asset = captured_asset
+        elif getattr(self.engine.source, "names_own_chart", False):
+            # It would have named the chart if it knew which one is open, so
+            # the honest answer is nothing, not the last pair it saw.
+            self.vm.asset = UNKNOWN_ASSET
+        else:
+            self.vm.asset = self.engine.asset
 
         quality = meta.get("quality") or {}
         self.vm.data_confidence = quality.get("confidence")
@@ -148,8 +160,11 @@ class OverlayApp:
         # that mixes a synthetic-feed session into a live one is not a record
         # of anything, and the user reads it as their real win rate.
         try:
+            asset = self.vm.asset
+            if not asset or asset == UNKNOWN_ASSET:
+                asset = self.engine.asset
             stats = self.engine.journal.statistics(
-                asset=self.vm.asset or self.engine.asset,
+                asset=asset,
                 source=getattr(self.engine.source, "name", None),
                 since=self._session_since,
             )
@@ -195,6 +210,10 @@ class OverlayApp:
         exclude = self._own_windows() if relocate else []
 
         if not relocate:
+            # Nothing on screen to go looking for, but Scan still has to mean
+            # "work out what I am looking at". When the feed has not been told
+            # which chart is open, that is the thing to fix.
+            self._resync_feed(only_if_lost=True)
             self._run_engine_cycle()
             return
 
@@ -319,6 +338,38 @@ class OverlayApp:
             return True
         return False
 
+    def _resync_feed(self, only_if_lost: bool = False) -> str | None:
+        """Ask the feed source to re-read which chart the platform has open.
+
+        Returns the message to show, or ``None`` when the current source is not
+        one that can re-sync — screen capture and demo data have their own
+        answers to "find the chart".
+
+        ``only_if_lost`` restricts it to the case that actually needs it: no
+        instrument identified, or no history behind the candles. Re-syncing
+        reloads the platform's page, which is not something to do on every
+        press of Scan when the feed is already reading the right chart.
+        """
+        source = getattr(self.engine, "source", None)
+        resync = getattr(source, "resync", None)
+        if not callable(resync):
+            return None
+
+        if only_if_lost:
+            state = getattr(source, "describe", lambda: {})() or {}
+            settled = bool(state.get("symbol")) and bool(state.get("history_loaded"))
+            if settled:
+                return None
+        try:
+            message = resync()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("could not re-sync the feed")
+            return f"Could not re-read the chart: {exc}"
+
+        self.vm.signal = None
+        log.info("feed re-sync requested")
+        return message
+
     def _labels_located(self) -> bool:
         from ..chart_detection.autodetect import Box
 
@@ -338,6 +389,15 @@ class OverlayApp:
         if self._scan_busy:
             if on_done is not None:
                 on_done("Already looking for the chart…")
+            return
+
+        # Reading the feed means there is no region to find, and a button that
+        # silently does nothing is worse than no button. Re-sync instead: that
+        # is the equivalent action for a source with no pixels in it.
+        message = self._resync_feed()
+        if message is not None:
+            if on_done is not None:
+                on_done(message)
             return
 
         self._scan_done = on_done

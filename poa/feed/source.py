@@ -24,6 +24,8 @@ from .cdp import BrowserError, launch_browser, list_targets, pick_target
 from .frames import decode_frame
 from .protocol import (
     infer_period,
+    parse_chart_request,
+    parse_displayed_chart,
     parse_history_candles,
     parse_symbol_change,
     parse_tick_history,
@@ -41,12 +43,38 @@ except ImportError:  # pragma: no cover
 # has dropped, the tab has closed, or the platform has stopped streaming.
 STALE_AFTER_SECONDS = 20.0
 
+# How long the instrument we are following may go without a message before a
+# lesser-ranked claim from another instrument is believed. This is the escape
+# hatch for the case where the platform changed chart without saying so in a
+# message we rank highly.
+ASSET_STALE_SECONDS = 25.0
+
+# How long to wait for the page to say what it is showing before asking it to
+# reload. Attaching to a tab that loaded its chart minutes ago means the whole
+# bootstrap — the symbol, the period, the history — has already been and gone.
+BOOTSTRAP_GRACE_SECONDS = 8.0
+REFRESH_COOLDOWN_SECONDS = 60.0
+# Reloading a page that still says nothing is not going to start working on the
+# fifth attempt, and a tab that reloads itself forever is its own bug. After
+# this many the source says what it needs instead, and Scan can still ask again.
+MAX_AUTO_REFRESHES = 2
+
+# How the instrument was learned, most trustworthy last. A tick is never
+# trusted: the socket streams several instruments at once, so the first symbol
+# to arrive is arbitrary, and believing it is what put the wrong pair on the
+# panel.
+RANK_NONE = -1
+RANK_TICK_HISTORY = 0  # updateHistoryNewFast — sent for a subscribed asset
+RANK_HISTORY = 1  # loadHistoryPeriod(Fast) — history for the drawn chart
+RANK_DECLARED = 2  # changeSymbol / saveCharts — the page naming its own chart
+
 
 class FeedChartSource(ChartSource):
     """Candles built from the platform's own WebSocket messages."""
 
     name = "feed"
     vision_based = False
+    names_own_chart = True
 
     def __init__(
         self,
@@ -56,6 +84,7 @@ class FeedChartSource(ChartSource):
         max_candles: int = 500,
         auto_launch: bool = True,
         profile_dir: Any = None,
+        refresh_chart: bool = True,
     ) -> None:
         if websockets is None:  # pragma: no cover - guaranteed by requirements
             raise ChartSourceError("Reading the feed needs the 'websockets' package.")
@@ -65,6 +94,7 @@ class FeedChartSource(ChartSource):
         self.max_candles = int(max_candles)
         self.auto_launch = bool(auto_launch)
         self.profile_dir = profile_dir
+        self.refresh_chart = bool(refresh_chart)
         self._launched = False
 
         self._lock = threading.Lock()
@@ -74,10 +104,18 @@ class FeedChartSource(ChartSource):
         self._builder = CandleBuilder(period_seconds=60, max_candles=max_candles)
         self._asset: str | None = None
         self._period: int | None = None
+        self._asset_rank = RANK_NONE
+        self._asset_seen = 0.0
         self._last_message = 0.0
         self._history_seen = False
         self._error: str | None = None
         self._connected = False
+        # Instruments seen ticking while no chart has been identified. Only
+        # used to explain the wait — never to pick one.
+        self._streaming: set[str] = set()
+        self._refresh_requested = False
+        self._refreshed_at: float | None = None
+        self._auto_refreshes = 0
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -139,31 +177,83 @@ class FeedChartSource(ChartSource):
                 self._error = None
             log.info("reading the feed from %s", target.url)
 
-            pending_name: str | None = None
+            # A binary payload's name lives in the header frame before it, and
+            # the two directions interleave, so each keeps its own pending name.
+            pending: dict[str, str | None] = {"in": None, "out": None}
+            attached_at = time.monotonic()
             while not self._stop.is_set():
                 try:
                     raw = await asyncio.wait_for(connection.recv(), timeout=1.0)
                 except asyncio.TimeoutError:
+                    await self._maybe_refresh(connection, attached_at)
                     continue
 
                 try:
                     message = json.loads(raw)
                 except ValueError:  # pragma: no cover - malformed
                     continue
-                if message.get("method") != "Network.webSocketFrameReceived":
+                method = message.get("method")
+                if method not in (
+                    "Network.webSocketFrameReceived",
+                    "Network.webSocketFrameSent",
+                ):
                     continue
 
+                # The page's own messages are the ones that say which chart is
+                # open, and those travel outbound. Listening only to what the
+                # server pushed is what left the panel guessing.
+                direction = "in" if method.endswith("Received") else "out"
                 response = (message.get("params") or {}).get("response") or {}
                 frame = decode_frame(
                     str(response.get("payloadData", "")),
-                    direction="in",
+                    direction=direction,
                     opcode=int(response.get("opcode", 1)),
                 )
-                # A binary payload's name lives in the header frame before it.
-                name = frame.event or pending_name
-                pending_name = frame.announces
+                name = frame.event or pending[direction]
+                pending[direction] = frame.announces
                 if frame.payload is not None:
-                    self._handle(name, frame.payload)
+                    self._handle(name, frame.payload, direction)
+
+                await self._maybe_refresh(connection, attached_at)
+
+    async def _maybe_refresh(self, connection: Any, attached_at: float) -> None:
+        """Reload the chart when the page has not told us what it is showing.
+
+        Attaching to a tab whose chart loaded minutes ago means the messages
+        that name the instrument and carry its history have already gone past.
+        Rather than asking the user to switch timeframe to shake them loose —
+        which is exactly the kind of chore this is supposed to remove — ask the
+        page to load itself again, once.
+        """
+        with self._lock:
+            now = time.monotonic()
+            asked = self._refresh_requested
+            if not asked:
+                # A page that says nothing after two reloads is not going to
+                # start on the third; something else is wrong, and saying so
+                # beats a tab that reloads itself forever.
+                if not self.refresh_chart:
+                    return
+                if self._asset is not None and self._history_seen:
+                    return
+                if now - attached_at <= BOOTSTRAP_GRACE_SECONDS:
+                    return
+                if self._auto_refreshes >= MAX_AUTO_REFRESHES:
+                    return
+                if (
+                    self._refreshed_at is not None
+                    and now - self._refreshed_at <= REFRESH_COOLDOWN_SECONDS
+                ):
+                    return
+                self._auto_refreshes += 1
+            self._refresh_requested = False
+            self._refreshed_at = now
+
+        log.info("asking the page to reload so the chart announces itself")
+        await connection.send(json.dumps({"id": 2, "method": "Page.enable"}))
+        await connection.send(
+            json.dumps({"id": 3, "method": "Page.reload", "params": {}})
+        )
 
     def _open_browser(self) -> None:
         """Start the debuggable browser once, and only once per session."""
@@ -180,27 +270,28 @@ class FeedChartSource(ChartSource):
 
     # -- state --------------------------------------------------------------
 
-    def _handle(self, event: str | None, payload: Any) -> None:
+    def _handle(
+        self, event: str | None, payload: Any, direction: str = "in"
+    ) -> None:
         with self._lock:
             self._last_message = time.monotonic()
 
-            change = parse_symbol_change(payload) if event == "changeSymbol" else None
-            if change is not None:
-                if change.asset != self._asset or change.period_seconds != self._period:
-                    log.info(
-                        "chart switched to %s at %ss",
-                        change.asset, change.period_seconds,
-                    )
-                    self._asset = change.asset
-                    self._period = change.period_seconds
-                    # A different instrument or timeframe is a different chart.
-                    # Carrying candles across would splice two of them together.
-                    self._builder = CandleBuilder(
-                        period_seconds=change.period_seconds,
-                        max_candles=self.max_candles,
-                        symbol=change.asset,
-                    )
-                    self._history_seen = False
+            if event == "changeSymbol":
+                change = parse_symbol_change(payload)
+                if change is not None:
+                    self._claim(change.asset, change.period_seconds, RANK_DECLARED)
+                return
+
+            if event == "saveCharts":
+                asset, period = parse_displayed_chart(payload)
+                if asset:
+                    self._claim(asset, period, RANK_DECLARED)
+                return
+
+            if event in ("loadHistoryPeriod", "changeTimeFrame"):
+                asset, period = parse_chart_request(payload)
+                if asset:
+                    self._claim(asset, period, RANK_HISTORY)
                 return
 
             if event == "loadHistoryPeriodFast":
@@ -208,41 +299,114 @@ class FeedChartSource(ChartSource):
                 if not candles:
                     return
                 # History for the pair the user just left can arrive after they
-                # have switched away.
-                if asset and self._asset and asset != self._asset:
+                # have switched away, so it only counts if it belongs to the
+                # chart we are following.
+                if asset and not self._claim(asset, infer_period(candles), RANK_HISTORY):
                     return
-                if self._asset is None and asset:
-                    self._adopt(asset, infer_period(candles) or 60)
+                if self._asset is None:
+                    return
                 self._builder.seed(candles)
                 self._history_seen = True
                 return
 
             if event == "updateHistoryNewFast":
                 asset, period, ticks = parse_tick_history(payload)
-                if asset and self._asset and asset != self._asset:
+                if asset and not self._claim(asset, period, RANK_TICK_HISTORY):
                     return
-                if self._asset is None and asset:
-                    self._adopt(asset, period or 60)
+                if self._asset is None:
+                    return
                 self._builder.extend(ticks)
                 return
 
             if event == "updateStream" or event is None:
                 ticks = parse_ticks(payload)
-                if not ticks:
+                if ticks:
+                    if self._asset is None:
+                        # The socket carries several instruments at once. Which
+                        # one ticks first says nothing about which chart is on
+                        # screen, so wait to be told rather than pick.
+                        self._streaming.update(tick.symbol for tick in ticks)
+                        return
+                    mine = [tick for tick in ticks if tick.symbol == self._asset]
+                    if mine:
+                        self._asset_seen = time.monotonic()
+                    self._builder.extend(mine)
                     return
-                if self._asset is None:
-                    self._adopt(ticks[0].symbol, 60)
-                self._builder.extend(
-                    tick for tick in ticks if tick.symbol == self._asset
-                )
 
-    def _adopt(self, asset: str, period: int) -> None:
-        """Called with the lock held."""
+            # Last resort, and only while nothing is known: any message the
+            # page itself sent that names an asset and a period is about the
+            # chart it has open. The protocol is undocumented and can be
+            # renamed under us; ending up with no chart at all is worse than
+            # starting from a message we did not anticipate, and anything
+            # better replaces it the moment it arrives.
+            if direction == "out" and self._asset is None:
+                asset, period = parse_chart_request(payload)
+                if asset and period:
+                    self._claim(asset, period, RANK_TICK_HISTORY)
+
+    def _claim(self, asset: str, period: int | None, rank: int) -> bool:
+        """Record what a message says the open chart is. Lock held.
+
+        Returns whether the message belongs to the chart being followed, so its
+        candles can be used. Claims are ranked: a message where the page names
+        its own chart outranks history, which outranks a per-asset tick feed. A
+        weaker claim never unseats a stronger one — that is what stops history
+        for an instrument the user has just left from stealing the panel — but
+        any claim wins once the instrument we are on has fallen silent.
+        """
+        now = time.monotonic()
+        same = asset == self._asset
+        if same:
+            self._asset_seen = now
+
+        if self._asset is None:
+            self._rekey(asset, period or 60, rank)
+            return True
+        if same and (not period or period == self._period or rank < self._asset_rank):
+            self._asset_rank = max(self._asset_rank, rank)
+            return True
+
+        silent = self._asset_seen == 0.0 or now - self._asset_seen > ASSET_STALE_SECONDS
+        if rank >= self._asset_rank or silent:
+            self._rekey(asset, period or self._period or 60, rank)
+            return True
+        return False
+
+    def _rekey(self, asset: str, period: int, rank: int) -> None:
+        """Follow a different chart from here. Lock held.
+
+        A different instrument *or* a different timeframe is a different chart.
+        Carrying candles across would splice two of them into one series.
+        """
+        log.info("chart is %s at %ss", asset, period)
         self._asset = asset
         self._period = int(period)
+        self._asset_rank = rank
+        self._asset_seen = time.monotonic()
+        self._streaming.clear()
+        self._history_seen = False
         self._builder = CandleBuilder(
             period_seconds=int(period), max_candles=self.max_candles, symbol=asset
         )
+
+    def resync(self) -> str:
+        """Forget the chart and ask the page to announce it again.
+
+        What Scan means when there is nothing on screen to look for.
+        """
+        with self._lock:
+            self._asset = None
+            self._period = None
+            self._asset_rank = RANK_NONE
+            self._asset_seen = 0.0
+            self._history_seen = False
+            self._streaming.clear()
+            self._builder = CandleBuilder(
+                period_seconds=60, max_candles=self.max_candles
+            )
+            self._refresh_requested = True
+            self._auto_refreshes = 0
+        return "Re-reading the chart from the platform…"
 
     # -- the engine's view --------------------------------------------------
 
@@ -254,6 +418,8 @@ class FeedChartSource(ChartSource):
             error = self._error
             connected = self._connected
             history_seen = self._history_seen
+            streaming = len(self._streaming)
+            asked_twice = self._auto_refreshes >= MAX_AUTO_REFRESHES
             series = self._builder.series() if asset else None
             silent_for = (
                 time.monotonic() - self._last_message if self._last_message else None
@@ -269,10 +435,22 @@ class FeedChartSource(ChartSource):
             issues.append("Connecting to the browser…")
             confidence = 0.0
         elif asset is None:
-            issues.append(
-                "Connected, but the platform has not sent any prices yet. Open "
-                "a chart in the browser window GateKeeper started."
-            )
+            if not streaming:
+                issues.append(
+                    "Connected, but the platform has not sent any prices yet. "
+                    "Open a chart in the browser window GateKeeper started."
+                )
+            elif asked_twice:
+                issues.append(
+                    "Prices are arriving, but the platform never said which "
+                    "chart is open. Click a pair in the browser window, then "
+                    "press Scan."
+                )
+            else:
+                issues.append(
+                    "Reading the platform, waiting for it to say which chart "
+                    "is open — reloading the chart to ask."
+                )
             confidence = 0.0
         elif silent_for is not None and silent_for > STALE_AFTER_SECONDS:
             issues.append(
@@ -290,7 +468,7 @@ class FeedChartSource(ChartSource):
             issues.append(
                 f"{count} candles so far; {self.min_candles} are needed for a "
                 "full read."
-                + ("" if history_seen else " Switch timeframe once to load history.")
+                + ("" if history_seen else " Loading history from the platform…")
             )
 
         quality = DataQuality(
@@ -327,4 +505,6 @@ class FeedChartSource(ChartSource):
                 "symbol": display_symbol(self._asset) if self._asset else None,
                 "timeframe_seconds": self._period,
                 "connected": self._connected,
+                "history_loaded": self._history_seen,
+                "candles": len(self._builder.settled),
             }

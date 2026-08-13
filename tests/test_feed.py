@@ -146,6 +146,14 @@ class TestTargetSelection:
     def test_no_match_is_reported_rather_than_guessed(self):
         assert pick_target(self._targets(), needle="nowhere.example") is None
 
+    def test_the_tab_with_the_chart_beats_another_tab_on_the_same_site(self):
+        """A help page and a chart are both "the platform". Only one ticks."""
+        targets = [
+            Target("1", "Help", "https://pocketoption.com/en/help/", "ws://help"),
+            Target("2", "Trading", "https://pocketoption.com/en/cabinet/", "ws://b"),
+        ]
+        assert pick_target(targets).websocket_url == "ws://b"
+
     def test_non_page_targets_are_ignored(self):
         assert Target.from_json({"type": "service_worker", "webSocketDebuggerUrl": "ws://x"}) is None
         assert Target.from_json({"type": "page", "id": "1"}) is None
@@ -389,6 +397,289 @@ class TestProtocol:
         assert series.symbol == "AUD/USD OTC"
         assert series.timeframe_seconds == 60
         assert series.last_price == 0.70460
+
+
+class TestWhichChartIsOpen:
+    """The panel must name the instrument the platform is drawing.
+
+    The socket carries ticks for many instruments at once, so "whichever
+    symbol arrived first" is a coin toss — and it landed on the wrong pair,
+    which made every number under it a report on a market the user was not
+    looking at. Only a message where the page names its own chart counts.
+    """
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        return FeedChartSource(port=59999)
+
+    def test_ticks_alone_never_choose_an_instrument(self):
+        source = self._source()
+        source.start = lambda: None
+        source._connected = True  # the listener would have set this
+        source._handle("updateStream", [["AUDCAD_otc", 1786663900.0, 0.9733]])
+        source._handle("updateStream", [["CADJPY_otc", 1786663900.5, 115.3]])
+
+        assert source._asset is None
+        capture = source.capture()
+        assert capture.asset is None
+        assert capture.series is None
+        # And it says what it is waiting for rather than showing a guess.
+        assert any("which chart is open" in issue for issue in capture.quality.issues)
+
+    def test_the_pages_own_chart_state_names_it(self):
+        """``saveCharts`` travels outbound and carries the displayed symbol."""
+        source = self._source()
+        source._handle("updateStream", [["AUDCAD_otc", 1786663900.0, 0.9733]])
+        source._handle(
+            "saveCharts",
+            ["saveCharts", {"settings": [{"symbol": "CADJPY_otc", "chartPeriod": 60}]}],
+        )
+
+        assert source._asset == "CADJPY_otc"
+        assert source._period == 60
+
+    def test_a_workspace_of_several_charts_is_not_guessed_at(self):
+        source = self._source()
+        source._handle(
+            "saveCharts",
+            [
+                "saveCharts",
+                {"settings": [{"symbol": "CADJPY_otc"}, {"symbol": "EURUSD_otc"}]},
+            ],
+        )
+        assert source._asset is None
+
+    def test_a_number_that_cannot_be_a_timeframe_is_not_used_as_one(self):
+        """A wrong period silently rebuckets every candle in the series."""
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "CADJPY_otc", "period": 60}]
+        )
+        source._handle(
+            "saveCharts",
+            ["saveCharts", {"settings": [{"symbol": "CADJPY_otc", "chartPeriod": 3}]}],
+        )
+        assert source._period == 60
+
+    def test_a_history_request_names_the_chart_being_drawn(self):
+        source = self._source()
+        source._handle(
+            "loadHistoryPeriod",
+            ["loadHistoryPeriod", {"asset": "CADJPY_otc", "period": 30, "time": 1}],
+        )
+        assert source._asset == "CADJPY_otc"
+        assert source._period == 30
+
+    def test_history_arriving_first_is_enough_to_start(self):
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)
+        assert source._asset == "AUDUSD_otc"
+        assert source._period == 60  # inferred from the candle spacing
+        assert len(source._builder.settled) == 4
+
+    def test_a_weaker_claim_cannot_unseat_a_declared_chart(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "CADJPY_otc", "period": 60}]
+        )
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)  # AUDUSD
+        source._handle(
+            "updateHistoryNewFast",
+            {"asset": "EURUSD_otc", "period": 60, "history": [[1786663113.6, 1.16]]},
+        )
+        assert source._asset == "CADJPY_otc"
+        assert source._builder.settled == []
+
+    def test_an_equal_claim_moves_the_chart(self):
+        """Two history messages in a row: the later one is the current chart."""
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)
+        source._handle(
+            "loadHistoryPeriod",
+            ["loadHistoryPeriod", {"asset": "CADJPY_otc", "period": 60}],
+        )
+        assert source._asset == "CADJPY_otc"
+
+    def test_a_silent_instrument_is_given_up(self):
+        """If the chart we follow stops ticking, a weaker claim is believed.
+
+        The platform does not always announce a switch in a message we rank
+        highly. Holding on to a symbol that stopped streaming would leave the
+        panel frozen on it for the rest of the session.
+        """
+        from poa.feed import source as module
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "CADJPY_otc", "period": 60}]
+        )
+        source._asset_seen -= module.ASSET_STALE_SECONDS + 1
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)  # AUDUSD
+        assert source._asset == "AUDUSD_otc"
+
+    def test_a_timeframe_change_starts_a_new_chart(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        source._handle("updateStream", [["EURUSD_otc", 1786663900.0, 1.16]])
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 300}]
+        )
+        assert source._period == 300
+        assert source._builder.forming is None  # 1m candles are not 5m candles
+
+    def test_a_resync_forgets_the_chart_and_asks_again(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "AUDUSD_otc", "period": 60}]
+        )
+        source._handle("loadHistoryPeriodFast", TestProtocol.HISTORY)
+        assert source._history_seen
+
+        source.resync()
+        assert source._asset is None
+        assert source._history_seen is False
+        assert source._refresh_requested is True
+
+    def test_the_page_is_asked_to_reload_when_it_never_said_what_it_shows(self):
+        """Attaching to a chart loaded minutes ago misses the whole bootstrap.
+
+        Making the user switch timeframe to shake those messages loose is
+        exactly the chore this source exists to remove.
+        """
+        import asyncio
+
+        from poa.feed import source as module
+
+        source = self._source()
+        sent: list[Any] = []
+
+        class FakeConnection:
+            async def send(self, raw):
+                sent.append(json.loads(raw))
+
+        asyncio.run(
+            source._maybe_refresh(
+                FakeConnection(), attached_at=-module.BOOTSTRAP_GRACE_SECONDS * 2
+            )
+        )
+        assert [message["method"] for message in sent] == ["Page.enable", "Page.reload"]
+
+        # And not again a moment later — one reload, not a reload loop.
+        sent.clear()
+        asyncio.run(source._maybe_refresh(FakeConnection(), attached_at=-1000.0))
+        assert sent == []
+
+    def test_a_chart_that_is_reading_fine_is_left_alone(self):
+        import asyncio
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        source._history_seen = True
+        sent: list[Any] = []
+
+        class FakeConnection:
+            async def send(self, raw):
+                sent.append(json.loads(raw))
+
+        asyncio.run(source._maybe_refresh(FakeConnection(), attached_at=-1000.0))
+        assert sent == []
+
+    def test_the_frames_that_name_the_chart_are_the_ones_the_page_sends(self):
+        from poa.feed.frames import decode_frame
+
+        frame = decode_frame(
+            '42["changeSymbol",{"asset":"CADJPY_otc","period":60}]', direction="out"
+        )
+        source = self._source()
+        source._handle(frame.event, frame.payload)
+        assert source._asset == "CADJPY_otc"
+
+    def test_an_unfamiliar_outbound_message_is_better_than_no_chart_at_all(self):
+        """The protocol is undocumented and can be renamed under us."""
+        source = self._source()
+        source._handle(
+            "someRenamedRequest",
+            ["someRenamedRequest", {"asset": "CADJPY_otc", "period": 60}],
+            "out",
+        )
+        assert source._asset == "CADJPY_otc"
+
+        # And anything authoritative still replaces it.
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        assert source._asset == "EURUSD_otc"
+
+    def test_the_listener_reads_what_the_page_sends_not_only_what_it_receives(
+        self, monkeypatch
+    ):
+        """End to end through the DevTools loop, which is where this broke.
+
+        Subscribing to received frames alone meant the messages that name the
+        chart — all of them outbound — never arrived, and the panel was left
+        following whichever instrument happened to tick first.
+        """
+        import asyncio
+
+        from poa.feed import source as module
+
+        source = self._source()
+        target = Target(id="1", title="Pocket Option", url="https://x", websocket_url="ws://x")
+        monkeypatch.setattr(module, "list_targets", lambda port, timeout=2.0: [target])
+        monkeypatch.setattr(module, "pick_target", lambda targets, match: target)
+
+        inbox = [
+            {
+                "method": "Network.webSocketFrameReceived",
+                "params": {"response": {"opcode": 1, "payloadData":
+                    '42["updateStream",[["AUDCAD_otc",1786663900.0,0.9733]]]'}},
+            },
+            {
+                "method": "Network.webSocketFrameSent",
+                "params": {"response": {"opcode": 1, "payloadData":
+                    '42["changeSymbol",{"asset":"CADJPY_otc","period":60}]'}},
+            },
+            {
+                "method": "Network.webSocketFrameReceived",
+                "params": {"response": {"opcode": 1, "payloadData":
+                    '42["updateStream",[["CADJPY_otc",1786663901.0,115.31]]]'}},
+            },
+        ]
+
+        class FakeConnection:
+            async def send(self, raw):
+                return None
+
+            async def recv(self):
+                if inbox:
+                    return json.dumps(inbox.pop(0))
+                source._stop.set()
+                raise asyncio.TimeoutError
+
+        class FakeConnect:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return FakeConnection()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(
+            module, "websockets", type("W", (), {"connect": FakeConnect})
+        )
+        asyncio.run(source._listen())
+
+        assert source._asset == "CADJPY_otc"
+        assert source._period == 60
+        assert source._builder.forming is not None
+        assert source._builder.forming.close == 115.31
 
 
 class TestFeedSource:

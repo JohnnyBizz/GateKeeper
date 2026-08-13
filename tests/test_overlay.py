@@ -976,3 +976,98 @@ class TestTheFeedIsTheDefault:
         header = vm.render()["header"]
         assert header["status"] == "LIVE FEED"
         assert header["status_color"] == COLORS["call"]
+
+    # -- what Scan and Find chart mean when there are no pixels -------------
+
+    class _StubFeed:
+        """A feed source that records whether it was asked to re-sync."""
+
+        name = "feed"
+        vision_based = False
+        names_own_chart = True
+
+        def __init__(self, symbol=None, history=False):
+            self.symbol = symbol
+            self.history = history
+            self.resyncs = 0
+
+        def describe(self):
+            return {"symbol": self.symbol, "history_loaded": self.history}
+
+        def resync(self):
+            self.resyncs += 1
+            return "Re-reading the chart from the platform…"
+
+        def capture(self):
+            from poa.chart_detection.base import Capture
+            from poa.models import DataQuality
+
+            return Capture(
+                series=None,
+                quality=DataQuality(
+                    ok=False, confidence=0.0, candle_count=0, issues=["no data"]
+                ),
+            )
+
+    def test_find_chart_re_syncs_the_feed_instead_of_doing_nothing(self, tmp_path):
+        """The button used to run a screen search the feed has no use for.
+
+        Nothing happened, visibly or otherwise, which is indistinguishable
+        from a broken button.
+        """
+        app = self._app(tmp_path, **{"capture.source": "feed"})
+        feed = self._StubFeed()
+        app.engine.source = feed
+        said: list[str] = []
+        try:
+            app.locate_chart(said.append)
+            assert feed.resyncs == 1
+            assert said and "chart" in said[0].lower()
+            assert not app._scan_busy  # no screen search was started
+        finally:
+            app.shutdown()
+
+    def test_scan_re_syncs_a_feed_that_does_not_know_the_chart(self, tmp_path):
+        app = self._app(tmp_path, **{"capture.source": "feed"})
+        feed = self._StubFeed(symbol=None)
+        app.engine.source = feed
+        try:
+            app._begin_scan()
+            assert feed.resyncs == 1
+        finally:
+            app.shutdown()
+
+    def test_scan_leaves_a_feed_that_is_reading_the_right_chart_alone(self, tmp_path):
+        """Re-syncing reloads the platform's page. Not on every press."""
+        app = self._app(tmp_path, **{"capture.source": "feed"})
+        feed = self._StubFeed(symbol="CADJPY_otc", history=True)
+        app.engine.source = feed
+        try:
+            app._begin_scan()
+            assert feed.resyncs == 0
+        finally:
+            app.shutdown()
+
+    def test_a_pair_is_never_left_on_the_panel_once_it_cannot_be_read(
+        self, tmp_path
+    ):
+        """The worst version of this bug: a stale pair over a live verdict.
+
+        The panel named AUD/CAD while the platform showed CAD/JPY, and every
+        number under it was a report on a market the user was not watching.
+        """
+        app = self._app(tmp_path, **{"capture.source": "feed"})
+        feed = self._StubFeed(symbol="CADJPY_otc", history=True)
+        app.engine.source = feed
+        try:
+            # A good read first, so there is something stale to hold on to.
+            app.engine.state.capture_meta = {"asset": "CAD/JPY OTC"}
+            app._apply_state()
+            assert app.vm.asset == "CAD/JPY OTC"
+
+            app.engine._degrade("nothing readable")
+            app._apply_state()
+            assert app.vm.asset == "—"
+            assert app.vm.render()["tiles"]["pair"] == "—"
+        finally:
+            app.shutdown()

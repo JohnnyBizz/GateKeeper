@@ -77,13 +77,34 @@ def list_targets(port: int = DEFAULT_PORT, timeout: float = 2.0) -> list[Target]
     return [target for target in targets if target is not None]
 
 
+# Parts of a URL that mark the trading screen rather than the marketing site,
+# the help centre or a login page — all of which live on the same domain and
+# match the platform's name just as well.
+_CHART_HINTS = ("cabinet", "trading", "quick-high-low", "demo-quick")
+
+
 def pick_target(targets: list[Target], needle: str = "pocketoption") -> Target | None:
-    """The page that looks like the trading platform."""
+    """The page that looks like the trading platform.
+
+    More than one tab can belong to the platform and only one of them has a
+    chart on it. Attaching to the wrong one means listening to a socket that
+    never says which instrument is open, so a tab that is plainly the trading
+    screen is preferred over one that merely matches the name.
+    """
     needle = needle.lower()
-    for target in targets:
-        if needle in target.url.lower() or needle in target.title.lower():
+    matches = [
+        target
+        for target in targets
+        if needle in target.url.lower() or needle in target.title.lower()
+    ]
+    if not matches:
+        return None
+    for target in matches:
+        if any(hint in target.url.lower() for hint in _CHART_HINTS):
             return target
-    return None
+    # Chrome lists targets most-recently-active first, so the first match is
+    # the best available guess at the tab in front of the user.
+    return matches[0]
 
 
 # --------------------------------------------------------------------------

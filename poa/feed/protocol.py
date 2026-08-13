@@ -24,6 +24,11 @@ The four messages that matter:
     ``{"asset": "AUDUSD_otc", "period": 60}`` — what the user just switched to.
     Authoritative for both the instrument and the timeframe, which are the two
     things pixels could never tell us reliably.
+
+``saveCharts`` / ``loadHistoryPeriod``
+    Sent *by* the page rather than to it. The socket carries ticks for many
+    instruments at once, so the only trustworthy answer to "which chart is on
+    screen" comes from the messages the page itself writes — these two name it.
 """
 
 from __future__ import annotations
@@ -74,6 +79,78 @@ def parse_symbol_change(payload: Any) -> SymbolChange | None:
     if not isinstance(asset, str) or period is None or period <= 0:
         return None
     return SymbolChange(asset=asset, period_seconds=int(period))
+
+
+# Sub-minute chart periods the platform actually offers. Anything below a
+# minute that is not one of these is more likely a count or an index than a
+# timeframe, and a wrong period silently rebuckets every candle.
+_SUB_MINUTE_PERIODS = {1, 5, 10, 15, 30}
+
+
+def _plausible_period(value: Any) -> int | None:
+    period = _number(value)
+    if period is None or period <= 0:
+        return None
+    seconds = int(period)
+    if seconds >= 60 or seconds in _SUB_MINUTE_PERIODS:
+        return seconds
+    return None
+
+
+def parse_chart_request(payload: Any) -> tuple[str | None, int | None]:
+    """The instrument and period named by a history request the page sent.
+
+    The page asks for history for the chart it is drawing, so this says what is
+    on screen even when the symbol was chosen before GateKeeper attached — the
+    case that used to leave the panel stuck on whichever instrument happened to
+    tick first.
+    """
+    body = payload
+    if isinstance(body, list) and body and isinstance(body[0], str):
+        body = body[1] if len(body) > 1 else None
+    if not isinstance(body, dict):
+        return None, None
+    asset = body.get("asset")
+    if not isinstance(asset, str) or not asset:
+        return None, None
+    period = _plausible_period(body.get("period"))
+    return asset, period if period else _plausible_period(body.get("chartPeriod"))
+
+
+def parse_displayed_chart(payload: Any) -> tuple[str | None, int | None]:
+    """The chart the page has open, read out of its own ``saveCharts`` state.
+
+    The shape is a nest of the platform's settings rather than a message
+    designed to be read, so this walks it looking for a ``symbol``. If the nest
+    names more than one instrument it is a workspace of several charts and
+    there is no single answer — better to report nothing than to pick one.
+    """
+    found: dict[str, int | None] = {}
+    _collect_symbols(payload, found)
+    if len(found) != 1:
+        return None, None
+    asset, period = next(iter(found.items()))
+    return asset, period
+
+
+def _collect_symbols(value: Any, out: dict[str, int | None], depth: int = 0) -> None:
+    if depth > 6:
+        return
+    if isinstance(value, dict):
+        symbol = value.get("symbol")
+        if isinstance(symbol, str) and symbol:
+            seconds = _plausible_period(value.get("chartPeriod")) or _plausible_period(
+                value.get("period")
+            )
+            # A later, more specific entry should not lose a period an earlier
+            # one carried for the same instrument.
+            out[symbol] = seconds or out.get(symbol)
+        for item in value.values():
+            _collect_symbols(item, out, depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_symbols(item, out, depth + 1)
 
 
 def parse_history_candles(payload: Any) -> tuple[str | None, list[Candle]]:

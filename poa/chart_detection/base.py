@@ -42,6 +42,12 @@ class ChartSource(ABC):
     #: True when the source reads pixels and can therefore misread the chart.
     vision_based: bool = False
 
+    #: True when the source knows for itself which instrument it is reading.
+    #: For those, not knowing is information: the panel has to show no pair
+    #: rather than the last one it saw, because a stale instrument above a
+    #: live-looking verdict is a report on a market nobody is watching.
+    names_own_chart: bool = False
+
     @abstractmethod
     def capture(self) -> Capture:
         """Read the current chart state."""

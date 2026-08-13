@@ -70,6 +70,7 @@ def build_source(config: Config) -> ChartSource:
                 min_candles=min_candles,
                 max_candles=max_candles,
                 auto_launch=bool(config.get("capture.auto_launch_browser", True)),
+                refresh_chart=bool(config.get("capture.refresh_chart", True)),
             )
         except (ChartSourceError, ImportError) as exc:
             log.error("Feed source unavailable (%s); falling back to synthetic.", exc)

@@ -414,11 +414,15 @@ of trades means nothing.
 ### Settings, without touching a file
 
 The **⚙ button** in the panel header opens settings: which chart to read
-(live screen / demo / CSV), the asset, both timeframes, payout, balance, the
-confidence floors, and alerts. **Find chart** locates everything by itself
-(below); **Select…** is the manual fallback, freezing the screen so you can
-drag a box and click two known prices. Everything is applied immediately and
-saved to `config.yaml`, so it survives a restart.
+(the platform's data / live screen / demo / CSV), the asset, both timeframes,
+payout, balance, the confidence floors, and alerts. Reading the platform's data
+shows **Re-read chart**, which asks it again which chart is open. Reading the
+screen shows **Find chart**, which locates everything by itself (below), and
+**Select…**, the manual fallback that freezes the screen so you can drag a box
+and click two known prices. The rows follow the source, because a button for a
+thing that does not exist is a button that does nothing when pressed.
+Everything is applied immediately and saved to `config.yaml`, so it survives a
+restart.
 
 The overlay needs Tkinter, which ships with Python on Windows/macOS; on Linux
 it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
@@ -444,6 +448,29 @@ The feed has none of that. `loadHistoryPeriodFast` carries settled candles with
 volume, `updateStream` carries live ticks, and `changeSymbol` states the
 instrument and the timeframe outright. Nothing is measured, so nothing can be
 mismeasured.
+
+### Which chart is open
+
+Exact prices for the wrong instrument are no better than a misread of the right
+one, and the socket makes that mistake easy: it streams ticks for several
+instruments at once, so the first symbol to arrive says nothing about what is
+on screen. The instrument is taken only from messages where the page names its
+own chart — `changeSymbol`, `saveCharts`, a history request — and those travel
+*outbound*, from the browser to the platform. Ticks never choose. Until one
+arrives the panel shows no pair at all, because a stale instrument above a
+live-looking verdict is a report on a market nobody is watching.
+
+Claims are ranked: the page naming its own chart outranks history, which
+outranks a per-instrument tick feed, and a weaker claim never unseats a
+stronger one — that is what stops history for the pair you just left from
+taking the panel with it. Any claim wins once the instrument being followed has
+gone quiet.
+
+Those messages are sent when a chart loads, so attaching to a tab that loaded
+minutes ago means they have already gone past. GateKeeper asks the page to
+reload — twice at most — rather than asking you to switch timeframe to shake
+them loose. **Scan** does the same on demand, and is the only button to press
+when the panel and the platform disagree.
 
 | | Feed | Screen |
 |---|---|---|
