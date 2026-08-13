@@ -87,11 +87,17 @@ class OverlayApp:
 
         self.vm.connected = state.running
         self.vm.last_error = state.last_error
-        self.vm.asset = self.engine.asset
         self.vm.chart_timeframe = self.engine.chart_timeframe
         self.vm.trade_duration = self.engine.trade_duration
 
-        quality = (state.capture_meta or {}).get("quality") or {}
+        meta = state.capture_meta or {}
+        # The capture's asset wins: when the pair label is being read from the
+        # screen it is the truth, and the config value is just the last name
+        # the user typed.
+        captured_asset = meta.get("asset")
+        self.vm.asset = captured_asset or self.engine.asset
+
+        quality = meta.get("quality") or {}
         self.vm.data_confidence = quality.get("confidence")
 
         if self.vm.scan.scanning:
@@ -157,6 +163,56 @@ class OverlayApp:
         # The old signal described a different chart; blank until re-analysed.
         self.vm.signal = None
         self._refresh_session()
+
+    def _pick_asset_label(self, prefix: str, done: Callable[[str], None]) -> None:
+        """Optionally point GateKeeper at the platform's pair-name label.
+
+        The candles say nothing about *which* instrument they belong to, so
+        without this the name has to be typed whenever the user switches
+        charts. It is offered rather than required: skipping it costs only the
+        automatic rename.
+        """
+        from tkinter import messagebox
+
+        from .region_picker import RegionPicker
+
+        wants = messagebox.askyesno(
+            "Read the pair name automatically?",
+            f"{prefix}\n\nGateKeeper can also read the pair's name (e.g. "
+            "EUR/USD) from the screen, so it renames itself when you switch "
+            "charts.\n\nSelect the small label now?",
+        )
+        if not wants:
+            done(prefix + " Pair name will need renaming by hand.")
+            return
+
+        def after_label(selection) -> None:
+            if selection is None:
+                done(prefix + " Pair-name box skipped.")
+                return
+            self.config.set("capture.asset_region", selection.region_dict())
+            try:
+                self.config.save()
+            except OSError:  # pragma: no cover - filesystem dependent
+                pass
+            self.engine._rebuild_source()
+            done(prefix + " Pair name will now be read from the screen.")
+
+        try:
+            RegionPicker(
+                self.panel.root,
+                monitor_index=int(self.config.get("capture.monitor", 1)),
+                on_done=after_label,
+                hint=(
+                    "Now drag a small box around the pair name only "
+                    "(e.g. EUR/USD).   Esc to skip."
+                ),
+                analyse=False,
+                min_size=10,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("asset label picker failed: %s", exc)
+            done(prefix)
 
     def _set_stake(self, stake: float | None) -> None:
         self.vm.stake_override = stake if (stake is None or stake > 0) else None
@@ -241,7 +297,10 @@ class OverlayApp:
                 )
             if selection.issues:
                 message += " " + " ".join(selection.issues[:2])
-            done(message)
+
+            # Offer the optional pair-label box last, so the important step is
+            # already saved even if the user skips this one.
+            self._pick_asset_label(message, done)
 
         def after_region(selection) -> None:
             if selection is None:

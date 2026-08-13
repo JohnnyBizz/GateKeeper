@@ -28,6 +28,7 @@ import numpy as np
 from ..logging_setup import get_logger
 from ..models import Series
 from .base import Capture, ChartSource, ChartSourceError
+from .asset_label import AssetLabelReader
 from .calibration import PriceCalibration, resolve_calibration
 from .candles import (
     CandleExtractionError,
@@ -103,6 +104,7 @@ class ScreenChartSource(ChartSource):
         axis_width_px: int = 70,
         min_candles: int = 60,
         save_screenshots: bool = True,
+        asset_region: dict[str, int] | None = None,
     ) -> None:
         if mss is None:
             raise ChartSourceError(
@@ -132,8 +134,26 @@ class ScreenChartSource(ChartSource):
         self._sct = None
         self._last_calibration: PriceCalibration | None = None
         self._consecutive_failures = 0
+        # Manual calibration describes one specific chart: those two reference
+        # prices were read off *that* axis. When the user switches pairs on the
+        # platform they no longer apply, and continuing to use them reports
+        # confident, precisely wrong prices — worse than reporting none. The
+        # engine calls invalidate_calibration() when it detects a switch.
+        self._calibration_suspect = False
+        # Optional: a small region over the platform's pair label, so the
+        # asset name follows the user when they switch charts.
+        self.asset_reader = AssetLabelReader(asset_region)
 
     # ------------------------------------------------------------------
+
+    def invalidate_calibration(self) -> None:
+        """Stop trusting the manual price scale — the chart changed."""
+        if self.manual_calibration is not None:
+            log.info(
+                "chart changed; dropping the manual price calibration and "
+                "re-reading the scale from the new chart"
+            )
+        self._calibration_suspect = True
 
     def start(self) -> None:
         if self._sct is None:
@@ -146,6 +166,13 @@ class ScreenChartSource(ChartSource):
             except Exception:  # pragma: no cover - best effort
                 pass
             self._sct = None
+
+    def _grab_region(self, region: dict[str, int]) -> np.ndarray:
+        """Grab an arbitrary screen region as BGR — used for the pair label."""
+        self.start()
+        assert self._sct is not None
+        raw = self._sct.grab(region)
+        return cv2.cvtColor(np.asarray(raw), cv2.COLOR_BGRA2BGR)
 
     def grab(self) -> np.ndarray:
         """Grab the configured region as a BGR image."""
@@ -186,17 +213,30 @@ class ScreenChartSource(ChartSource):
 
         calibration = resolve_calibration(
             image,
-            self.manual_calibration,
+            None if self._calibration_suspect else self.manual_calibration,
             use_ocr=self.use_ocr,
             axis_width_px=self.axis_width_px,
         )
+        # Once the axis has been read successfully from the new chart, the
+        # manual calibration is genuinely superseded rather than merely
+        # distrusted, so drop it for good instead of re-testing every poll.
+        if self._calibration_suspect and calibration.method == "ocr":
+            self.manual_calibration = None
+            self._calibration_suspect = False
         self._last_calibration = calibration
+
+        # Read the pair's name, if the user pointed us at the label. The
+        # candles cannot tell us which instrument they belong to.
+        asset_reading = None
+        if self.asset_reader.enabled:
+            asset_reading = self.asset_reader.read(self._grab_region)
+        symbol = self.asset_reader.current or self.symbol
 
         series = pixel_candles_to_series(
             extraction.candles,
             calibration.price_at_row,
             timeframe_seconds=self.timeframe_seconds,
-            symbol=self.symbol,
+            symbol=symbol,
             end_time=datetime.now(timezone.utc).replace(microsecond=0),
         )
 
@@ -228,13 +268,14 @@ class ScreenChartSource(ChartSource):
         return Capture(
             series=series,
             quality=quality,
-            asset=self.symbol,
+            asset=symbol,
             timeframe_seconds=self.timeframe_seconds,
             screenshot_png=png,
             meta={
                 "extraction": extraction.to_dict(),
                 "calibration": calibration.to_dict(),
                 "region": self.region.to_dict(),
+                "asset_label": asset_reading.to_dict() if asset_reading else None,
             },
         )
 

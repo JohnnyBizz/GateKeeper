@@ -99,6 +99,9 @@ class AnalysisEngine:
         # itself* changed under a vision source (user switched pairs on the
         # platform). None until the first successful capture.
         self._last_median_price: float | None = None
+        # Normalised shape of the last frame's candles, for the same purpose:
+        # two pairs can trade at similar levels but never draw the same candles.
+        self._last_shape: np.ndarray | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -245,29 +248,17 @@ class AnalysisEngine:
 
         # A vision source keeps reading whatever is on screen — including a
         # completely different pair after the user switches charts on the
-        # platform. GateKeeper cannot read the pair's *name* off the screen,
-        # but a wholesale change of price level is unmistakable: no 1-minute
-        # market moves several percent between two polls. When that happens,
-        # the previous signal, its peak confidence and its invalidation levels
-        # all describe a chart that no longer exists, so the tracker restarts.
-        chart_changed = False
-        median_price = float(np.median(series.close)) if len(series) else None
-        if (
-            self.source.vision_based
-            and median_price is not None
-            and self._last_median_price is not None
-            and self._last_median_price > 0
-        ):
-            relative_jump = abs(median_price - self._last_median_price) / self._last_median_price
-            if relative_jump > 0.03:
-                chart_changed = True
-                log.info(
-                    "chart change detected (price level moved %.1f%%) — "
-                    "restarting analysis",
-                    relative_jump * 100,
-                )
-                self.tracker.reset()
-        self._last_median_price = median_price
+        # platform. When that happens the previous signal, its peak confidence
+        # and its invalidation levels all describe a chart that no longer
+        # exists, so everything derived from it has to restart.
+        chart_changed = self._detect_chart_change(series)
+        if chart_changed:
+            self.tracker.reset()
+            # A manual price calibration belongs to the old chart. Keeping it
+            # would report precise prices from the wrong axis.
+            invalidate = getattr(self.source, "invalidate_calibration", None)
+            if callable(invalidate):
+                invalidate()
         chart_timeframe = capture.timeframe_seconds or self.chart_timeframe
 
         request = SignalRequest(
@@ -340,6 +331,65 @@ class AnalysisEngine:
 
         self._broadcast()
         return self.state
+
+    def _detect_chart_change(self, series: Series) -> bool:
+        """Has the chart on screen been swapped for a different one?
+
+        Two independent tests, because either alone misses real cases:
+
+        * **price level** — switching EUR/USD to a pair trading at a different
+          magnitude is unmistakable; no market moves several percent between
+          two polls two seconds apart;
+        * **shape continuity** — two pairs can trade at *similar* levels, where
+          the price test sees nothing. But on an ordinary poll the visible
+          candles are the same candles, shifted by at most one; the overlap
+          should be near-identical. A wholesale change in that overlap means
+          different candles entirely, which is a different chart (or a changed
+          timeframe on the same one, which invalidates the analysis just as
+          thoroughly).
+        """
+        if not self.source.vision_based or len(series) == 0:
+            self._last_median_price = None
+            self._last_shape = None
+            return False
+
+        closes = series.close
+        median_price = float(np.median(closes))
+        # Normalised shape of the recent candles, so the comparison is about
+        # the pattern rather than the absolute level.
+        window = closes[-40:]
+        spread = float(window.max() - window.min())
+        shape = (
+            ((window - window.min()) / spread) if spread > 0 else np.zeros_like(window)
+        )
+
+        changed = False
+        reason = ""
+
+        previous_price = self._last_median_price
+        if previous_price is not None and previous_price > 0:
+            jump = abs(median_price - previous_price) / previous_price
+            if jump > 0.03:
+                changed = True
+                reason = f"price level moved {jump * 100:.1f}%"
+
+        previous_shape = self._last_shape
+        if not changed and previous_shape is not None and previous_shape.size == shape.size:
+            # Compare against the previous frame shifted by one candle as well
+            # as unshifted, since a new candle forming is the normal case.
+            unshifted = float(np.mean(np.abs(shape - previous_shape)))
+            shifted = float(np.mean(np.abs(shape[:-1] - previous_shape[1:])))
+            divergence = min(unshifted, shifted)
+            if divergence > 0.25:
+                changed = True
+                reason = f"candle pattern diverged by {divergence:.2f}"
+
+        if changed:
+            log.info("chart change detected (%s) — restarting analysis", reason)
+
+        self._last_median_price = median_price
+        self._last_shape = shape
+        return changed
 
     def _degrade(self, message: str) -> EngineState:
         """Record a failure without letting the loop die or a signal persist."""

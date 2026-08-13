@@ -374,10 +374,26 @@ the configured percentage, and the panel computes what share of the balance
 that actually is, warning you when it's into territory a losing streak would
 hurt. Clearing the field returns to percentage sizing.
 
-On a vision source GateKeeper also notices a chart switch by itself: no
-1-minute market moves several percent between two polls, so a wholesale change
-in price level restarts the analysis automatically. Pressing **Scan** likewise
-starts from a clean slate.
+### Switching charts
+
+The screen is re-read from scratch every couple of seconds, so the candles
+always come from whatever chart is in front of you. Three things follow a
+switch automatically:
+
+* **The switch is detected.** Two independent tests: a jump in price level
+  (no market moves several percent between two polls), and a break in candle
+  *shape* continuity — which catches switching between two pairs that happen
+  to trade at similar levels, where the price test sees nothing.
+* **The price scale is re-derived.** A manual calibration describes one
+  specific chart's axis; after a switch it is dropped and the scale is read
+  from the new chart, because confident wrong prices are worse than none.
+* **The pair name updates**, if you pointed GateKeeper at the platform's pair
+  label during setup (it offers this straight after the chart area). Otherwise
+  type it in the PAIR field — the candles carry no name, so OCR is the only
+  way to read one.
+
+Everything derived from those — analysis, tracker state, journal filing —
+restarts with them. Pressing **Scan** likewise starts from a clean slate.
 
 The **session tally** fills itself from settled journal outcomes; the +/−
 buttons adjust it for trades you took that the assistant never signalled. The
@@ -547,7 +563,7 @@ settled signals, because a win rate over ten trades says close to nothing.
 ## 12. Tests
 
 ```bash
-pytest -q                    # 351 tests
+pytest -q                    # 364 tests
 pytest tests/test_signals.py -v
 ```
 
@@ -588,7 +604,7 @@ pocket-option-assistant/
 │   ├── dashboard/         index.html, app.js, styles.css
 │   ├── overlay/           always-on-top panel (view model + Tk renderer)
 │   ├── config.py  engine.py  server.py  models.py  risk.py  logging_setup.py
-├── tests/                 351 tests
+├── tests/                 364 tests
 ├── tools/                 select_region.py, make_sample_data.py, backtest.py
 ├── data/                  sample candle CSV
 ├── config.example.yaml    fully commented

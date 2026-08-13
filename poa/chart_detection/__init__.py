@@ -80,6 +80,7 @@ def build_source(config: Config) -> ChartSource:
                 axis_width_px=int(config.get("capture.ocr.axis_width_px", 70)),
                 min_candles=min_candles,
                 save_screenshots=bool(config.get("capture.save_screenshots", True)),
+                asset_region=config.get("capture.asset_region"),
             )
         except (ChartSourceError, ImportError) as exc:
             log.error("Screen source unavailable (%s); falling back to synthetic.", exc)

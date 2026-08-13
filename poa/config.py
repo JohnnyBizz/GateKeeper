@@ -43,6 +43,9 @@ DEFAULTS: dict[str, Any] = {
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},
         "monitor": 1,
+        # Optional small region over the platform's pair label. When set, the
+        # asset name is read from the screen and follows chart switches.
+        "asset_region": {"left": 0, "top": 0, "width": 0, "height": 0},
         # Price calibration for the screen source. Two reference points read off
         # the chart's price axis let us convert pixel rows into prices without
         # relying on OCR. OCR is attempted first when enabled.

@@ -115,6 +115,9 @@ class RegionPicker:
         monitor_index: int = 1,
         colors: dict[str, Any] | None = None,
         on_done: Callable[[RegionSelection | None], None] | None = None,
+        hint: str | None = None,
+        analyse: bool = True,
+        min_size: int = 50,
     ) -> None:
         import tkinter as tk
         from PIL import Image, ImageTk  # type: ignore[import-untyped]
@@ -123,6 +126,8 @@ class RegionPicker:
         self.parent = parent
         self.colors = colors
         self.on_done = on_done or (lambda _selection: None)
+        self.analyse = analyse
+        self.min_size = max(4, int(min_size))
 
         frame, monitor = capture_screen(monitor_index)
         self.frame = frame
@@ -157,8 +162,10 @@ class RegionPicker:
 
         self._hint = self.canvas.create_text(
             frame.shape[1] // 2, 40,
-            text="Drag a box around the chart — candles and the price numbers, "
-                 "not the BUY/SELL buttons.   Esc to cancel.",
+            text=hint or (
+                "Drag a box around the chart — candles and the price numbers, "
+                "not the BUY/SELL buttons.   Esc to cancel."
+            ),
             fill="#e2e8f0", font=("TkDefaultFont", 13, "bold"),
         )
 
@@ -196,7 +203,7 @@ class RegionPicker:
         top, bottom = sorted((int(y0), int(y1)))
         width, height = right - left, bottom - top
 
-        if width < 50 or height < 50:
+        if width < self.min_size or height < self.min_size:
             self.canvas.itemconfigure(
                 self._hint, text="That box is too small — drag a larger area."
             )
@@ -204,7 +211,7 @@ class RegionPicker:
             return
 
         crop = self.frame[top:bottom, left:right]
-        extraction = analyse_region(crop, self.colors)
+        extraction = analyse_region(crop, self.colors) if self.analyse else None
 
         self._selection = RegionSelection(
             left=self.origin[0] + left,

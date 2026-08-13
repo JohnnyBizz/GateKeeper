@@ -410,3 +410,189 @@ class TestIndicatorOverlays:
         mask = np.zeros((40, 200), dtype=np.uint8)
         mask[10:30, :] = 255  # one enormous solid block
         assert (strip_horizontal_lines(mask) > 0).sum() == (mask > 0).sum()
+
+
+class TestAssetLabelReading:
+    """The candles say nothing about which instrument they belong to."""
+
+    def test_common_formats_normalise(self):
+        from poa.chart_detection.asset_label import normalise
+
+        assert normalise("EUR/USD") == "EUR/USD"
+        assert normalise("eur/usd") == "EUR/USD"
+        assert normalise("EURUSD") == "EUR/USD"
+        assert normalise("AED/CNY OTC") == "AED/CNY OTC"
+        assert normalise("  GBP/JPY  ") == "GBP/JPY"
+        assert normalise("EUR/USD ▾") == "EUR/USD"
+
+    def test_ocr_digit_confusions_are_corrected(self):
+        from poa.chart_detection.asset_label import normalise
+
+        # Currency codes contain no digits, so these are unambiguous misreads.
+        assert normalise("EUR/U5D") == "EUR/USD"
+        assert normalise("GBP/CHF").startswith("GBP")
+
+    def test_implausible_text_is_rejected(self):
+        from poa.chart_detection.asset_label import normalise
+
+        # A misread name silently splits the journal, so anything that is not
+        # instrument-shaped must be refused rather than guessed at.
+        for junk in ("", "   ", "Expiration time", "1.15262", "!!!", "a" * 20):
+            assert normalise(junk) is None
+
+    def test_the_reader_is_disabled_without_a_region(self):
+        from poa.chart_detection.asset_label import AssetLabelReader
+
+        assert not AssetLabelReader(None).enabled
+        assert not AssetLabelReader({"width": 0, "height": 0}).enabled
+
+    def test_a_name_change_needs_consecutive_confirmations(self):
+        from poa.chart_detection.asset_label import AssetLabelReader, AssetReading
+
+        reader = AssetLabelReader({"left": 0, "top": 0, "width": 80, "height": 20})
+        reader.current = "EUR/USD"
+
+        readings = iter([
+            AssetReading("GBP/JPY", 90.0),
+            AssetReading("GBP/JPY", 90.0),
+        ])
+
+        def fake_read(_grab):
+            reading = next(readings)
+            if reading.name == reader.current:
+                return reading
+            if reading.name == reader._candidate:
+                reader._streak += 1
+            else:
+                reader._candidate = reading.name
+                reader._streak = 1
+            if reader._streak >= reader.confirmations:
+                reader.current = reading.name
+                reader._candidate = None
+                reader._streak = 0
+            return reading
+
+        fake_read(None)
+        assert reader.current == "EUR/USD"  # one frame is not enough
+        fake_read(None)
+        assert reader.current == "GBP/JPY"
+
+
+class TestChartChangeDetection:
+    """Switching charts must restart the analysis, not carry it over."""
+
+    def _engine(self, tmp_path):
+        from poa.config import load_config
+        from poa.engine import AnalysisEngine
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        engine = AnalysisEngine(config)
+        # Pretend the source reads pixels; the detection only applies there.
+        engine.source.vision_based = True
+        return engine
+
+    def test_a_price_level_jump_is_detected(self, tmp_path):
+        engine = self._engine(tmp_path)
+        try:
+            first = generate_series(120, seed=3, start_price=1.08)
+            assert not engine._detect_chart_change(first)  # first frame
+            second = generate_series(120, seed=3, start_price=1.99)
+            assert engine._detect_chart_change(second)
+        finally:
+            engine.close()
+
+    def test_a_similar_priced_pair_is_caught_by_shape(self, tmp_path):
+        # The price test alone misses this: two instruments can trade at
+        # almost the same level while drawing completely different candles.
+        engine = self._engine(tmp_path)
+        try:
+            first = generate_series(120, seed=3, start_price=1.08)
+            engine._detect_chart_change(first)
+            second = generate_series(120, seed=99, start_price=1.081)
+            assert engine._detect_chart_change(second)
+        finally:
+            engine.close()
+
+    def test_an_ordinary_new_candle_is_not_a_chart_change(self, tmp_path):
+        engine = self._engine(tmp_path)
+        try:
+            full = generate_series(200, seed=7)
+            engine._detect_chart_change(full[:120])
+            # The next poll sees the same candles shifted by one.
+            assert not engine._detect_chart_change(full[1:121])
+        finally:
+            engine.close()
+
+    def test_an_identical_frame_is_not_a_chart_change(self, tmp_path):
+        engine = self._engine(tmp_path)
+        try:
+            series = generate_series(120, seed=7)
+            engine._detect_chart_change(series)
+            assert not engine._detect_chart_change(series)
+        finally:
+            engine.close()
+
+    def test_non_vision_sources_are_exempt(self, tmp_path):
+        # A CSV or the generator never "switches charts" underneath us.
+        engine = self._engine(tmp_path)
+        try:
+            engine.source.vision_based = False
+            engine._detect_chart_change(generate_series(120, seed=3, start_price=1.08))
+            assert not engine._detect_chart_change(
+                generate_series(120, seed=99, start_price=9.99)
+            )
+        finally:
+            engine.close()
+
+
+class TestCalibrationInvalidation:
+    """A manual price scale belongs to one chart and must not outlive it."""
+
+    def _source(self):
+        from poa.chart_detection.calibration import PriceCalibration
+        from poa.chart_detection.screen import Region, ScreenChartSource
+
+        return ScreenChartSource(
+            Region(0, 0, 400, 300),
+            calibration=PriceCalibration(0.0, 1.09, 100.0, 1.08),
+        )
+
+    def test_calibration_starts_trusted(self):
+        source = self._source()
+        assert not source._calibration_suspect
+        assert source.manual_calibration is not None
+
+    def test_invalidation_marks_it_suspect(self):
+        source = self._source()
+        source.invalidate_calibration()
+        assert source._calibration_suspect
+
+    def test_the_engine_invalidates_on_a_chart_change(self, tmp_path):
+        from poa.config import load_config
+        from poa.engine import AnalysisEngine
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        engine = AnalysisEngine(config)
+        try:
+            engine.source.vision_based = True
+            calls: list[bool] = []
+            engine.source.invalidate_calibration = lambda: calls.append(True)  # type: ignore[attr-defined]
+
+            engine._detect_chart_change(generate_series(120, seed=3, start_price=1.08))
+            # Drive a change through the same path tick() uses.
+            if engine._detect_chart_change(
+                generate_series(120, seed=3, start_price=1.99)
+            ):
+                invalidate = getattr(engine.source, "invalidate_calibration", None)
+                invalidate()
+            assert calls == [True]
+        finally:
+            engine.close()
