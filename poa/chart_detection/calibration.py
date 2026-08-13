@@ -161,6 +161,78 @@ def _consistent_format(
     return [read for read in reads if shape(read[1]) == dominant]
 
 
+def _price_labels_anywhere(image: np.ndarray) -> list[tuple[float, str, float]]:
+    """Every price-shaped number on the chart, with the row it sits on."""
+    reads: list[tuple[float, str, float]] = []
+    for box in find_text_boxes(image):
+        text, _confidence = ocr_crop(image, box, "0123456789.,")
+        price = _parse_price(text)
+        # A price carries decimals. Requiring them keeps out the clock on the
+        # time axis and the countdown beside the current-price chip, which are
+        # whole numbers and are not positioned at a price at all.
+        if price is None or "." not in text.replace(",", "."):
+            continue
+        reads.append((box[1] + box[3] / 2.0, text.strip().replace(",", "."), price))
+    return _consistent_format(reads)
+
+
+def _fit_by_consensus(
+    reads: list[tuple[float, str, float]]
+) -> tuple[float, float, np.ndarray, np.ndarray] | None:
+    """Fit the line that the most labels agree on, ignoring the rest.
+
+    Labels found across the whole chart are not all positioned at their own
+    price: a hovered candle's open/high/low/close readout sits in a corner
+    reading four prices that have nothing to do with the row it is printed on.
+    Fitting everything at once lets those bend the scale. Fitting each pair and
+    keeping whichever line the most other labels fall on ignores them instead.
+    """
+    if len(reads) < 2:
+        return None
+
+    points = sorted({(row, price) for row, _text, price in reads})
+    if len(points) < 2:
+        return None
+
+    best: tuple[int, float, float] | None = None
+    for i, (row_a, price_a) in enumerate(points):
+        for row_b, price_b in points[i + 1 :]:
+            if row_b == row_a or price_b == price_a:
+                continue
+            slope = (price_b - price_a) / (row_b - row_a)
+            if slope >= 0:  # price must fall as rows increase
+                continue
+            intercept = price_a - slope * row_a
+            span = abs(price_b - price_a)
+            tolerance = max(span * 0.02, 1e-9)
+            inliers = sum(
+                1
+                for row, price in points
+                if abs(price - (slope * row + intercept)) <= tolerance
+            )
+            if best is None or inliers > best[0]:
+                best = (inliers, slope, intercept)
+
+    if best is None or best[0] < 2:
+        return None
+
+    _count, slope, intercept = best
+    tolerance = None
+    kept = [
+        (row, price)
+        for row, price in points
+        if abs(price - (slope * row + intercept))
+        <= max(abs(slope) * 8.0, 1e-9)
+    ]
+    if len(kept) < 2:
+        return None
+
+    rows = np.array([k[0] for k in kept], dtype=np.float64)
+    prices = np.array([k[1] for k in kept], dtype=np.float64)
+    slope, intercept = np.polyfit(rows, prices, 1)
+    return float(slope), float(intercept), rows, prices
+
+
 def calibrate_with_ocr(
     image: np.ndarray, axis_width_px: int = 70
 ) -> PriceCalibration | None:
@@ -197,20 +269,38 @@ def calibrate_with_ocr(
         reads.append((box[1] + box[3] / 2.0, text.strip().replace(",", "."), price))
 
     reads = _consistent_format(reads)
-    samples = [(row, price) for row, _text, price in reads]
+    axis_only = len(reads) >= 2
 
-    if len(samples) < 2:
+    if not axis_only:
+        # Not every platform draws a price axis. Pocket Option's default layout
+        # has no column of prices at all — just a chip on the current price and
+        # one on each of the visible high and low. Those are prices at known
+        # rows, which is all a calibration needs, so when the axis turns up
+        # nothing the whole chart is searched instead.
+        reads = _price_labels_anywhere(image)
+
+    if len(reads) < 2:
         return None
 
-    samples.sort(key=lambda s: s[0])
-    rows = np.array([s[0] for s in samples], dtype=np.float64)
-    prices = np.array([s[1] for s in samples], dtype=np.float64)
+    if axis_only:
+        samples = sorted((row, price) for row, _text, price in reads)
+        rows = np.array([s[0] for s in samples], dtype=np.float64)
+        prices = np.array([s[1] for s in samples], dtype=np.float64)
+        # A price axis must be strictly decreasing in price as rows increase.
+        if not np.all(np.diff(prices) < 0):
+            return None
+        slope, intercept = np.polyfit(rows, prices, 1)
+        residual_limit = 0.05
+    else:
+        # Labels scattered over the chart include ones that are not positioned
+        # at their own price — a hovered candle's OHLC readout sits in a corner.
+        # Fit by consensus so those cannot drag the scale with them.
+        fitted = _fit_by_consensus(reads)
+        if fitted is None:
+            return None
+        slope, intercept, rows, prices = fitted
+        residual_limit = 0.08
 
-    # A price axis must be strictly decreasing in price as rows increase.
-    if not np.all(np.diff(prices) < 0):
-        return None
-
-    slope, intercept = np.polyfit(rows, prices, 1)
     if not np.isfinite(slope) or slope >= 0:
         return None
 
@@ -219,7 +309,7 @@ def calibrate_with_ocr(
     if spread <= 0:
         return None
     residual = float(np.max(np.abs(predicted - prices)) / spread)
-    if residual > 0.05:
+    if residual > residual_limit:
         # The labels do not sit on a straight line, so at least one was misread.
         return None
 

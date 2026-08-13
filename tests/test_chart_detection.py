@@ -1110,3 +1110,79 @@ class TestPackedCharts:
             )
             assert extraction.confidence >= 90
             assert len(extraction.candles) > 55
+
+
+class TestChartsWithNoPriceAxis:
+    """Not every platform draws a column of prices down the right-hand side.
+
+    Pocket Option's default layout has none at all — just a chip on the current
+    price and one each on the visible high and low. Looking only at a right-hand
+    axis found nothing there, so every price fell back to a relative number and
+    the panel showed something like 7.36842 for a chart trading near 0.95.
+    """
+
+    def _chart_with_chips(self, decoy=True, seed=5):
+        series = generate_series(120, seed=seed)
+        style = RenderStyle(candle_width=7, candle_gap=4, draw_axis=False)
+        image, mapping = render_series(series, height=700, style=style)
+        image = cv2.copyMakeBorder(
+            image, 0, 0, 0, 120, cv2.BORDER_CONSTANT, value=style.background
+        )
+
+        def row_for(price):
+            ratio = (mapping.top_price - price) / (
+                mapping.top_price - mapping.bottom_price
+            )
+            return int(round(mapping.top_row + ratio * (mapping.bottom_row - mapping.top_row)))
+
+        for price in (float(series.high.max()), float(series.low.min())):
+            row = row_for(price)
+            cv2.rectangle(
+                image,
+                (image.shape[1] - 118, row - 11),
+                (image.shape[1] - 4, row + 11),
+                (90, 70, 60),
+                -1,
+            )
+            cv2.putText(
+                image, f"{price:.5f}", (image.shape[1] - 114, row + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (235, 235, 235), 1, cv2.LINE_AA,
+            )
+
+        if decoy:
+            # The hovered candle's readout: real prices, printed in a corner at
+            # rows that have nothing to do with them.
+            for i, price in enumerate((series.open[-1], series.close[-1])):
+                cv2.putText(
+                    image, f"Open: {price:.5f}", (10, 620 + i * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (225, 225, 225), 1, cv2.LINE_AA,
+                )
+        return image, mapping
+
+    def test_two_price_chips_are_enough_to_calibrate(self):
+        image, mapping = self._chart_with_chips(decoy=False)
+        calibration = resolve_calibration(image, None, use_ocr=True)
+        assert calibration.method == "ocr"
+
+        middle = image.shape[0] / 2
+        assert calibration.price_at_row(middle) == pytest.approx(
+            mapping.price_at_row(middle), rel=1e-3
+        )
+
+    def test_a_corner_readout_does_not_bend_the_scale(self):
+        """Fitting every label at once lets the decoy drag the whole scale."""
+        image, mapping = self._chart_with_chips(decoy=True)
+        calibration = resolve_calibration(image, None, use_ocr=True)
+        assert calibration.method == "ocr"
+
+        middle = image.shape[0] / 2
+        assert calibration.price_at_row(middle) == pytest.approx(
+            mapping.price_at_row(middle), rel=1e-3
+        )
+
+    def test_a_chart_with_no_prices_anywhere_stays_uncalibrated(self):
+        """Inventing a scale is worse than admitting there is not one."""
+        series = generate_series(80, seed=3)
+        style = RenderStyle(candle_width=7, candle_gap=4, draw_axis=False)
+        image, _mapping = render_series(series, height=500, style=style)
+        assert resolve_calibration(image, None, use_ocr=True).method == "uncalibrated"
