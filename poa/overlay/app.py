@@ -87,10 +87,14 @@ class OverlayApp:
 
         self.vm.connected = state.running
         self.vm.last_error = state.last_error
-        self.vm.chart_timeframe = self.engine.chart_timeframe
         self.vm.trade_duration = self.engine.trade_duration
 
         meta = state.capture_meta or {}
+        # As with the asset: when the timeframe is being read from the screen
+        # the capture is the truth, and config is only the last typed value.
+        self.vm.chart_timeframe = (
+            meta.get("timeframe_seconds") or self.engine.chart_timeframe
+        )
         # The capture's asset wins: when the pair label is being read from the
         # screen it is the truth, and the config value is just the last name
         # the user typed.
@@ -165,53 +169,89 @@ class OverlayApp:
         self._refresh_session()
 
     def _pick_asset_label(self, prefix: str, done: Callable[[str], None]) -> None:
-        """Optionally point GateKeeper at the platform's pair-name label.
+        """Offer the two optional label boxes: the pair name, then the timeframe.
 
-        The candles say nothing about *which* instrument they belong to, so
-        without this the name has to be typed whenever the user switches
-        charts. It is offered rather than required: skipping it costs only the
-        automatic rename.
+        Neither can be inferred from candles — the pair is text, and a 1-minute
+        and a 5-minute chart draw identical-looking bars. Both are offered
+        rather than required; skipping costs only the automatic updates.
         """
+        self._pick_label(
+            key="capture.asset_region",
+            title="Read the pair name automatically?",
+            question=(
+                "GateKeeper can read the pair's name (e.g. EUR/USD) from the "
+                "screen, so it renames itself when you switch charts."
+            ),
+            hint="Drag a small box around the pair name only (e.g. EUR/USD).   Esc to skip.",
+            success="Pair name will be read from the screen.",
+            skipped="Pair name will need renaming by hand.",
+            prefix=prefix,
+            # Chain the timeframe step after this one, so the important chart
+            # area is already saved even if the user abandons the extras.
+            done=lambda message: self._pick_timeframe_label(message, done),
+        )
+
+    def _pick_timeframe_label(self, prefix: str, done: Callable[[str], None]) -> None:
+        self._pick_label(
+            key="capture.timeframe_region",
+            title="Read the chart timeframe automatically?",
+            question=(
+                "GateKeeper can also read the timeframe badge (M1, M5, H1...). "
+                "This one matters: every duration recommendation is measured in "
+                "candles of that length, so a 5-minute chart read as 1-minute "
+                "would suggest expirations five times too short."
+            ),
+            hint="Drag a small box around the timeframe badge only (e.g. M1).   Esc to skip.",
+            success="Timeframe will be read from the screen.",
+            skipped="Set the timeframe by hand in settings when you change it.",
+            prefix=prefix,
+            done=done,
+        )
+
+    def _pick_label(
+        self,
+        *,
+        key: str,
+        title: str,
+        question: str,
+        hint: str,
+        success: str,
+        skipped: str,
+        prefix: str,
+        done: Callable[[str], None],
+    ) -> None:
+        """Ask about, then select, one small OCR region."""
         from tkinter import messagebox
 
         from .region_picker import RegionPicker
 
-        wants = messagebox.askyesno(
-            "Read the pair name automatically?",
-            f"{prefix}\n\nGateKeeper can also read the pair's name (e.g. "
-            "EUR/USD) from the screen, so it renames itself when you switch "
-            "charts.\n\nSelect the small label now?",
-        )
-        if not wants:
-            done(prefix + " Pair name will need renaming by hand.")
+        if not messagebox.askyesno(title, f"{prefix}\n\n{question}\n\nSelect it now?"):
+            done(f"{prefix} {skipped}")
             return
 
-        def after_label(selection) -> None:
+        def after(selection) -> None:
             if selection is None:
-                done(prefix + " Pair-name box skipped.")
+                done(f"{prefix} Skipped.")
                 return
-            self.config.set("capture.asset_region", selection.region_dict())
+            self.config.set(key, selection.region_dict())
             try:
                 self.config.save()
             except OSError:  # pragma: no cover - filesystem dependent
                 pass
             self.engine._rebuild_source()
-            done(prefix + " Pair name will now be read from the screen.")
+            done(f"{prefix} {success}")
 
         try:
             RegionPicker(
                 self.panel.root,
                 monitor_index=int(self.config.get("capture.monitor", 1)),
-                on_done=after_label,
-                hint=(
-                    "Now drag a small box around the pair name only "
-                    "(e.g. EUR/USD).   Esc to skip."
-                ),
+                on_done=after,
+                hint=hint,
                 analyse=False,
                 min_size=10,
             )
         except Exception as exc:  # pragma: no cover - defensive
-            log.warning("asset label picker failed: %s", exc)
+            log.warning("label picker failed: %s", exc)
             done(prefix)
 
     def _set_stake(self, stake: float | None) -> None:

@@ -387,10 +387,20 @@ switch automatically:
 * **The price scale is re-derived.** A manual calibration describes one
   specific chart's axis; after a switch it is dropped and the scale is read
   from the new chart, because confident wrong prices are worse than none.
-* **The pair name updates**, if you pointed GateKeeper at the platform's pair
-  label during setup (it offers this straight after the chart area). Otherwise
-  type it in the PAIR field — the candles carry no name, so OCR is the only
-  way to read one.
+* **The pair name and the chart timeframe update**, if you pointed GateKeeper
+  at those two badges during setup (it offers both straight after the chart
+  area). Neither can be inferred from candles: the pair is text, and a
+  1-minute and a 5-minute chart draw identical-looking bars. The timeframe is
+  the one that really matters — every duration recommendation is measured in
+  candles of that length, so a 5-minute chart read as 1-minute would suggest
+  expirations five times too short. Skip them and set both by hand instead.
+
+Both label readers are deliberately cautious. A change must be read the same
+way on consecutive frames before it is accepted, so the panel does not flicker
+while the platform animates a transition; and a value that does not look like
+a real instrument or a timeframe the platform actually offers is rejected
+rather than guessed at — `M999` parses to a perfectly plausible 17 hours, and
+adopting it would quietly reshape every recommendation.
 
 Everything derived from those — analysis, tracker state, journal filing —
 restarts with them. Pressing **Scan** likewise starts from a clean slate.
@@ -563,7 +573,7 @@ settled signals, because a win rate over ten trades says close to nothing.
 ## 12. Tests
 
 ```bash
-pytest -q                    # 364 tests
+pytest -q                    # 372 tests
 pytest tests/test_signals.py -v
 ```
 
@@ -604,7 +614,7 @@ pocket-option-assistant/
 │   ├── dashboard/         index.html, app.js, styles.css
 │   ├── overlay/           always-on-top panel (view model + Tk renderer)
 │   ├── config.py  engine.py  server.py  models.py  risk.py  logging_setup.py
-├── tests/                 364 tests
+├── tests/                 372 tests
 ├── tools/                 select_region.py, make_sample_data.py, backtest.py
 ├── data/                  sample candle CSV
 ├── config.example.yaml    fully commented

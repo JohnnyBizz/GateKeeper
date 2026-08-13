@@ -81,6 +81,7 @@ def build_source(config: Config) -> ChartSource:
                 min_candles=min_candles,
                 save_screenshots=bool(config.get("capture.save_screenshots", True)),
                 asset_region=config.get("capture.asset_region"),
+                timeframe_region=config.get("capture.timeframe_region"),
             )
         except (ChartSourceError, ImportError) as exc:
             log.error("Screen source unavailable (%s); falling back to synthetic.", exc)

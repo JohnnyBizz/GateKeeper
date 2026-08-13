@@ -21,7 +21,7 @@ EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.yaml"
 
 # Timeframes the UI offers, in seconds.
 CHART_TIMEFRAMES: tuple[int, ...] = (
-    5, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 14400,
+    5, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 86400,
 )
 
 # Expirations Pocket Option style platforms commonly offer, in seconds.
@@ -46,6 +46,9 @@ DEFAULTS: dict[str, Any] = {
         # Optional small region over the platform's pair label. When set, the
         # asset name is read from the screen and follows chart switches.
         "asset_region": {"left": 0, "top": 0, "width": 0, "height": 0},
+        # Optional small region over the platform's timeframe badge (M1, M5,
+        # H1...). When set, the chart timeframe follows the platform.
+        "timeframe_region": {"left": 0, "top": 0, "width": 0, "height": 0},
         # Price calibration for the screen source. Two reference points read off
         # the chart's price axis let us convert pixel rows into prices without
         # relying on OCR. OCR is attempted first when enabled.

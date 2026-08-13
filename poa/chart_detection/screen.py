@@ -30,6 +30,7 @@ from ..models import Series
 from .base import Capture, ChartSource, ChartSourceError
 from .asset_label import AssetLabelReader
 from .calibration import PriceCalibration, resolve_calibration
+from .timeframe_label import TimeframeLabelReader
 from .candles import (
     CandleExtractionError,
     ColorProfile,
@@ -105,6 +106,7 @@ class ScreenChartSource(ChartSource):
         min_candles: int = 60,
         save_screenshots: bool = True,
         asset_region: dict[str, int] | None = None,
+        timeframe_region: dict[str, int] | None = None,
     ) -> None:
         if mss is None:
             raise ChartSourceError(
@@ -140,9 +142,12 @@ class ScreenChartSource(ChartSource):
         # confident, precisely wrong prices — worse than reporting none. The
         # engine calls invalidate_calibration() when it detects a switch.
         self._calibration_suspect = False
-        # Optional: a small region over the platform's pair label, so the
-        # asset name follows the user when they switch charts.
+        # Optional: small regions over the platform's pair and timeframe
+        # badges, so both follow the user when they switch charts. Neither can
+        # be inferred from candles — a 1-minute and a 5-minute chart draw
+        # identical-looking bars, and prices carry no instrument name.
         self.asset_reader = AssetLabelReader(asset_region)
+        self.timeframe_reader = TimeframeLabelReader(timeframe_region)
 
     # ------------------------------------------------------------------
 
@@ -232,6 +237,21 @@ class ScreenChartSource(ChartSource):
             asset_reading = self.asset_reader.read(self._grab_region)
         symbol = self.asset_reader.current or self.symbol
 
+        # Reading the timeframe changes what the candles *mean*: every duration
+        # recommendation is expressed in candles of this length, so a chart read
+        # as M1 when it is really M5 would recommend expirations five times too
+        # short. Adopt it for real rather than only reporting it.
+        timeframe_reading = None
+        if self.timeframe_reader.enabled:
+            timeframe_reading = self.timeframe_reader.read(self._grab_region)
+            detected = self.timeframe_reader.current
+            if detected and detected != self.timeframe_seconds:
+                log.info(
+                    "chart timeframe detected as %ss (was %ss)",
+                    detected, self.timeframe_seconds,
+                )
+                self.timeframe_seconds = int(detected)
+
         series = pixel_candles_to_series(
             extraction.candles,
             calibration.price_at_row,
@@ -276,6 +296,9 @@ class ScreenChartSource(ChartSource):
                 "calibration": calibration.to_dict(),
                 "region": self.region.to_dict(),
                 "asset_label": asset_reading.to_dict() if asset_reading else None,
+                "timeframe_label": (
+                    timeframe_reading.to_dict() if timeframe_reading else None
+                ),
             },
         )
 

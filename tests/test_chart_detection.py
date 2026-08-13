@@ -447,35 +447,92 @@ class TestAssetLabelReading:
         assert not AssetLabelReader({"width": 0, "height": 0}).enabled
 
     def test_a_name_change_needs_consecutive_confirmations(self):
-        from poa.chart_detection.asset_label import AssetLabelReader, AssetReading
+        # A single frame can be misread while the platform animates a
+        # transition; a label that flickers between two names is worse than
+        # one that lags by a second.
+        from poa.chart_detection.asset_label import AssetLabelReader
 
         reader = AssetLabelReader({"left": 0, "top": 0, "width": 80, "height": 20})
         reader.current = "EUR/USD"
 
-        readings = iter([
-            AssetReading("GBP/JPY", 90.0),
-            AssetReading("GBP/JPY", 90.0),
-        ])
-
-        def fake_read(_grab):
-            reading = next(readings)
-            if reading.name == reader.current:
-                return reading
-            if reading.name == reader._candidate:
-                reader._streak += 1
-            else:
-                reader._candidate = reading.name
-                reader._streak = 1
-            if reader._streak >= reader.confirmations:
-                reader.current = reading.name
-                reader._candidate = None
-                reader._streak = 0
-            return reading
-
-        fake_read(None)
+        reader._accept("GBP/JPY")
         assert reader.current == "EUR/USD"  # one frame is not enough
-        fake_read(None)
+        reader._accept("GBP/JPY")
         assert reader.current == "GBP/JPY"
+
+    def test_a_flickering_read_never_takes_hold(self):
+        from poa.chart_detection.asset_label import AssetLabelReader
+
+        reader = AssetLabelReader({"left": 0, "top": 0, "width": 80, "height": 20})
+        reader.current = "EUR/USD"
+        for name in ("GBP/JPY", "AUD/CAD", "GBP/JPY", "USD/CHF"):
+            reader._accept(name)
+        assert reader.current == "EUR/USD"
+
+    def test_reading_the_same_name_is_a_no_op(self):
+        from poa.chart_detection.asset_label import AssetLabelReader
+
+        reader = AssetLabelReader({"left": 0, "top": 0, "width": 80, "height": 20})
+        reader.current = "EUR/USD"
+        reader._accept("EUR/USD")
+        assert reader.current == "EUR/USD"
+        assert reader._streak == 0
+
+
+class TestTimeframeLabelReading:
+    """A 1-minute and a 5-minute chart draw identical-looking candles."""
+
+    def test_platform_formats_parse(self):
+        from poa.chart_detection.timeframe_label import parse_timeframe
+
+        assert parse_timeframe("M1") == 60
+        assert parse_timeframe("M5") == 300
+        assert parse_timeframe("H1") == 3600
+        assert parse_timeframe("H2") == 7200
+        assert parse_timeframe("S30") == 30
+        assert parse_timeframe("5m") == 300
+        assert parse_timeframe("15min") == 900
+        assert parse_timeframe("1 MIN") == 60
+        assert parse_timeframe("D1") == 86400
+
+    def test_non_timeframes_are_rejected(self):
+        from poa.chart_detection.timeframe_label import parse_timeframe
+
+        for junk in ("", "   ", "EUR/USD", "1.15262", "xyz", "BUY", "!!"):
+            assert parse_timeframe(junk) is None
+
+    def test_a_plausible_looking_misread_is_rejected(self):
+        # "M999" parses to just under 17 hours — perfectly valid as a number,
+        # and nothing any platform offers. Adopting it would silently reshape
+        # every duration recommendation.
+        from poa.chart_detection.timeframe_label import TimeframeLabelReader
+
+        reader = TimeframeLabelReader({"left": 0, "top": 0, "width": 40, "height": 20})
+        assert reader.parse("M999") is None
+        assert reader.parse("M7") is None
+        assert reader.parse("M1") == 60
+
+    def test_a_near_miss_snaps_to_the_real_timeframe(self):
+        from poa.chart_detection.timeframe_label import snap_to_known
+
+        assert snap_to_known(66) == 60
+        assert snap_to_known(305) == 300
+        assert snap_to_known(59940) is None
+
+    def test_a_timeframe_change_needs_confirmation_too(self):
+        from poa.chart_detection.timeframe_label import TimeframeLabelReader
+
+        reader = TimeframeLabelReader({"left": 0, "top": 0, "width": 40, "height": 20})
+        reader.current = 60
+        reader._accept(300)
+        assert reader.current == 60
+        reader._accept(300)
+        assert reader.current == 300
+
+    def test_the_reader_is_disabled_without_a_region(self):
+        from poa.chart_detection.timeframe_label import TimeframeLabelReader
+
+        assert not TimeframeLabelReader(None).enabled
 
 
 class TestChartChangeDetection:
