@@ -83,6 +83,8 @@ class OverlayApp:
         self._scan_results: queue.Queue[Any] = queue.Queue()
         self._scan_busy = False
         self._scan_done: Callable[[str], None] | None = None
+        # Guards the move-and-rescan from looping when there is nowhere clear.
+        self._moved_for_scan = False
 
     # -- engine plumbing ----------------------------------------------------
 
@@ -184,6 +186,7 @@ class OverlayApp:
         self.vm.scan.begin()
         self._pending_signal = None
         self.vm.last_error = None
+        self._moved_for_scan = False
         self.engine.tracker.reset()
 
         relocate = self._should_relocate()
@@ -224,6 +227,24 @@ class OverlayApp:
         self._scan_busy = False
         self._last_layout = result.layout
         notify, self._scan_done = self._scan_done, None
+
+        # The panel was covering the chart it just found. Telling the user to
+        # move it is a chore we can do ourselves — it is our window, and we now
+        # know exactly where the chart is. One retry only: if the second scan
+        # still finds the panel in the way, the screen has no room and the
+        # message stands.
+        if result.layout.overlapped_by_app and not self._moved_for_scan:
+            self._moved_for_scan = True
+            if self._move_panel_clear_of(result.layout.chart):
+                log.info("moved the panel off the chart; scanning again")
+                self._scan_done = notify
+                self._scan_busy = True
+                threading.Thread(
+                    target=self._locate_worker,
+                    args=(self._own_windows(),),
+                    daemon=True,
+                ).start()
+                return
         if result.applied:
             log.info("auto-scan: %s", result.message)
             try:
@@ -321,6 +342,52 @@ class OverlayApp:
         threading.Thread(
             target=self._locate_worker, args=(exclude,), daemon=True
         ).start()
+
+    def _move_panel_clear_of(self, chart: Any) -> bool:
+        """Shift the panel so it stops covering ``chart``. True if it moved.
+
+        Prefers the widest empty strip beside the chart, and settles for the
+        screen corner furthest from it when the chart fills the display.
+        """
+        if self.panel is None or chart is None:
+            return False
+        try:
+            root = self.panel.root
+            root.update_idletasks()
+            screen_w = int(root.winfo_screenwidth())
+            screen_h = int(root.winfo_screenheight())
+            width = int(root.winfo_width())
+            height = int(root.winfo_height())
+        except Exception:  # pragma: no cover - window not realised
+            return False
+
+        margin = 8
+        # Room to the left, right, above and below the chart.
+        candidates = [
+            (chart.left - width - margin, margin),
+            (chart.left + chart.width + margin, margin),
+            (margin, chart.top - height - margin),
+            (margin, chart.top + chart.height + margin),
+        ]
+        for x, y in candidates:
+            if 0 <= x <= screen_w - width and 0 <= y <= screen_h - height:
+                return self._place_panel(x, y)
+
+        # Nowhere clear: the bottom-right corner is at least out of the way of
+        # the price axis, which is the part whose loss breaks calibration.
+        return self._place_panel(
+            max(0, screen_w - width - margin), max(0, screen_h - height - margin)
+        )
+
+    def _place_panel(self, x: int, y: int) -> bool:
+        try:
+            self.panel.root.geometry(f"+{int(x)}+{int(y)}")
+            self.panel.root.update_idletasks()
+        except Exception:  # pragma: no cover - defensive
+            return False
+        self.config.set("overlay.x", int(x))
+        self.config.set("overlay.y", int(y))
+        return True
 
     def _own_windows(self) -> list[Any]:
         """GateKeeper's own windows, so the detector never analyses itself.

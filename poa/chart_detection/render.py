@@ -153,6 +153,9 @@ class ScreenStyle:
     # Some platforms only show the interval inside the plot, beside the
     # countdown to the next candle.
     inside_timeframe: bool = False
+    # A bare interval-looking badge elsewhere on screen. On Pocket Option
+    # this is the visible-range selector, not the candle interval.
+    range_badge: str = ""
 
 
 def render_platform_screen(
@@ -243,6 +246,13 @@ def render_platform_screen(
     (asset_w, asset_h), _ = cv2.getTextSize(
         style.asset_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
     )
+
+    if style.range_badge:
+        # Bottom-left corner, where the range selector sits.
+        cv2.putText(
+            image, style.range_badge, (plot_left + 4, style.height - 12),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, style.text, 2, cv2.LINE_AA,
+        )
 
     if style.inside_timeframe:
         # Beside the countdown to the next candle, inside the plot.

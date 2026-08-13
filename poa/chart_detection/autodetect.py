@@ -166,6 +166,8 @@ class Layout:
     pitch: float = 0.0
     confidence: float = 0.0
     issues: list[str] = field(default_factory=list)
+    # The app's own window is covering the chart it just found.
+    overlapped_by_app: bool = False
 
     @property
     def ok(self) -> bool:
@@ -618,19 +620,32 @@ def _asset_in(words: list[dict[str, Any]]) -> tuple[Box, str] | None:
     return best[1], best[2]
 
 
+# How strongly a badge drawn with a countdown beside it beats a bare one.
+# Large enough that no distance can overturn it, because the two mean
+# different things rather than being two readings of the same thing.
+CLOCKED_BADGE_BONUS = 100_000.0
+
+
 def _timeframe_in(
     crop: np.ndarray, words: list[dict[str, Any]], toward: tuple[float, float]
-) -> tuple[Box, int] | None:
-    """The best timeframe badge among one strip's words, if there is one.
+) -> tuple[float, Box, int] | None:
+    """The best timeframe badge among one strip's words, scored.
 
-    Ties are broken by distance to the chart, because short tokens like "M1"
-    and "H3" also occur inside unrelated text, and the badge is the one drawn
-    beside the plot.
+    Returns (score, box, seconds); higher scores win across strips.
+
+    Two things on a trading screen parse as an interval and mean different
+    things. The candle interval is drawn with the countdown to the next candle
+    beside it — "M1 00:59" — while a bare "H3" in the corner is how much
+    history is on screen. Reading the second as the first turns a 1-minute
+    chart into a 3-hour one and multiplies every duration suggestion by 180.
+    So a badge that comes with a clock wins outright, and distance to the chart
+    only settles ties between badges of the same kind.
     """
     best: tuple[float, Box, int] | None = None
     retries = 0
     for word in words:
         seconds = _as_timeframe(word["text"])
+        clocked = seconds is not None and any(ch.isdigit() for ch in word["text"][2:])
         if seconds is None and word["box"].width <= 140 and retries < MAX_BADGE_RETRIES:
             # Badge-sized text is where the general alphabet hurts: "M1" comes
             # back as "MI", "H3" as "H8". One retry against digits and unit
@@ -643,6 +658,7 @@ def _timeframe_in(
                 "SMHDsmhd0123456789: ",
             )
             seconds = _as_timeframe(retry)
+            clocked = seconds is not None and any(ch.isdigit() for ch in retry[2:])
         if seconds is None:
             continue
         box = word["box"]
@@ -652,11 +668,10 @@ def _timeframe_in(
                 box.top + box.height / 2.0 - toward[1],
             )
         )
-        if best is None or distance < best[0]:
-            best = (distance, box, seconds)
-    if best is None:
-        return None
-    return best[1], best[2]
+        score = (CLOCKED_BADGE_BONUS if clocked else 0.0) - distance
+        if best is None or score > best[0]:
+            best = (score, box, seconds)
+    return best
 
 
 def _as_timeframe(text: str) -> int | None:
@@ -681,14 +696,19 @@ def _read_labels(
     """Find the pair name and the timeframe badge in one pass over the screen.
 
     One pass, not two. Each strip is OCR'd once and both labels are looked for
-    in the same words, and the search stops as soon as both are found. OCR is a
-    subprocess per word, so reading the same strips twice was the difference
-    between a scan the user waits through and one they think has hung.
+    in the same words. OCR is a subprocess per word, so reading the same strips
+    twice was the difference between a scan the user waits through and one they
+    think has hung.
+
+    The pair stops the search as soon as it is found — there is only one on
+    screen. The timeframe does not: several things parse as an interval, and
+    the right one is the one drawn with a countdown, which may sit in a strip
+    searched later than one holding a bare badge. Only a clocked badge ends the
+    search early.
     """
     asset_box: Box | None = None
     asset_name: str | None = None
-    timeframe_box: Box | None = None
-    timeframe_seconds: int | None = None
+    best_timeframe: tuple[float, Box, int] | None = None
     toward = (chart.left + chart.width / 2.0, chart.top + chart.height / 2.0)
 
     for strip in _search_strips(image, chart):
@@ -703,16 +723,23 @@ def _read_labels(
                 asset_box = _pad(found[0]).offset(strip.left, strip.top)
                 asset_name = found[1]
 
-        if timeframe_seconds is None:
-            local = (toward[0] - strip.left, toward[1] - strip.top)
-            found_tf = _timeframe_in(crop, words, local)
-            if found_tf is not None:
-                timeframe_box = _pad(found_tf[0]).offset(strip.left, strip.top)
-                timeframe_seconds = found_tf[1]
+        local = (toward[0] - strip.left, toward[1] - strip.top)
+        found_tf = _timeframe_in(crop, words, local)
+        if found_tf is not None:
+            score, box, seconds = found_tf
+            if best_timeframe is None or score > best_timeframe[0]:
+                best_timeframe = (
+                    score,
+                    _pad(box).offset(strip.left, strip.top),
+                    seconds,
+                )
 
-        if asset_name is not None and timeframe_seconds is not None:
+        settled = best_timeframe is not None and best_timeframe[0] > 0
+        if asset_name is not None and settled:
             break
 
+    timeframe_box = best_timeframe[1] if best_timeframe else None
+    timeframe_seconds = best_timeframe[2] if best_timeframe else None
     height, width = image.shape[:2]
     return (
         asset_box.clip(width, height) if asset_box else None,
@@ -761,6 +788,22 @@ def detect_layout(
         field.left, field.top, field.width + axis_width, field.height
     ).clip(width, height)
     layout.chart = chart
+
+    # GateKeeper's own window is kept out of the candle search, but that is not
+    # the same as keeping it off the chart. Sitting on top of the plot it hides
+    # candles and, worse, the price labels behind it — and an axis with only
+    # one label left readable cannot be calibrated at all, so every price on
+    # screen silently becomes a relative number.
+    for box in exclude:
+        covered = chart.overlap(box)
+        if covered > chart.area * 0.02:
+            layout.overlapped_by_app = True
+            layout.issues.append(
+                "The GateKeeper panel is sitting on top of the chart, hiding "
+                f"{covered / max(chart.area, 1) * 100:.0f}% of it including part "
+                "of the price axis. Drag the panel off the chart and scan again."
+            )
+            break
 
     if read_labels and not ocr_available():
         # One clear cause beats three vague symptoms. Without OCR the pair, the

@@ -834,3 +834,97 @@ class TestFindChartDoesNotBlock:
             assert reported == ["Already looking for the chart…"]
         finally:
             app.shutdown()
+
+
+class TestThePanelMovesItselfOffTheChart:
+    """Our window covering the chart is our problem to solve, not the user's."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("capture.source_chosen", True)
+        return OverlayApp(config)
+
+    def _overlapped(self, chart):
+        from poa.chart_detection.autodetect import Layout
+        from poa.overlay.autoscan import AutoScanResult
+
+        layout = Layout(chart=chart, candles_found=80, overlapped_by_app=True)
+        return AutoScanResult(layout=layout, applied=False, message="covered")
+
+    def test_a_covered_chart_triggers_a_move_and_one_rescan(
+        self, tmp_path, monkeypatch
+    ):
+        from poa.chart_detection.autodetect import Box
+
+        app = self._app(tmp_path)
+        try:
+            moved: list[Any] = []
+            rescans: list[Any] = []
+            monkeypatch.setattr(
+                app, "_move_panel_clear_of", lambda chart: (moved.append(chart), True)[1]
+            )
+            monkeypatch.setattr(app, "_own_windows", lambda: [])
+            monkeypatch.setattr(
+                app, "_locate_worker", lambda exclude: rescans.append(exclude)
+            )
+
+            chart = Box(100, 100, 800, 500)
+            app._scan_results.put(self._overlapped(chart))
+            app._collect_scan_result()
+
+            assert moved == [chart]
+            assert len(rescans) == 1
+            assert app._scan_busy  # waiting on the second search
+        finally:
+            app.shutdown()
+
+    def test_it_does_not_loop_when_there_is_nowhere_clear(self, tmp_path, monkeypatch):
+        from poa.chart_detection.autodetect import Box
+
+        app = self._app(tmp_path)
+        try:
+            rescans: list[Any] = []
+            monkeypatch.setattr(app, "_move_panel_clear_of", lambda chart: True)
+            monkeypatch.setattr(app, "_own_windows", lambda: [])
+            monkeypatch.setattr(
+                app, "_locate_worker", lambda exclude: rescans.append(exclude)
+            )
+
+            chart = Box(100, 100, 800, 500)
+            app._scan_results.put(self._overlapped(chart))
+            app._collect_scan_result()
+            # The second search comes back still covered.
+            app._scan_results.put(self._overlapped(chart))
+            app._collect_scan_result()
+
+            assert len(rescans) == 1  # not two, not forever
+            assert not app._scan_busy
+        finally:
+            app.shutdown()
+
+    def test_a_chart_that_is_not_covered_changes_nothing(self, tmp_path, monkeypatch):
+        from poa.chart_detection.autodetect import Box, Layout
+        from poa.overlay.autoscan import AutoScanResult
+
+        app = self._app(tmp_path)
+        try:
+            moved: list[Any] = []
+            monkeypatch.setattr(
+                app, "_move_panel_clear_of", lambda chart: (moved.append(chart), True)[1]
+            )
+            layout = Layout(chart=Box(0, 0, 10, 10), candles_found=80)
+            app._scan_results.put(
+                AutoScanResult(layout=layout, applied=False, message="fine")
+            )
+            app._collect_scan_result()
+            assert moved == []
+        finally:
+            app.shutdown()

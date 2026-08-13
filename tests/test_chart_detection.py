@@ -985,3 +985,50 @@ class TestTimeframeBadgeVariants:
 
         assert parse_timeframe("00:18") is None
         assert parse_timeframe("09:45:42") is None
+
+
+class TestTheRangeSelectorIsNotTheInterval:
+    """Two things on screen parse as an interval and mean different things."""
+
+    def test_a_clocked_badge_beats_a_bare_one(self):
+        """"M1 00:59" is the candle interval; a corner "H3" is the view range.
+
+        Reading the second as the first turns a 1-minute chart into a 3-hour
+        one and multiplies every duration suggestion by 180.
+        """
+        _series, image, _truth = platform_screen(
+            asset_label="AED/CNY OTC",
+            timeframe_label="M1",
+            inside_timeframe=True,
+            range_badge="H3",
+        )
+        layout = detect_layout(image)
+        assert layout.asset_name == "AED/CNY OTC"
+        assert layout.timeframe_seconds == 60
+
+    def test_a_bare_badge_is_still_used_when_it_is_all_there_is(self):
+        _series, image, _truth = platform_screen(timeframe_label="M5")
+        assert detect_layout(image).timeframe_seconds == 300
+
+
+class TestTheAppDoesNotSitOnTheChart:
+    def test_covering_the_chart_is_reported(self):
+        _series, image, truth = platform_screen()
+        plot_left, plot_top, plot_right, plot_bottom = truth["chart"]
+        # A panel over the right third of the plot — where the axis lives.
+        panel = Box(
+            plot_left + (plot_right - plot_left) * 2 // 3,
+            plot_top,
+            (plot_right - plot_left) // 3,
+            (plot_bottom - plot_top) // 2,
+        )
+        layout = detect_layout(image, exclude=[panel], read_labels=False)
+        assert layout.overlapped_by_app
+        assert any("sitting on top of the chart" in i for i in layout.issues)
+
+    def test_a_panel_beside_the_chart_is_not_reported(self):
+        _series, image, _truth = platform_screen()
+        beside = Box(0, 0, 60, 200)
+        layout = detect_layout(image, exclude=[beside], read_labels=False)
+        assert not layout.overlapped_by_app
+        assert not any("sitting on top" in i for i in layout.issues)
