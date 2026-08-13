@@ -148,6 +148,11 @@ class OverlayViewModel:
     connected: bool = False
     last_error: str | None = None
     data_confidence: float | None = None
+    # Which feed the candles came from. Shown in the header, because a panel
+    # reading LIVE over invented data is the most misleading thing this app
+    # could do — every score and every pattern below it would be about a market
+    # that does not exist.
+    source: str = "screen"
 
     # ------------------------------------------------------------------
 
@@ -254,6 +259,12 @@ class OverlayViewModel:
             return "ERROR"
         if not self.connected:
             return "OFFLINE"
+        # Ahead of the data-confidence check: a perfect read of the demo feed
+        # is still the demo feed, and "LOW DATA" would understate that.
+        if self.source == "synthetic":
+            return "DEMO DATA"
+        if self.source == "csv":
+            return "REPLAY"
         if self.data_confidence is not None and self.data_confidence < 70:
             return f"LOW DATA {self.data_confidence:.0f}%"
         return "LIVE"
@@ -261,6 +272,8 @@ class OverlayViewModel:
     def _status_color(self) -> str:
         if self.last_error or not self.connected:
             return COLORS["put"]
+        if self.source != "screen":
+            return COLORS["wait"]
         if self.data_confidence is not None and self.data_confidence < 70:
             return COLORS["wait"]
         return COLORS["call"]
@@ -278,6 +291,12 @@ class OverlayViewModel:
         if self.scan.scanning or self.signal is None:
             return []
         warnings = list(self.signal.warnings)
+        if self.source == "synthetic":
+            warnings.insert(
+                0,
+                "This is demo data, not your chart. Press Scan to find the "
+                "chart on your screen.",
+            )
         if self.signal.state is SignalState.WEAKENING:
             warnings.insert(0, "Setup is weakening — confidence has fallen since entry.")
         elif self.signal.state is SignalState.INVALIDATED:

@@ -93,7 +93,13 @@ DEFAULTS: dict[str, Any] = {
     },
     "capture": {
         # "synthetic" | "csv" | "screen"
+        #
+        # Demo data by default so a first run has something to show before any
+        # setup. Scan replaces it with the real chart the moment it finds one —
+        # unless source_chosen says the user picked this deliberately, in which
+        # case it is left alone.
         "source": "synthetic",
+        "source_chosen": False,
         "poll_seconds": 2.0,
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},

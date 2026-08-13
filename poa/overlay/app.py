@@ -63,6 +63,7 @@ class OverlayApp:
             asset=self.engine.asset,
             chart_timeframe=self.engine.chart_timeframe,
             trade_duration=self.engine.trade_duration,
+            source=str(self.config.get("capture.source", "screen")),
         )
         self.vm.scan.duration = float(self.config.get("overlay.scan_seconds", 2.4))
 
@@ -232,6 +233,7 @@ class OverlayApp:
             self.vm.signal = None
             self.vm.asset = self.engine.asset
             self.vm.chart_timeframe = self.engine.chart_timeframe
+            self.vm.source = str(self.config.get("capture.source", "screen"))
             self._refresh_session()
         else:
             self.vm.last_error = result.message
@@ -250,19 +252,30 @@ class OverlayApp:
     def _should_relocate(self) -> bool:
         """Whether Scan should go looking for the chart before analysing.
 
-        Only for the screen source. Three reasons to go looking:
+        Reasons to go looking:
 
-        * there is no chart region at all;
+        * the app is not reading the screen at all. It ships pointed at demo
+          data so a first run has something to show, and that default used to
+          be a dead end — Scan would only search when the source was already
+          ``screen``, so the one button that is supposed to set everything up
+          refused to until the user had already set it up. Pressing Scan means
+          "read the chart in front of me";
+        * there is no chart region;
         * the region there is cannot read the chart;
         * the region works, but the pair and timeframe badges were never
           located — which is its own bug to have missed. A chart region can
           read candles perfectly and still leave the pair frozen on whatever
           was typed last, because the name is text somewhere else on screen.
           Waiting for the *candles* to fail would never fix that.
+
+        The one thing that stops it is the user having *chosen* a source. Demo
+        data and CSV replay are deliberate choices, and Scan does not overrule
+        them — it only fills in a default nobody picked.
         """
-        if str(self.config.get("capture.source", "screen")) != "screen":
-            return False
         from ..chart_detection.autodetect import Box, ocr_available
+
+        if str(self.config.get("capture.source", "screen")) != "screen":
+            return not bool(self.config.get("capture.source_chosen", False))
 
         if Box.from_dict(self.config.get("capture.region")) is None:
             return True
@@ -480,6 +493,10 @@ class OverlayApp:
             self.vm.balance = balance
         if source is not None and source != self.config.get("capture.source"):
             self.config.set("capture.source", source)
+            # Picking one here is a decision, and Scan stops second-guessing it.
+            # Without this flag it could not tell "the user wants demo data"
+            # from "nobody has set this up yet".
+            self.config.set("capture.source_chosen", True)
             # A different source means different candles entirely.
             self.engine._rebuild_source()
             self.vm.signal = None
@@ -490,6 +507,7 @@ class OverlayApp:
         self.vm.asset = self.engine.asset
         self.vm.chart_timeframe = self.engine.chart_timeframe
         self.vm.trade_duration = self.engine.trade_duration
+        self.vm.source = str(self.config.get("capture.source", "screen"))
 
         try:
             saved = self.config.save()
@@ -615,6 +633,13 @@ class OverlayApp:
         self._apply_state()
         self.panel.refresh()
         self.panel.root.after(TICK_MS, self._tick)
+
+        # Go and find the chart without being asked. Opening the app and being
+        # shown demo data until you discover which button fixes it is not a
+        # setup step, it is a dead end — and the panel would be scoring a
+        # market that does not exist the whole time.
+        if self._should_relocate():
+            self.panel.root.after(400, self._begin_scan)
 
         try:
             self.panel.run()

@@ -193,6 +193,30 @@ class TestViewModel:
         assert "LOW DATA" in header["status"]
         assert header["status_color"] == COLORS["wait"]
 
+    def test_demo_data_is_never_labelled_live(self):
+        """Every score under a LIVE badge would be about an invented market."""
+        signal = make_signal(pullback_trend(400, direction=1))
+        vm = self._vm(signal)
+        vm.source = "synthetic"
+        vm.data_confidence = 99.0
+        payload = vm.render()
+        assert payload["header"]["status"] == "DEMO DATA"
+        assert payload["header"]["status_color"] == COLORS["wait"]
+        assert any("demo data" in w.lower() for w in payload["warnings"])
+
+    def test_a_replay_says_so_too(self):
+        vm = self._vm(make_signal(pullback_trend(400, direction=1)))
+        vm.source = "csv"
+        assert vm.render()["header"]["status"] == "REPLAY"
+
+    def test_the_screen_source_reads_live(self):
+        vm = self._vm(make_signal(pullback_trend(400, direction=1)))
+        vm.source = "screen"
+        vm.data_confidence = 92.0
+        payload = vm.render()
+        assert payload["header"]["status"] == "LIVE"
+        assert not any("demo" in w.lower() for w in payload["warnings"])
+
     def test_disconnected_shows_offline(self):
         vm = self._vm(None)
         vm.connected = False
@@ -252,6 +276,9 @@ class TestOverlayAppLogic:
         config.set("logging.file", str(tmp_path / "p.log"))
         config.set("alerts.desktop_notifications", False)
         config.set("capture.source", "synthetic")
+        # Deliberately on demo data, so Scan analyses it instead of going off
+        # to look for a real chart.
+        config.set("capture.source_chosen", True)
         return OverlayApp(config)
 
     def test_a_manual_scan_runs_the_engine_and_holds_the_result(self, tmp_path):
@@ -572,9 +599,25 @@ class TestScanDecidesWhenToRelocate:
             config.set(key, value)
         return OverlayApp(config)
 
-    def test_a_non_screen_source_is_never_relocated(self, tmp_path):
+    def test_the_demo_default_is_not_a_dead_end(self, tmp_path):
+        """Shipping pointed at demo data must not mean staying there.
+
+        Scan used to refuse to search unless the source was already "screen",
+        so the one button that sets everything up would not run until
+        everything was already set up.
+        """
         app = self._app(tmp_path)
         try:
+            assert app.config.get("capture.source") == "synthetic"
+            assert app._should_relocate()
+        finally:
+            app.shutdown()
+
+    def test_a_source_the_user_picked_is_left_alone(self, tmp_path):
+        """Demo and CSV replay are deliberate choices, not defaults to fix."""
+        app = self._app(tmp_path)
+        try:
+            app.config.set("capture.source_chosen", True)
             assert not app._should_relocate()
         finally:
             app.shutdown()
