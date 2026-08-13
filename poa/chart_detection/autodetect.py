@@ -883,7 +883,7 @@ def _as_timeframe(text: str) -> int | None:
 
 
 def _read_labels(
-    image: np.ndarray, chart: Box
+    image: np.ndarray, chart: Box, exclude: Iterable[Box] = ()
 ) -> tuple[Box | None, str | None, Box | None, int | None]:
     """Find the pair name and the timeframe badge in one pass over the screen.
 
@@ -903,9 +903,24 @@ def _read_labels(
     best_timeframe: tuple[float, Box, int] | None = None
     toward = (chart.left + chart.width / 2.0, chart.top + chart.height / 2.0)
 
+    blocked = [box for box in exclude]
     for strip in _search_strips(image, chart):
         crop = image[strip.top : strip.bottom, strip.left : strip.right]
         words = _ocr_words(crop, _LABEL_WHITELIST)
+        # Anything inside GateKeeper's own window is GateKeeper's own text. Its
+        # panel carries a PAIR tile and a TIME tile, so reading them back is a
+        # loop: the app reports whatever it last decided, then reads that as
+        # evidence and keeps it. Its window was already kept out of the candle
+        # search; it has to be kept out of the label search for the same reason.
+        if blocked:
+            words = [
+                word
+                for word in words
+                if not any(
+                    word["box"].offset(strip.left, strip.top).overlap(box) > 0
+                    for box in blocked
+                )
+            ]
         if not words:
             continue
 
@@ -986,14 +1001,23 @@ def detect_layout(
     # candles and, worse, the price labels behind it — and an axis with only
     # one label left readable cannot be calibrated at all, so every price on
     # screen silently becomes a relative number.
+    # The axis matters even when the candles themselves are clear of the panel.
+    # A window parked down the right-hand edge covers the price labels without
+    # touching a single candle, so an overlap test against the plot alone sees
+    # nothing wrong — and the result is a chart that reads perfectly and has no
+    # prices, which is exactly what "levels shown are relative" means.
+    axis_strip = Box(
+        field.right, field.top, max(axis_width, DEFAULT_AXIS_WIDTH), field.height
+    ).clip(width, height)
+
     for box in exclude:
-        covered = chart.overlap(box)
-        if covered > chart.area * 0.02:
+        covered = chart.overlap(box) + axis_strip.overlap(box)
+        if covered > chart.area * 0.02 or axis_strip.overlap(box) > axis_strip.area * 0.3:
             layout.overlapped_by_app = True
             layout.issues.append(
-                "The GateKeeper panel is sitting on top of the chart, hiding "
-                f"{covered / max(chart.area, 1) * 100:.0f}% of it including part "
-                "of the price axis. Drag the panel off the chart and scan again."
+                "The GateKeeper panel is covering the chart or its price axis. "
+                "Prices cannot be read from behind it, so the levels shown "
+                "would be relative rather than real."
             )
             break
 
@@ -1016,7 +1040,7 @@ def detect_layout(
             layout.asset_name,
             layout.timeframe,
             layout.timeframe_seconds,
-        ) = _read_labels(image, field)
+        ) = _read_labels(image, field, exclude)
 
     # Confidence: how much of the read is standing on its own feet. The candle
     # field is most of it; the labels are worth less individually but their

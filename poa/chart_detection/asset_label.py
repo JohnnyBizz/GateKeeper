@@ -83,6 +83,15 @@ def normalise(text: str) -> str | None:
     quote = (match.group(2) or "").upper()
     otc = " OTC" if match.group(3) else ""
 
+    # Without a separator in the source text, the split is the regex's guess,
+    # not the platform's. "Trading" splits perfectly happily into TRAD/ING, so
+    # a guessed split has to name two codes an instrument is really made of.
+    # An explicit "/" is the platform's own word and is trusted as written.
+    separated = any(ch in cleaned for ch in "/-")
+    if quote and not separated:
+        if base not in KNOWN_CODES or quote.replace(" OTC", "").strip() not in KNOWN_CODES:
+            return None
+
     # OCR drops the space before the OTC suffix often enough that "CAD/JPYOTC"
     # is a normal read. Left alone it becomes an instrument named JPYOTC, which
     # then files journal entries under a pair that does not exist.
@@ -93,12 +102,13 @@ def normalise(text: str) -> str | None:
 
     if quote:
         return f"{base}/{quote}{otc}"
-    if len(base) == 6:
+    if len(base) == 6 and base[:3] in KNOWN_CODES and base[3:] in KNOWN_CODES:
         # A pair written without a separator, e.g. EURUSD.
         return f"{base[:3]}/{base[3:]}{otc}"
-    # A bare word with no counter-currency is far more likely to be a stray
-    # interface label than a single-name instrument.
-    if base in _NOT_SYMBOLS:
+    # A bare word is almost never an instrument, and treating it as one is how
+    # a browser tab reading "Read a packed chart's region" became the pair RAE.
+    # Only an unmistakable code is allowed through on its own.
+    if base in _NOT_SYMBOLS or base not in KNOWN_CODES:
         return None
     return f"{base}{otc}"
 

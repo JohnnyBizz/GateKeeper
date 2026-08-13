@@ -935,14 +935,30 @@ class TestSymbolsAreNotInvented:
     """Searching a whole screen turns up text that parses as a pair, and isn't."""
 
     def test_sidebar_menu_text_is_not_read_as_an_instrument(self):
-        """"Profile", split by OCR into PROF and ILE, parses as PROF/ILE."""
+        """Interface words split into perfectly well-formed pairs.
+
+        "Profile" becomes PROF/ILE, "Trading" becomes TRAD/ING, and a browser
+        tab reading "Read a packed chart's region" becomes RAE. Every one of
+        those was accepted as the instrument on screen at some point.
+        """
         from poa.chart_detection.asset_label import is_known_pair, normalise
 
-        assert normalise("PROF ILE") == "PROF/ILE"  # it really does parse
-        assert not is_known_pair("PROF/ILE")  # and it really must be rejected
+        for word in ("Profile", "Trading", "Signals", "Finance", "RAE", "Read"):
+            assert normalise(word) is None, word
+        assert not is_known_pair("PROF/ILE")
         assert not is_known_pair("TIME/AMOUNT")
         assert not is_known_pair("EUR")
         assert not is_known_pair(None)
+
+    def test_a_split_the_platform_wrote_itself_is_trusted(self):
+        """An explicit slash is the platform's word, not the parser's guess."""
+        from poa.chart_detection.asset_label import normalise
+
+        assert normalise("EUR/USD") == "EUR/USD"
+        assert normalise("AUD/CAD OTC") == "AUD/CAD OTC"
+        # Guessed splits still have to name codes an instrument is made of.
+        assert normalise("AUDCAD") == "AUD/CAD"
+        assert normalise("EUR USD") == "EUR/USD"
 
     def test_real_instruments_survive(self):
         from poa.chart_detection.asset_label import is_known_pair
@@ -1024,14 +1040,14 @@ class TestTheAppDoesNotSitOnTheChart:
         )
         layout = detect_layout(image, exclude=[panel], read_labels=False)
         assert layout.overlapped_by_app
-        assert any("sitting on top of the chart" in i for i in layout.issues)
+        assert any("covering the chart" in i for i in layout.issues)
 
     def test_a_panel_beside_the_chart_is_not_reported(self):
         _series, image, _truth = platform_screen()
         beside = Box(0, 0, 60, 200)
         layout = detect_layout(image, exclude=[beside], read_labels=False)
         assert not layout.overlapped_by_app
-        assert not any("sitting on top" in i for i in layout.issues)
+        assert not any("covering the chart" in i for i in layout.issues)
 
 
 class TestPackedCharts:
