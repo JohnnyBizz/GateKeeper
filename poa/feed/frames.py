@@ -30,6 +30,10 @@ from .redact import redact, redact_text
 # socket.io EVENT.
 _SOCKET_IO = re.compile(r"^(\d{1,2})(.*)$", re.DOTALL)
 
+# "451-[\"updateStream\",{\"_placeholder\":true,...}]" — engine.io MESSAGE,
+# socket.io BINARY_EVENT, one attachment to follow.
+_BINARY_EVENT = re.compile(r"^45(\d+)-(.*)$", re.DOTALL)
+
 # engine.io packet types, for describing a frame that carries no payload.
 _ENGINE_IO = {
     "0": "open", "1": "close", "2": "ping", "3": "pong",
@@ -48,6 +52,8 @@ class Frame:
     payload: Any = None
     raw_length: int = 0
     note: str = ""
+    # Set on a binary-event header: the name the next frame's payload owns.
+    announces: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,6 +64,7 @@ class Frame:
             "payload": self.payload,
             "raw_length": self.raw_length,
             "note": self.note,
+            "announces": self.announces,
         }
 
 
@@ -121,6 +128,23 @@ def _decode_text(text: str, direction: str, opcode: int, raw_length: int) -> Fra
             raw_length=raw_length,
         )
 
+    # Socket.IO's binary-event header: "451-" is a MESSAGE / BINARY_EVENT
+    # announcing one attachment, whose payload lands in the *next* frame. The
+    # name lives here and the data lives there, so remember it to reunite them.
+    binary_header = _BINARY_EVENT.match(text)
+    if binary_header:
+        ok, parsed = _try_json(binary_header.group(2))
+        name = _event_name(parsed) if ok else None
+        return Frame(
+            direction=direction,
+            opcode=opcode,
+            kind="socket.io",
+            event=name,
+            raw_length=raw_length,
+            note=f"header for {binary_header.group(1)} binary attachment(s)",
+            announces=name,
+        )
+
     match = _SOCKET_IO.match(text)
     if match:
         prefix, rest = match.group(1), match.group(2)
@@ -165,6 +189,32 @@ def _event_name(parsed: Any) -> str | None:
     return None
 
 
+def describe_shape(value: Any, _depth: int = 0) -> str:
+    """A short signature of a payload's structure, ignoring its values.
+
+    Two frames with the same shape are the same message; two with different
+    shapes are different messages even when the platform names neither. This
+    is what separates a price tick from a block of history when both arrive as
+    anonymous JSON arrays.
+    """
+    if _depth > 3:
+        return "…"
+    if isinstance(value, dict):
+        keys = sorted(str(k) for k in value)[:6]
+        return "{" + ",".join(keys) + "}" if keys else "{}"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        return f"[{len(value)}x {describe_shape(value[0], _depth + 1)}]"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "num"
+    if isinstance(value, str):
+        return "str"
+    return type(value).__name__
+
+
 @dataclass
 class Summary:
     """What a capture contained, in a form worth pasting into a message."""
@@ -173,14 +223,23 @@ class Summary:
     by_event: dict[str, int] = field(default_factory=dict)
     by_kind: dict[str, int] = field(default_factory=dict)
     samples: dict[str, Any] = field(default_factory=dict)
+    _pending_name: str | None = field(default=None, repr=False)
 
     def add(self, frame: Frame) -> None:
+        # A binary attachment inherits the name from the header before it,
+        # which is the only place that name appears.
+        if self._pending_name and frame.event is None and frame.payload is not None:
+            frame.event = self._pending_name
+        self._pending_name = frame.announces
+
         self.total += 1
         self.by_kind[frame.kind] = self.by_kind.get(frame.kind, 0) + 1
-        name = frame.event or f"({frame.kind})"
+        # Unnamed frames are grouped by their *shape*, not lumped together.
+        # Keeping one example per name hid the message that mattered most: a
+        # capture of 518 unnamed price ticks and one unnamed history block
+        # showed a tick and threw the history away.
+        name = frame.event or f"({frame.kind}) {describe_shape(frame.payload)}"
         self.by_event[name] = self.by_event.get(name, 0) + 1
-        # One example of each event is enough to work out its shape, and keeps
-        # the summary small enough to paste.
         if name not in self.samples and frame.payload is not None:
             self.samples[name] = frame.payload
 
