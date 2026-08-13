@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,60 @@ from typing import Any
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.yaml"
+
+
+def frozen() -> bool:
+    """Whether this is running from a packaged one-file executable."""
+    return bool(getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"))
+
+
+def bundle_root() -> Path:
+    """Where the app's read-only files live.
+
+    In a packaged build that is PyInstaller's unpack directory, which is
+    created on launch and **deleted on exit**. Fine for assets that ship with
+    the app; catastrophic for anything the user expects to keep.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else PROJECT_ROOT
+
+
+def data_root() -> Path:
+    """Where the user's own files go — settings, journal, logs, screenshots.
+
+    This has to be separate from the bundle. A one-file executable unpacks
+    itself into a temporary directory and deletes it on exit, so anything
+    written relative to the running code is gone the moment the app closes:
+    the selected chart region, the price calibration, the pair and timeframe
+    boxes, the trading journal, and the log that would have explained any of
+    it. Everything appears to work in the session and nothing survives the
+    restart.
+
+    Running from source keeps using the project directory, which is where a
+    developer expects to find these files.
+    """
+    if not frozen():
+        return PROJECT_ROOT
+
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = Path(base) if base else Path.home() / "AppData" / "Local"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        base = os.environ.get("XDG_DATA_HOME")
+        root = Path(base) if base else Path.home() / ".local" / "share"
+
+    target = root / "GateKeeper"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError:  # pragma: no cover - unwritable home directory
+        return Path.home()
+    return target
+
+
+DEFAULT_CONFIG_PATH = data_root() / "config.yaml"
+EXAMPLE_CONFIG_PATH = bundle_root() / "config.example.yaml"
 
 # Timeframes the UI offers, in seconds. This list is also what the timeframe
 # badge is snapped onto, so a timeframe missing from here cannot be read off
@@ -210,11 +263,18 @@ class Config:
         cursor[parts[-1]] = value
 
     def resolve_path(self, dotted: str) -> Path:
-        """Resolve a configured path relative to the project root."""
+        """Resolve a configured path against the user's data directory.
+
+        Relative paths in the config — ``storage/journal.db``, ``storage/
+        poa.log`` — are the user's own files, so they resolve against
+        ``data_root()`` and not against the code. In a packaged build those are
+        different places, and resolving against the code would put the journal
+        inside a temporary directory that is deleted on exit.
+        """
         raw = str(self.get(dotted, ""))
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
-            candidate = PROJECT_ROOT / candidate
+            candidate = data_root() / candidate
         return candidate
 
     def to_dict(self) -> dict[str, Any]:

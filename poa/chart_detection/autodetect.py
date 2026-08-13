@@ -522,99 +522,167 @@ _LABEL_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/-012345
 def _search_strips(image: np.ndarray, chart: Box) -> list[Box]:
     """Where a platform plausibly puts the pair name and the timeframe badge.
 
-    Ordered by how likely each is, because the first confident parse wins. The
-    band directly above the chart comes first: every platform of this shape
-    puts the instrument there.
+    Ordered by how likely each is, because the first confident parse wins and
+    the rest are then never read. That ordering is the difference between a
+    scan that takes half a second and one that takes ten: every strip means
+    OCR on every text-shaped thing inside it, and Tesseract is a subprocess.
     """
     height, width = image.shape[:2]
     strips = [
-        # Directly above the plot, full width.
+        # Directly above the plot, full width — where every platform of this
+        # shape puts the instrument.
         Box(0, max(0, chart.top - 140), width, min(140, chart.top)),
-        # The very top of the screen — browser chrome aside, the platform's
-        # own toolbar.
-        Box(0, 0, width, min(120, height)),
         # Just below the plot, where the timeframe badge often sits.
         Box(0, chart.bottom, width, min(90, max(0, height - chart.bottom))),
+        # The very top of the screen: the platform's own toolbar.
+        Box(0, 0, width, min(120, height)),
         # A left rail, for layouts that stack the instrument vertically.
         Box(0, 0, min(320, width), height),
     ]
-    return [s for s in (strip.clip(width, height) for strip in strips) if s.area > 0]
+    clipped = [strip.clip(width, height) for strip in strips]
+    return _deduplicate(strip for strip in clipped if strip.area > 0)
 
 
-def _find_asset(image: np.ndarray, chart: Box) -> tuple[Box | None, str | None]:
-    """The instrument name: symbol-shaped text near the chart."""
-    for strip in _search_strips(image, chart):
-        crop = image[strip.top : strip.bottom, strip.left : strip.right]
-        # Left to right: a pair split across boxes reads "EUR" then "/USD",
-        # never the other way round.
-        words = sorted(_ocr_words(crop, _LABEL_WHITELIST), key=lambda w: w["box"].left)
-        best: tuple[float, Box, str] | None = None
-        for index, word in enumerate(words):
-            # A pair may arrive as one token ("EUR/USD") or as neighbouring
-            # tokens the OCR split ("EUR", "/", "USD", "OTC"), so try growing
-            # the phrase rightwards and keep the longest that still parses.
-            phrase = ""
-            box = word["box"]
-            for extra in words[index : index + 4]:
-                phrase = f"{phrase} {extra['text']}".strip()
-                merged = Box(
-                    min(box.left, extra["box"].left),
-                    min(box.top, extra["box"].top),
-                    0,
-                    0,
-                )
-                merged.width = max(box.right, extra["box"].right) - merged.left
-                merged.height = max(box.bottom, extra["box"].bottom) - merged.top
-                # Tokens on different lines are not one label.
-                if merged.height > word["box"].height * 2:
-                    break
-                name = normalise(phrase)
-                if name and "/" in name:
-                    score = word["confidence"] + len(phrase)
-                    if best is None or score > best[0]:
-                        best = (score, merged, name)
-        if best is not None:
-            _, box, name = best
-            padded = Box(box.left - 6, box.top - 5, box.width + 12, box.height + 10)
-            return padded.offset(strip.left, strip.top).clip(
-                image.shape[1], image.shape[0]
-            ), name
-    return None, None
+def _deduplicate(strips: Iterable[Box]) -> list[Box]:
+    """Drop strips already covered by an earlier one.
+
+    With the chart near the top of the screen the "above the plot" strip and
+    the "top of the screen" strip are the same pixels, and reading them twice
+    doubles the slowest part of a scan for nothing.
+    """
+    kept: list[Box] = []
+    for strip in strips:
+        if any(strip.overlap(seen) >= strip.area * 0.9 for seen in kept):
+            continue
+        kept.append(strip)
+    return kept
 
 
-def _find_timeframe(image: np.ndarray, chart: Box) -> tuple[Box | None, int | None]:
-    """The timeframe badge: a token that parses as a chart interval.
+def _pad(box: Box) -> Box:
+    """A little room around a label, so a fixed region survives the text
+    growing by a character when the pair changes."""
+    return Box(box.left - 6, box.top - 5, box.width + 12, box.height + 10)
+
+
+def _asset_in(words: list[dict[str, Any]]) -> tuple[Box, str] | None:
+    """The best pair name among one strip's words, if there is one."""
+    # Left to right: a pair split across boxes reads "EUR" then "/USD", never
+    # the other way round.
+    words = sorted(words, key=lambda w: w["box"].left)
+    best: tuple[float, Box, str] | None = None
+    for index, word in enumerate(words):
+        # A pair may arrive as one token ("EUR/USD") or as neighbouring tokens
+        # the OCR split ("EUR", "/", "USD", "OTC"), so grow the phrase
+        # rightwards and keep the longest that still parses.
+        phrase = ""
+        box = word["box"]
+        for extra in words[index : index + 4]:
+            phrase = f"{phrase} {extra['text']}".strip()
+            merged = Box(
+                min(box.left, extra["box"].left), min(box.top, extra["box"].top), 0, 0
+            )
+            merged.width = max(box.right, extra["box"].right) - merged.left
+            merged.height = max(box.bottom, extra["box"].bottom) - merged.top
+            if merged.height > word["box"].height * 2:
+                break  # tokens on different lines are not one label
+            name = normalise(phrase)
+            if name and "/" in name:
+                score = word["confidence"] + len(phrase)
+                if best is None or score > best[0]:
+                    best = (score, merged, name)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _timeframe_in(
+    crop: np.ndarray, words: list[dict[str, Any]], toward: tuple[float, float]
+) -> tuple[Box, int] | None:
+    """The best timeframe badge among one strip's words, if there is one.
 
     Ties are broken by distance to the chart, because short tokens like "M1"
     and "H3" also occur inside unrelated text, and the badge is the one drawn
     beside the plot.
     """
-    chart_cx = chart.left + chart.width / 2.0
-    chart_cy = chart.top + chart.height / 2.0
     best: tuple[float, Box, int] | None = None
+    for word in words:
+        seconds = _as_timeframe(word["text"])
+        if seconds is None and len(word["text"]) <= 4:
+            # Short badges are where the general alphabet hurts: "M1" comes
+            # back as "MI" or "H3" as "H8". One retry against digits and unit
+            # letters only is cheap and recovers most of them.
+            retry, _confidence = ocr_crop(
+                crop,
+                (word["box"].left, word["box"].top, word["box"].width, word["box"].height),
+                "SMHDsmhd0123456789 ",
+            )
+            seconds = _as_timeframe(retry)
+        if seconds is None:
+            continue
+        box = word["box"]
+        distance = float(
+            np.hypot(
+                box.left + box.width / 2.0 - toward[0],
+                box.top + box.height / 2.0 - toward[1],
+            )
+        )
+        if best is None or distance < best[0]:
+            best = (distance, box, seconds)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _as_timeframe(text: str) -> int | None:
+    parsed = parse_timeframe(text)
+    return snap_to_known(parsed) if parsed else None
+
+
+def _read_labels(
+    image: np.ndarray, chart: Box
+) -> tuple[Box | None, str | None, Box | None, int | None]:
+    """Find the pair name and the timeframe badge in one pass over the screen.
+
+    One pass, not two. Each strip is OCR'd once and both labels are looked for
+    in the same words, and the search stops as soon as both are found. OCR is a
+    subprocess per word, so reading the same strips twice was the difference
+    between a scan the user waits through and one they think has hung.
+    """
+    asset_box: Box | None = None
+    asset_name: str | None = None
+    timeframe_box: Box | None = None
+    timeframe_seconds: int | None = None
+    toward = (chart.left + chart.width / 2.0, chart.top + chart.height / 2.0)
 
     for strip in _search_strips(image, chart):
         crop = image[strip.top : strip.bottom, strip.left : strip.right]
-        for word in _ocr_words(crop, "SMHDsmhd0123456789 "):
-            parsed = parse_timeframe(word["text"])
-            if parsed is None:
-                continue
-            snapped = snap_to_known(parsed)
-            if snapped is None:
-                continue
-            box = word["box"].offset(strip.left, strip.top)
-            distance = np.hypot(
-                box.left + box.width / 2.0 - chart_cx,
-                box.top + box.height / 2.0 - chart_cy,
-            )
-            if best is None or distance < best[0]:
-                best = (float(distance), box, snapped)
+        words = _ocr_words(crop, _LABEL_WHITELIST)
+        if not words:
+            continue
 
-    if best is None:
-        return None, None
-    _, box, seconds = best
-    padded = Box(box.left - 6, box.top - 5, box.width + 12, box.height + 10)
-    return padded.clip(image.shape[1], image.shape[0]), seconds
+        if asset_name is None:
+            found = _asset_in(words)
+            if found is not None:
+                asset_box = _pad(found[0]).offset(strip.left, strip.top)
+                asset_name = found[1]
+
+        if timeframe_seconds is None:
+            local = (toward[0] - strip.left, toward[1] - strip.top)
+            found_tf = _timeframe_in(crop, words, local)
+            if found_tf is not None:
+                timeframe_box = _pad(found_tf[0]).offset(strip.left, strip.top)
+                timeframe_seconds = found_tf[1]
+
+        if asset_name is not None and timeframe_seconds is not None:
+            break
+
+    height, width = image.shape[:2]
+    return (
+        asset_box.clip(width, height) if asset_box else None,
+        asset_name,
+        timeframe_box.clip(width, height) if timeframe_box else None,
+        timeframe_seconds,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -671,8 +739,12 @@ def detect_layout(
         return layout
 
     if read_labels:
-        layout.asset, layout.asset_name = _find_asset(image, field)
-        layout.timeframe, layout.timeframe_seconds = _find_timeframe(image, field)
+        (
+            layout.asset,
+            layout.asset_name,
+            layout.timeframe,
+            layout.timeframe_seconds,
+        ) = _read_labels(image, field)
 
     # Confidence: how much of the read is standing on its own feet. The candle
     # field is most of it; the labels are worth less individually but their

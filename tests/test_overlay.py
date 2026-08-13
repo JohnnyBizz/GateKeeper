@@ -602,3 +602,121 @@ class TestScanDecidesWhenToRelocate:
             assert app._should_relocate()
         finally:
             app.shutdown()
+
+
+class TestScanDoesNotBlockTheUi:
+    """A search takes seconds. On the UI thread that is a frozen window."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "screen")
+        config.set("capture.region", {"left": 0, "top": 0, "width": 0, "height": 0})
+        return OverlayApp(config)
+
+    def test_the_search_runs_off_the_calling_thread(self, tmp_path, monkeypatch):
+        import threading
+        import time
+
+        from poa.overlay import app as module
+
+        app = self._app(tmp_path)
+        try:
+            started = threading.Event()
+            release = threading.Event()
+            seen_threads = []
+
+            def slow_scan(_config, exclude=None):
+                seen_threads.append(threading.current_thread())
+                started.set()
+                release.wait(5)
+                from poa.chart_detection.autodetect import Layout
+                from poa.overlay.autoscan import AutoScanResult
+
+                return AutoScanResult(
+                    layout=Layout(), applied=False, message="nothing found"
+                )
+
+            monkeypatch.setattr(
+                "poa.overlay.autoscan.scan_screen", slow_scan, raising=True
+            )
+
+            began = time.monotonic()
+            app._begin_scan()
+            # The call returned while the search is still running.
+            assert time.monotonic() - began < 1.0
+            assert started.wait(5)
+            assert app._scan_busy
+            assert seen_threads[0] is not threading.current_thread()
+
+            # And the verdict stays blanked until the search finishes, rather
+            # than the timer alone dropping the previous chart's answer back.
+            app.vm.scan.state = ScanState.SCANNING
+            app.vm.scan.started_at = began - 10
+            app._tick()
+            assert app.vm.render()["verdict"]["blanked"]
+
+            release.set()
+            for _ in range(50):
+                app._tick()
+                if not app._scan_busy:
+                    break
+                time.sleep(0.05)
+            assert not app._scan_busy
+        finally:
+            app.shutdown()
+
+    def test_a_second_press_while_searching_is_ignored(self, tmp_path, monkeypatch):
+        app = self._app(tmp_path)
+        try:
+            calls = []
+            monkeypatch.setattr(app, "_should_relocate", lambda: True)
+            monkeypatch.setattr(app, "_own_windows", lambda: [])
+            monkeypatch.setattr(
+                app, "_locate_worker", lambda exclude: calls.append(exclude)
+            )
+            app._begin_scan()
+            app._scan_busy = True  # the worker would have set this
+            app._begin_scan()
+            assert len(calls) == 1
+        finally:
+            app.shutdown()
+
+    def test_a_working_region_with_no_label_boxes_still_relocates(self, tmp_path):
+        """The candles can read perfectly while the pair never updates.
+
+        Waiting for recognition confidence to drop would never fix that — the
+        pair is text somewhere else on the screen, and the candles are fine.
+        """
+        from poa.chart_detection.autodetect import ocr_available
+
+        app = self._app(tmp_path)
+        try:
+            app.config.set(
+                "capture.region", {"left": 0, "top": 0, "width": 900, "height": 500}
+            )
+            app.vm.data_confidence = 95.0
+            app.config.set(
+                "capture.asset_region",
+                {"left": 0, "top": 0, "width": 0, "height": 0},
+            )
+            assert app._should_relocate() is ocr_available()
+
+            # Once both label boxes are known, a healthy region is left alone.
+            app.config.set(
+                "capture.asset_region",
+                {"left": 10, "top": 10, "width": 120, "height": 24},
+            )
+            app.config.set(
+                "capture.timeframe_region",
+                {"left": 10, "top": 40, "width": 40, "height": 22},
+            )
+            assert not app._should_relocate()
+        finally:
+            app.shutdown()

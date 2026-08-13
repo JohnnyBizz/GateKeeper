@@ -12,11 +12,12 @@ raising alerts, while the Scan button forces an immediate fresh evaluation.
 from __future__ import annotations
 
 import queue
+import threading
 from typing import Any, Callable
 
-from ..config import Config, load_config
+from ..config import Config, data_root, load_config
 from ..engine import AnalysisEngine
-from ..logging_setup import get_logger, setup_logging
+from ..logging_setup import get_logger, install_crash_handlers, setup_logging
 from ..models import utcnow
 from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState
@@ -43,6 +44,8 @@ class OverlayApp:
             level=str(self.config.get("logging.level", "INFO")),
             file=self.config.resolve_path("logging.file"),
         )
+        install_crash_handlers()
+        log.info("settings and data directory: %s", data_root())
 
         # Point the OCR wrapper at a usable Tesseract before anything tries to
         # read the screen. Without this a packaged build silently cannot read
@@ -74,6 +77,10 @@ class OverlayApp:
         self._pending_signal = None
         self._last_layout = None
         self.panel = None
+
+        # Results from the chart-search worker, handed back to the UI thread.
+        self._scan_results: queue.Queue[Any] = queue.Queue()
+        self._scan_busy = False
 
     # -- engine plumbing ----------------------------------------------------
 
@@ -161,53 +168,130 @@ class OverlayApp:
         "From scratch" now includes finding the chart. Scan locates the plot,
         its price axis, the pair name and the timeframe badge by itself when it
         has no working region — pressing one button is the whole interaction.
+
+        Searching the screen takes seconds: a full-desktop grab, then OCR on
+        every text-shaped thing near the chart. That cannot happen on the UI
+        thread. Tk would stop answering the window manager, Windows would paint
+        the panel grey and title it "Not Responding", and the user would
+        reasonably call that a crash. So the search runs on a worker and the
+        result is applied back here.
         """
+        if self._scan_busy:
+            return  # a scan is already running; a second press is not a queue
+
         self.vm.scan.begin()
         self._pending_signal = None
+        self.vm.last_error = None
         self.engine.tracker.reset()
 
-        if self._should_relocate():
-            self.locate_chart()
+        relocate = self._should_relocate()
+        # Tk objects may only be touched from this thread, so the panel's own
+        # geometry is measured now rather than inside the worker.
+        exclude = self._own_windows() if relocate else []
+
+        if not relocate:
+            self._run_engine_cycle()
+            return
+
+        self._scan_busy = True
+        threading.Thread(
+            target=self._locate_worker, args=(exclude,), daemon=True
+        ).start()
+
+    def _locate_worker(self, exclude: list[Any]) -> None:
+        """Off the UI thread: find the chart. Touches no Tk and no engine."""
+        from .autoscan import AutoScanResult, scan_screen
+        from ..chart_detection.autodetect import Layout
 
         try:
-            # Run one cycle immediately rather than waiting for the next poll.
+            result = scan_screen(self.config, exclude=exclude)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("chart search failed")
+            result = AutoScanResult(
+                layout=Layout(), applied=False, message=f"Chart search failed: {exc}"
+            )
+        self._scan_results.put(result)
+
+    def _collect_scan_result(self) -> None:
+        """UI thread: apply whatever the worker found, then analyse."""
+        try:
+            result = self._scan_results.get_nowait()
+        except queue.Empty:
+            return
+
+        self._scan_busy = False
+        self._last_layout = result.layout
+        if result.applied:
+            log.info("auto-scan: %s", result.message)
+            try:
+                self.engine._rebuild_source()
+            except Exception as exc:  # pragma: no cover - defensive
+                log.exception("could not switch to the detected region")
+                self.vm.last_error = f"Could not use the detected chart area: {exc}"
+                return
+            self.vm.signal = None
+            self.vm.asset = self.engine.asset
+            self.vm.chart_timeframe = self.engine.chart_timeframe
+            self._refresh_session()
+        else:
+            self.vm.last_error = result.message
+            log.warning("auto-scan found nothing: %s", result.message)
+
+        self._run_engine_cycle()
+
+    def _run_engine_cycle(self) -> None:
+        """One immediate capture-analyse pass, instead of waiting for the poll."""
+        try:
             self.engine.tick()
         except Exception as exc:  # pragma: no cover - defensive
-            log.warning("manual scan failed: %s", exc)
+            log.exception("manual scan failed")
             self.vm.last_error = f"Scan failed: {exc}"
 
     def _should_relocate(self) -> bool:
         """Whether Scan should go looking for the chart before analysing.
 
-        Only for the screen source, and only when the current region is either
-        missing or plainly not working. Re-locating a region that is reading
-        the chart well would throw away a good calibration for nothing.
+        Only for the screen source. Three reasons to go looking:
+
+        * there is no chart region at all;
+        * the region there is cannot read the chart;
+        * the region works, but the pair and timeframe badges were never
+          located — which is its own bug to have missed. A chart region can
+          read candles perfectly and still leave the pair frozen on whatever
+          was typed last, because the name is text somewhere else on screen.
+          Waiting for the *candles* to fail would never fix that.
         """
         if str(self.config.get("capture.source", "screen")) != "screen":
             return False
-        from ..chart_detection.autodetect import Box
+        from ..chart_detection.autodetect import Box, ocr_available
 
         if Box.from_dict(self.config.get("capture.region")) is None:
             return True
         confidence = self.vm.data_confidence
-        return confidence is not None and confidence < RELOCATE_BELOW_CONFIDENCE
+        if confidence is not None and confidence < RELOCATE_BELOW_CONFIDENCE:
+            return True
+        if ocr_available() and not self._labels_located():
+            return True
+        return False
+
+    def _labels_located(self) -> bool:
+        from ..chart_detection.autodetect import Box
+
+        return all(
+            Box.from_dict(self.config.get(key)) is not None
+            for key in ("capture.asset_region", "capture.timeframe_region")
+        )
 
     def locate_chart(self) -> str:
-        """Find the chart on screen and reconfigure from what is found."""
+        """Find the chart on screen and reconfigure from what is found.
+
+        Synchronous — for the settings dialog, which has already hidden itself
+        and has nothing to paint while it waits.
+        """
         from .autoscan import scan_screen
 
         result = scan_screen(self.config, exclude=self._own_windows())
-        self._last_layout = result.layout
-        if result.applied:
-            self.engine._rebuild_source()
-            self.vm.signal = None
-            self.vm.asset = self.engine.asset
-            self.vm.chart_timeframe = self.engine.chart_timeframe
-            self._refresh_session()
-            log.info("auto-scan: %s", result.message)
-        else:
-            self.vm.last_error = result.message
-            log.warning("auto-scan found nothing: %s", result.message)
+        self._scan_results.put(result)
+        self._collect_scan_result()
         return result.message
 
     def _own_windows(self) -> list[Any]:
@@ -479,7 +563,13 @@ class OverlayApp:
         """UI-thread heartbeat: drain, advance the scan, repaint."""
         try:
             self._drain()
-            if self.vm.scan.poll():
+            self._collect_scan_result()
+            # The scan state is held open while the search runs, not just for
+            # the timer. Letting the timer end it early would drop the panel
+            # out of SCANNING and paint the *previous* chart's verdict as if
+            # it were the new one — the exact failure the blanking exists to
+            # prevent.
+            if not self._scan_busy and self.vm.scan.poll():
                 self._finish_scan()
             if self.panel is not None:
                 self.panel.refresh()
@@ -507,6 +597,15 @@ class OverlayApp:
                 int(self.config.get("overlay.y", 80)),
             ),
             opacity=float(self.config.get("overlay.opacity", 0.96)),
+        )
+
+        # Tk swallows callback exceptions by printing them to stderr, which a
+        # windowed build does not have. Send them to the log instead, so a
+        # button that stops working leaves a trace.
+        self.panel.root.report_callback_exception = (
+            lambda kind, value, tb: log.critical(
+                "unhandled error in a UI callback", exc_info=(kind, value, tb)
+            )
         )
 
         self.engine.subscribe(self._on_engine_state)

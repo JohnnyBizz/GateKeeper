@@ -317,3 +317,93 @@ class TestConfigPersistence:
 
         config_module.ensure_config_file()
         assert "MINE" in default.read_text()
+
+
+class TestPackagedDataDirectory:
+    """A one-file build unpacks to a temp dir and deletes it on exit.
+
+    Anything the user expects to keep — settings, the journal, the log — has to
+    live somewhere else, or every session starts from nothing and the app looks
+    like it is ignoring everything it was told.
+    """
+
+    def test_running_from_source_uses_the_project_directory(self):
+        from poa.config import PROJECT_ROOT, data_root, frozen
+
+        assert not frozen()
+        assert data_root() == PROJECT_ROOT
+
+    def test_a_frozen_build_writes_outside_the_bundle(self, monkeypatch, tmp_path):
+        import sys
+
+        from poa import config as module
+
+        unpacked = tmp_path / "_MEI12345"
+        unpacked.mkdir()
+        home = tmp_path / "home"
+        home.mkdir()
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "_MEIPASS", str(unpacked), raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(home))
+        monkeypatch.setenv("XDG_DATA_HOME", str(home))
+        monkeypatch.setattr(module.Path, "home", classmethod(lambda cls: home))
+
+        assert module.bundle_root() == unpacked
+        data = module.data_root()
+        assert unpacked not in data.parents and data != unpacked
+        assert data.is_dir()
+
+    def test_relative_paths_resolve_against_the_data_directory(
+        self, monkeypatch, tmp_path
+    ):
+        from poa import config as module
+
+        monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+        cfg = module.load_config()
+        cfg.set("storage.database", "storage/journal.db")
+        assert cfg.resolve_path("storage.database") == tmp_path / "storage/journal.db"
+
+    def test_an_absolute_path_is_left_alone(self, tmp_path):
+        from poa.config import load_config
+
+        cfg = load_config()
+        cfg.set("storage.database", str(tmp_path / "explicit.db"))
+        assert load_config.__module__  # sanity
+        assert cfg.resolve_path("storage.database") == tmp_path / "explicit.db"
+
+
+class TestLoggingWithoutAConsole:
+    def test_no_console_handler_when_there_is_no_stderr(self, monkeypatch, tmp_path):
+        """A windowed build has sys.stderr set to None."""
+        import logging
+        import sys
+
+        from poa import logging_setup
+
+        monkeypatch.setattr(logging_setup, "_CONFIGURED", False)
+        monkeypatch.setattr(sys, "stderr", None)
+        root = logging.getLogger()
+        existing = list(root.handlers)
+        try:
+            root.handlers = []
+            logging_setup.setup_logging("INFO", tmp_path / "app.log")
+            kinds = [type(h).__name__ for h in root.handlers]
+            assert "StreamHandler" not in kinds
+            assert any("File" in kind for kind in kinds)
+            assert logging_setup.log_file() == tmp_path / "app.log"
+        finally:
+            root.handlers = existing
+            logging_setup._CONFIGURED = True
+
+    def test_thread_exceptions_reach_the_log(self, caplog):
+        import threading
+
+        from poa.logging_setup import install_crash_handlers
+
+        install_crash_handlers()
+        with caplog.at_level("CRITICAL"):
+            worker = threading.Thread(target=lambda: 1 / 0, name="boom")
+            worker.start()
+            worker.join()
+        assert any("unhandled exception in thread" in r.message for r in caplog.records)
