@@ -265,6 +265,8 @@ class OverlayViewModel:
             return "DEMO DATA"
         if self.source == "csv":
             return "REPLAY"
+        if self.source == "feed":
+            return "LIVE FEED"
         if self.data_confidence is not None and self.data_confidence < 70:
             return f"LOW DATA {self.data_confidence:.0f}%"
         return "LIVE"
@@ -272,7 +274,7 @@ class OverlayViewModel:
     def _status_color(self) -> str:
         if self.last_error or not self.connected:
             return COLORS["put"]
-        if self.source != "screen":
+        if self.source not in ("screen", "feed"):
             return COLORS["wait"]
         if self.data_confidence is not None and self.data_confidence < 70:
             return COLORS["wait"]

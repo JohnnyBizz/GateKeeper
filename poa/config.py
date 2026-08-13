@@ -94,11 +94,12 @@ DEFAULTS: dict[str, Any] = {
     "capture": {
         # "feed" | "synthetic" | "csv" | "screen"
         #
-        # Demo data by default so a first run has something to show before any
-        # setup. Scan replaces it with the real chart the moment it finds one —
-        # unless source_chosen says the user picked this deliberately, in which
-        # case it is left alone.
-        "source": "synthetic",
+        # The feed reads the platform's own messages: exact prices, the exact
+        # instrument and the exact timeframe, with nothing to misread. Screen
+        # capture is kept as a fallback for platforms whose traffic cannot be
+        # reached, and falls back again to demo data so a first run always has
+        # something to show.
+        "source": "feed",
         "source_chosen": False,
         # Where the browser listens for the DevTools connection the feed source
         # reads. Only used by the "feed" source.

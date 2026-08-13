@@ -10,10 +10,21 @@ server:
   open_browser: false     # open the dashboard automatically on start
 
 capture:
-  # synthetic — generated demo data, works anywhere, good for trying the tool
+  # feed      — read the platform's own messages through the browser. Exact
+  #             prices, the exact instrument and the exact timeframe, with
+  #             nothing to misread. This is the one you want.
+  # screen    — capture a region of your screen and read the candles with
+  #             OpenCV. A fallback for platforms whose traffic cannot be read.
   # csv       — replay a recorded candle file (see capture.csv_path)
-  # screen    — capture a region of your screen and read the candles with OpenCV
-  source: synthetic
+  # synthetic — generated demo data, works anywhere, good for trying the tool
+  source: feed
+
+  # The feed source attaches to a browser started with a debugging port. It
+  # starts one itself, against its own profile directory, because Chrome will
+  # not open that port on your everyday profile.
+  debug_port: 9222
+  auto_launch_browser: true
+  match: pocketoption
 
   poll_seconds: 2.0       # how often to re-read the chart
 

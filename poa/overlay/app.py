@@ -303,7 +303,11 @@ class OverlayApp:
         """
         from ..chart_detection.autodetect import Box, ocr_available
 
-        if str(self.config.get("capture.source", "screen")) != "screen":
+        source = str(self.config.get("capture.source", "feed"))
+        if source == "feed":
+            # Nothing on screen is being read, so there is nothing to find.
+            return False
+        if source != "screen":
             return not bool(self.config.get("capture.source_chosen", False))
 
         if Box.from_dict(self.config.get("capture.region")) is None:

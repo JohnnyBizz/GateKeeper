@@ -427,6 +427,51 @@ it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
 
 ## 8. Connecting it to your chart
 
+GateKeeper reads the platform's own data. Open it, sign in once in the browser
+window it opens, and that is the setup.
+
+### Why not read the screen
+
+It used to. The chart is drawn on a canvas from candles that arrive over a
+WebSocket, so reading pixels means reconstructing those numbers from a picture
+of them — deciding which coloured shapes are candles, where each one begins,
+what price each screen row is. Every stage infers, every stage fails on its
+own, and the failures do not announce themselves: a browser tab read as the
+instrument, the app's own panel read as the timeframe, a price axis strip
+measured in the wrong place. Different bugs, one cause.
+
+The feed has none of that. `loadHistoryPeriodFast` carries settled candles with
+volume, `updateStream` carries live ticks, and `changeSymbol` states the
+instrument and the timeframe outright. Nothing is measured, so nothing can be
+mismeasured.
+
+| | Feed | Screen |
+|---|---|---|
+| Prices | exact | inferred from pixel rows |
+| Instrument | stated by the platform | OCR of a label |
+| Timeframe | stated by the platform | OCR of a badge |
+| Volume | included | unavailable |
+| Setup | sign in once | region, calibration, two label boxes |
+
+It attaches to the browser the same way the Network tab does, on your machine
+and your account. It sends nothing to the platform and places no trades.
+
+Chrome refuses to open a debugging port on an everyday profile, so GateKeeper
+starts a browser against a profile directory of its own. That window is signed
+out the first time; it remembers afterwards.
+
+Every parser fails quietly on a shape it does not recognise. This protocol was
+read off a recording rather than a specification, so a platform deploy that
+renames a field stops the feed instead of inventing candles from whatever
+arrives instead.
+
+### The screen fallback
+
+Set `capture.source: screen` if the feed cannot be reached. Everything below
+describes that path, and it is the one with the caveats.
+
+## 8b. Reading the screen (fallback)
+
 Open your chart, open GateKeeper, press **Scan**. That is the whole setup.
 
 ### How it finds the chart

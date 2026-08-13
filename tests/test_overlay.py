@@ -928,3 +928,51 @@ class TestThePanelMovesItselfOffTheChart:
             assert moved == []
         finally:
             app.shutdown()
+
+
+class TestTheFeedIsTheDefault:
+    """Reading the platform's data is the normal path now, not an option."""
+
+    def _app(self, tmp_path, **settings):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.auto_launch_browser", False)
+        for key, value in settings.items():
+            config.set(key, value)
+        return OverlayApp(config)
+
+    def test_a_fresh_install_reads_the_feed(self):
+        """Both the built-in defaults and the shipped example, which is what a
+        first run actually copies into place."""
+        import yaml
+
+        from poa.config import DEFAULTS, EXAMPLE_CONFIG_PATH
+
+        assert DEFAULTS["capture"]["source"] == "feed"
+        example = yaml.safe_load(EXAMPLE_CONFIG_PATH.read_text())
+        assert example["capture"]["source"] == "feed"
+
+    def test_the_feed_never_sends_scan_hunting_for_a_chart(self, tmp_path):
+        """There is no region, no axis and no badge to find."""
+        app = self._app(tmp_path, **{"capture.source": "feed"})
+        try:
+            assert not app._should_relocate()
+        finally:
+            app.shutdown()
+
+    def test_the_feed_is_not_labelled_demo_data(self):
+        from poa.overlay.viewmodel import COLORS, OverlayViewModel
+        from poa.risk import SessionStats
+
+        vm = OverlayViewModel(session=SessionStats(), source="feed")
+        vm.connected = True
+        vm.data_confidence = 95.0
+        header = vm.render()["header"]
+        assert header["status"] == "LIVE FEED"
+        assert header["status_color"] == COLORS["call"]
