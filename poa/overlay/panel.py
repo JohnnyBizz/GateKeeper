@@ -41,7 +41,7 @@ class OverlayPanel:
         self.on_close = on_close or (lambda: None)
 
         self.root = tk.Tk()
-        self.root.title("Analysis Assistant")
+        self.root.title("GateKeeper")
         self.root.configure(bg=COLORS["bg"])
         self.root.geometry(f"{PANEL_WIDTH}x680+{position[0]}+{position[1]}")
 
@@ -141,7 +141,7 @@ class OverlayPanel:
         left.bind("<B1-Motion>", self._drag_move)
 
         title = tk.Label(
-            left, text="◪ ASSISTANT", font=self.f_title,
+            left, text="◪ GATEKEEPER", font=self.f_title,
             bg=COLORS["raised"], fg=COLORS["accent"],
         )
         title.pack(side="left")

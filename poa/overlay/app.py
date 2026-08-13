@@ -192,7 +192,7 @@ def run(config_path: str | None = None) -> None:
     """Entry point for ``python overlay.py`` / ``python -m poa.overlay``."""
     config = load_config(config_path)
     log.info("=" * 60)
-    log.info("Technical Analysis Assistant — overlay")
+    log.info("GateKeeper — overlay")
     log.info("Source: %s | asset: %s", config.get("capture.source"), config.get("market.asset"))
     log.info("Analysis and alerts only. This tool never places a trade.")
     log.info("=" * 60)

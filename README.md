@@ -1,4 +1,4 @@
-# Pocket Option Technical Analysis Assistant
+# GateKeeper
 
 A local, read-only technical-analysis assistant that watches a trading chart on
 your screen, analyses market structure and price action continuously, and tells

@@ -130,7 +130,7 @@ def create_app(config: Config | None = None, autostart: bool = True) -> FastAPI:
             engine.close()
 
     app = FastAPI(
-        title="Pocket Option Technical Analysis Assistant",
+        title="GateKeeper",
         description=DISCLAIMER,
         version="1.0.0",
         lifespan=lifespan,
@@ -318,7 +318,7 @@ def run(config_path: str | None = None) -> None:
     port = int(config.get("server.port", 8765))
 
     log.info("=" * 68)
-    log.info("Pocket Option Technical Analysis Assistant")
+    log.info("GateKeeper — Technical Analysis Assistant")
     log.info("Dashboard:  http://%s:%s", host, port)
     log.info("Source:     %s", config.get("capture.source"))
     log.info(

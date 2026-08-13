@@ -116,7 +116,7 @@ class TestApi:
     def test_the_dashboard_is_served(self, client):
         response = client.get("/")
         assert response.status_code == 200
-        assert "Technical Analysis Assistant" in response.text
+        assert "GateKeeper" in response.text
 
     def test_static_assets_are_served(self, client):
         assert client.get("/static/app.js").status_code == 200
