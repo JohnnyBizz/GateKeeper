@@ -27,6 +27,12 @@ log = get_logger(__name__)
 # enough for the dot animation to look continuous without busy-waiting.
 TICK_MS = 80
 
+# Below this recognition confidence, Scan goes looking for the chart again
+# rather than analysing whatever the current region happens to contain. Set
+# under the 50 the quality check calls usable, so a working region is never
+# thrown away, and above the 35 a badly-placed region typically scores.
+RELOCATE_BELOW_CONFIDENCE = 45.0
+
 
 class OverlayApp:
     """The overlay application: engine + panel + the glue between them."""
@@ -37,6 +43,13 @@ class OverlayApp:
             level=str(self.config.get("logging.level", "INFO")),
             file=self.config.resolve_path("logging.file"),
         )
+
+        # Point the OCR wrapper at a usable Tesseract before anything tries to
+        # read the screen. Without this a packaged build silently cannot read
+        # the pair name, the timeframe or the price axis.
+        from ..chart_detection.tesseract_setup import configure as configure_ocr
+
+        self.ocr_ready = configure_ocr()
 
         self.engine = AnalysisEngine(self.config)
         self.vm = OverlayViewModel(
@@ -59,6 +72,7 @@ class OverlayApp:
         # The engine publishes from its own thread; the UI thread drains this.
         self._updates: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=32)
         self._pending_signal = None
+        self._last_layout = None
         self.panel = None
 
     # -- engine plumbing ----------------------------------------------------
@@ -143,16 +157,89 @@ class OverlayApp:
         the last signal. So the tracker's memory (peak confidence, weakening
         state, expiry) is dropped first; the revealed verdict describes only
         what the scan saw, never what an earlier chart looked like.
+
+        "From scratch" now includes finding the chart. Scan locates the plot,
+        its price axis, the pair name and the timeframe badge by itself when it
+        has no working region — pressing one button is the whole interaction.
         """
         self.vm.scan.begin()
         self._pending_signal = None
         self.engine.tracker.reset()
+
+        if self._should_relocate():
+            self.locate_chart()
+
         try:
             # Run one cycle immediately rather than waiting for the next poll.
             self.engine.tick()
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("manual scan failed: %s", exc)
             self.vm.last_error = f"Scan failed: {exc}"
+
+    def _should_relocate(self) -> bool:
+        """Whether Scan should go looking for the chart before analysing.
+
+        Only for the screen source, and only when the current region is either
+        missing or plainly not working. Re-locating a region that is reading
+        the chart well would throw away a good calibration for nothing.
+        """
+        if str(self.config.get("capture.source", "screen")) != "screen":
+            return False
+        from ..chart_detection.autodetect import Box
+
+        if Box.from_dict(self.config.get("capture.region")) is None:
+            return True
+        confidence = self.vm.data_confidence
+        return confidence is not None and confidence < RELOCATE_BELOW_CONFIDENCE
+
+    def locate_chart(self) -> str:
+        """Find the chart on screen and reconfigure from what is found."""
+        from .autoscan import scan_screen
+
+        result = scan_screen(self.config, exclude=self._own_windows())
+        self._last_layout = result.layout
+        if result.applied:
+            self.engine._rebuild_source()
+            self.vm.signal = None
+            self.vm.asset = self.engine.asset
+            self.vm.chart_timeframe = self.engine.chart_timeframe
+            self._refresh_session()
+            log.info("auto-scan: %s", result.message)
+        else:
+            self.vm.last_error = result.message
+            log.warning("auto-scan found nothing: %s", result.message)
+        return result.message
+
+    def _own_windows(self) -> list[Any]:
+        """GateKeeper's own windows, so the detector never analyses itself.
+
+        The panel is always on top and full of candle-coloured buttons. Left in
+        the frame it is a plausible-looking chart sitting directly over the real
+        one, and whichever it picked would be wrong.
+        """
+        from ..chart_detection.autodetect import Box
+
+        boxes: list[Any] = []
+        if self.panel is None:
+            return boxes
+        for window in (getattr(self.panel, "root", None),):
+            if window is None:
+                continue
+            try:
+                window.update_idletasks()
+                box = Box(
+                    int(window.winfo_rootx()),
+                    int(window.winfo_rooty()),
+                    int(window.winfo_width()),
+                    int(window.winfo_height()),
+                )
+            except Exception:  # pragma: no cover - window not realised
+                continue
+            if box.area > 0:
+                # A little margin: the window's drop shadow and border are not
+                # inside winfo_width, and they are coloured too.
+                boxes.append(Box(box.left - 8, box.top - 8, box.width + 16, box.height + 16))
+        return boxes
 
     def _finish_scan(self) -> None:
         self.vm.signal = self._pending_signal or self.engine.state.signal
@@ -292,6 +379,7 @@ class OverlayApp:
             self.config,
             on_apply=self._apply_settings,
             on_pick_region=self._pick_region,
+            on_locate_chart=self.locate_chart,
         )
 
     def _apply_settings(self, changes: dict[str, Any]) -> None:

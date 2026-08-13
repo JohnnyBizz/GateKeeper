@@ -23,7 +23,11 @@ from poa.chart_detection import (
     validate_series,
     write_csv,
 )
-from poa.chart_detection.calibration import PriceCalibration, relative_calibration
+from poa.chart_detection.calibration import (
+    PriceCalibration,
+    relative_calibration,
+    resolve_calibration,
+)
 from poa.models import Candle, Series
 
 cv2 = pytest.importorskip("cv2", reason="OpenCV is only needed for the screen source")
@@ -710,3 +714,215 @@ class TestCalibrationInvalidation:
             assert calls == [True]
         finally:
             engine.close()
+
+
+# --------------------------------------------------------------------------
+# Automatic layout detection: finding the chart without being told where it is.
+
+from poa.chart_detection.autodetect import (  # noqa: E402
+    Box,
+    detect_layout,
+    find_candle_field,
+)
+from poa.chart_detection.render import (  # noqa: E402
+    ScreenStyle,
+    render_platform_screen,
+)
+
+
+def platform_screen(
+    count: int = 160,
+    seed: int = 7,
+    candle_width: int = 7,
+    candle_gap: int = 4,
+    **screen_kwargs,
+):
+    """A whole trading-platform screen, plus the ground truth for its parts."""
+    series = generate_series(count, seed=seed)
+    image, truth = render_platform_screen(
+        series,
+        ScreenStyle(**screen_kwargs),
+        RenderStyle(candle_width=candle_width, candle_gap=candle_gap),
+    )
+    return series, image, truth
+
+
+class TestFindingTheChart:
+    def test_the_candle_field_is_found_on_a_full_screen(self):
+        _series, image, truth = platform_screen()
+        box, count, pitch = find_candle_field(image)
+        assert box is not None
+        assert count > 60
+        assert pitch == pytest.approx(11.0, abs=1.0)
+        # This is the candle field, not the whole canvas: it starts where
+        # the candles start, stops where they stop (the price axis occupies
+        # the rest of the plot's width), and vertically hugs the candles rather
+        # than filling a plot they never reach the top of.
+        plot_left, plot_top, plot_right, plot_bottom = truth["chart"]
+        axis_width = RenderStyle().axis_width
+        assert abs(box.left - plot_left) < 40
+        assert abs(box.right - (plot_right - axis_width)) < 40
+        assert box.top >= plot_top - 40
+        assert box.bottom <= plot_bottom + 40
+
+    def test_the_buy_and_sell_buttons_are_not_mistaken_for_candles(self):
+        """The buttons are the same green and red, and much bigger."""
+        _series, image, truth = platform_screen()
+        box, _count, _pitch = find_candle_field(image)
+        assert box is not None
+        # The trade panel starts at width - panel_width; nothing in the
+        # detected field may come from there.
+        assert box.left < truth["chart"][2]
+        assert box.right <= image.shape[1] - 100
+
+    def test_a_screen_with_no_chart_yields_nothing(self):
+        blank = np.full((600, 900, 3), (110, 45, 60), dtype=np.uint8)
+        box, _count, _pitch = find_candle_field(blank)
+        assert box is None
+
+    def test_an_excluded_window_is_not_analysed(self):
+        """GateKeeper's own panel must never be read as a chart."""
+        _series, image, truth = platform_screen()
+        whole = Box(0, 0, image.shape[1], image.shape[0])
+        box, count, _pitch = find_candle_field(image, exclude=[whole])
+        assert box is None and count == 0
+
+    def test_candle_coloured_gridlines_do_not_fuse_the_field(self):
+        """A SuperTrend-style overlay must not weld the candles together."""
+        _series, image, truth = platform_screen()
+        # Draw long horizontal lines straight through the plot in candle green.
+        top, bottom = truth["chart"][1], truth["chart"][3]
+        for row in range(top + 40, bottom - 40, 90):
+            image[row, truth["chart"][0] : truth["chart"][2]] = (110, 200, 80)
+        box, count, _pitch = find_candle_field(image)
+        assert box is not None
+        assert count > 60
+
+
+class TestReadingTheLabels:
+    def test_the_pair_and_timeframe_are_read_from_the_screen(self):
+        _series, image, _truth = platform_screen(
+            asset_label="CAD/JPY OTC", timeframe_label="H3"
+        )
+        layout = detect_layout(image)
+        assert layout.ok
+        assert layout.asset_name == "CAD/JPY OTC"
+        assert layout.timeframe_seconds == 10800
+        assert layout.asset is not None and layout.timeframe is not None
+        assert layout.issues == []
+
+    def test_a_plain_pair_is_read(self):
+        _series, image, _truth = platform_screen(
+            asset_label="EUR/USD", timeframe_label="M1"
+        )
+        layout = detect_layout(image)
+        assert layout.asset_name == "EUR/USD"
+        assert layout.timeframe_seconds == 60
+
+    def test_unreadable_labels_are_reported_not_invented(self):
+        _series, image, _truth = platform_screen(
+            asset_label="", timeframe_label=""
+        )
+        layout = detect_layout(image)
+        assert layout.ok  # the chart itself is still found
+        assert layout.asset_name is None
+        assert layout.timeframe_seconds is None
+        assert any("pair" in issue for issue in layout.issues)
+
+
+class TestDetectedRegionIsUsable:
+    def test_candles_extracted_from_the_detected_region_are_accurate(self):
+        """The whole point: detect, crop, extract, and get the chart back."""
+        series, image, _truth = platform_screen(count=200, seed=5)
+        layout = detect_layout(image, read_labels=False)
+        assert layout.chart is not None
+
+        box = layout.chart
+        crop = image[box.top : box.bottom, box.left : box.right]
+        extraction = extract_pixel_candles(crop)
+        calibration = resolve_calibration(crop, None, use_ocr=True)
+        assert calibration.method == "ocr"
+
+        recovered = pixel_candles_to_series(
+            extraction.candles,
+            calibration.price_at_row,
+            timeframe_seconds=60,
+            symbol="TEST",
+        )
+        overlap = min(len(recovered), len(series))
+        assert overlap > 80
+
+        expected = np.sign(series.close[-overlap:] - series.open[-overlap:])
+        actual = np.sign(recovered.close[-overlap:] - recovered.open[-overlap:])
+        assert float((expected == actual).mean()) > 0.95
+
+        error = np.abs(recovered.close[-overlap:] - series.close[-overlap:])
+        assert float((error / series.close[-overlap:]).max()) < 0.001
+
+
+class TestAxisReadingIsNotSilentlyWrong:
+    def test_a_clipped_axis_does_not_pass_as_a_confident_scale(self):
+        """A decimal point lost from every label still fits a straight line.
+
+        That is the misread nothing downstream can catch, so it has to be
+        caught here — either by reading the labels whole, or by saying so.
+        """
+        series, image, _truth = platform_screen(count=140, seed=3)
+        layout = detect_layout(image, read_labels=False)
+        box = layout.chart
+        crop = image[box.top : box.bottom, box.left : box.right]
+
+        calibration = resolve_calibration(crop, None, use_ocr=True)
+        assert calibration.method == "ocr"
+        # Read whole, the scale must land on the actual price, not 100000x it.
+        mid = calibration.price_at_row(crop.shape[0] / 2)
+        assert 0.5 < mid / float(series.close.mean()) < 2.0
+
+    def test_labels_in_a_minority_format_are_discarded(self):
+        from poa.chart_detection.calibration import _consistent_format
+
+        reads = [
+            (10.0, "1.08641", 1.08641),
+            (40.0, "1.08478", 1.08478),
+            (70.0, "08154", 8154.0),  # the leading "1." was sliced off
+            (100.0, "1.07992", 1.07992),
+        ]
+        kept = _consistent_format(reads)
+        assert [text for _row, text, _price in kept] == [
+            "1.08641", "1.08478", "1.07992",
+        ]
+
+
+class TestWithoutOcr:
+    """The app must be honest, not silent, when it cannot read text."""
+
+    def test_one_clear_cause_beats_three_vague_symptoms(self, monkeypatch):
+        from poa.chart_detection import autodetect
+
+        monkeypatch.setattr(autodetect, "ocr_available", lambda: False)
+        _series, image, _truth = platform_screen()
+        layout = detect_layout(image)
+
+        assert layout.ok  # candles are pixels, and still readable
+        assert layout.asset_name is None and layout.timeframe_seconds is None
+        assert len(layout.issues) == 1
+        assert "Tesseract" in layout.issues[0]
+
+    def test_an_existing_install_is_left_alone(self, monkeypatch):
+        from poa.chart_detection import tesseract_setup
+
+        monkeypatch.setattr(tesseract_setup, "_works", lambda: True)
+        pytesseract = pytest.importorskip("pytesseract")
+        before = pytesseract.pytesseract.tesseract_cmd
+        assert tesseract_setup.configure() is True
+        assert pytesseract.pytesseract.tesseract_cmd == before
+
+    def test_a_missing_binary_reports_failure_rather_than_raising(
+        self, monkeypatch, tmp_path
+    ):
+        from poa.chart_detection import tesseract_setup
+
+        pytest.importorskip("pytesseract")
+        monkeypatch.setattr(tesseract_setup, "_works", lambda: False)
+        monkeypatch.setattr(tesseract_setup, "_bundle_root", lambda: tmp_path)
+        assert tesseract_setup.configure() is False

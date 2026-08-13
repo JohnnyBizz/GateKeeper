@@ -47,7 +47,16 @@ class LabelReading(Generic[T]):
 
     @property
     def ok(self) -> bool:
-        return self.value is not None and self.confidence >= 55.0
+        """Whether this reading is worth acting on.
+
+        Deliberately not gated on Tesseract's confidence. Under a character
+        whitelist it routinely reports 0 for a perfectly correct read, so a
+        confidence floor throws away exactly the reads it was meant to protect.
+        The real gate is the parser — a string only becomes a value if it looks
+        like a currency pair or a chart interval — backed by the hysteresis
+        below, which will not adopt anything read only once.
+        """
+        return self.value is not None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -89,9 +98,117 @@ def ocr_text(image, whitelist: str) -> tuple[str, float]:
             confidence = float(data["conf"][index])
         except (KeyError, IndexError, ValueError):
             continue
-        if confidence < 30:
+        if confidence < 0:  # -1 marks a box Tesseract found no text in
             continue
         words.append(word.strip())
+        confidences.append(confidence)
+
+    if not words:
+        return "", 0.0
+    return " ".join(words), float(sum(confidences) / len(confidences))
+
+
+# Text sizes worth considering, in screen pixels. Below the floor OCR is
+# guessing; above the ceiling it is a heading, not a label or an axis price.
+MIN_TEXT_HEIGHT = 9
+MAX_TEXT_HEIGHT = 64
+
+
+def find_text_boxes(image) -> list[tuple[int, int, int, int]]:
+    """Locate word-shaped clusters of glyph strokes, without reading them.
+
+    Returns (left, top, width, height) tuples in the image's own coordinates.
+
+    Handing a whole strip of interface to Tesseract does not work: it picks one
+    global threshold, and on a screen where the panel, the background and the
+    text are three different brightnesses that threshold separates the panel
+    from the background and loses the text entirely. Finding the words first
+    and reading each one on its own turns an unsolved segmentation problem into
+    a series of tight, high-contrast crops — which is the case OCR is good at.
+
+    Glyphs are found by local contrast rather than brightness, so light text on
+    a dark chart and dark text on a light toolbar are found the same way.
+    """
+    if cv2 is None or image is None or image.size == 0:
+        return []
+
+    grey = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # A glyph is a small, high-contrast disturbance in an otherwise smooth
+    # background. Subtracting a blurred copy leaves the strokes and drops the
+    # flat panels a global threshold used to lock on to.
+    blurred = cv2.GaussianBlur(grey, (0, 0), 3.0)
+    detail = cv2.absdiff(grey, blurred)
+    if detail.max() < 12:  # nothing but flat colour
+        return []
+    _, strokes = cv2.threshold(detail, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    # Join letters into words: a horizontal close spanning roughly one
+    # character gap, and a small vertical one to bridge dotted glyphs.
+    strokes = cv2.morphologyEx(
+        strokes, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+    )
+
+    count, _, stats, _ = cv2.connectedComponentsWithStats(strokes, connectivity=8)
+    boxes: list[tuple[int, int, int, int]] = []
+    for index in range(1, count):
+        left, top, width, height, area = (int(v) for v in stats[index])
+        if not (MIN_TEXT_HEIGHT <= height <= MAX_TEXT_HEIGHT):
+            continue
+        if width < 8 or width > height * 30:
+            continue
+        if area < width * height * 0.05:  # a hollow box outline, not glyphs
+            continue
+        boxes.append((left, top, width, height))
+    return boxes
+
+
+def ocr_crop(
+    image, box: tuple[int, int, int, int], whitelist: str
+) -> tuple[str, float]:
+    """Read one tight crop of ``image``. Returns (text, confidence)."""
+    if pytesseract is None or cv2 is None or image is None or image.size == 0:
+        return "", 0.0
+
+    left, top, width, height = box
+    x0 = max(0, left - 5)
+    y0 = max(0, top - 5)
+    x1 = min(image.shape[1], left + width + 5)
+    y1 = min(image.shape[0], top + height + 5)
+    if x1 <= x0 or y1 <= y0:
+        return "", 0.0
+
+    crop = image[y0:y1, x0:x1]
+    grey = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Aim for roughly 40px of glyph height, which is where Tesseract is happiest.
+    scale = max(1.0, min(8.0, 40.0 / max(height, 1)))
+    grey = cv2.resize(grey, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    _, binary = cv2.threshold(grey, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    if binary.mean() < 127:  # light text on a dark background
+        binary = cv2.bitwise_not(binary)
+
+    try:
+        data = pytesseract.image_to_data(
+            binary,
+            config=f"{_SINGLE_LINE} -c tessedit_char_whitelist={whitelist}",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception as exc:  # pragma: no cover - tesseract missing/broken
+        log.debug("crop OCR failed: %s", exc)
+        return "", 0.0
+
+    words: list[str] = []
+    confidences: list[float] = []
+    for index, text in enumerate(data.get("text", [])):
+        cleaned = text.strip()
+        if not cleaned:
+            continue
+        try:
+            confidence = float(data["conf"][index])
+        except (KeyError, IndexError, ValueError):
+            continue
+        if confidence < 0:  # -1 marks a box Tesseract found no text in
+            continue
+        words.append(cleaned)
         confidences.append(confidence)
 
     if not words:

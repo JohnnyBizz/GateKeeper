@@ -19,9 +19,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.yaml"
 
-# Timeframes the UI offers, in seconds.
+# Timeframes the UI offers, in seconds. This list is also what the timeframe
+# badge is snapped onto, so a timeframe missing from here cannot be read off
+# the screen at all — H3 is in the list because the platform offers it.
 CHART_TIMEFRAMES: tuple[int, ...] = (
-    5, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 86400,
+    5, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 10800, 14400, 86400,
 )
 
 # Expirations Pocket Option style platforms commonly offer, in seconds.

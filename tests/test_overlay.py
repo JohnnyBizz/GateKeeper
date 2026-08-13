@@ -456,3 +456,149 @@ class TestChartSwitching:
             assert risk["stake"] == pytest.approx(20.0)
         finally:
             app.shutdown()
+
+
+class TestAutomaticChartLocation:
+    """Scan finds the chart itself — no boxes to drag, nothing to type."""
+
+    def _screen(self, asset="CAD/JPY OTC", timeframe="M5"):
+        cv2 = pytest.importorskip("cv2")
+        from poa.chart_detection import generate_series
+        from poa.chart_detection.render import (
+            RenderStyle,
+            ScreenStyle,
+            render_platform_screen,
+        )
+
+        series = generate_series(200, seed=5)
+        image, truth = render_platform_screen(
+            series,
+            ScreenStyle(asset_label=asset, timeframe_label=timeframe),
+            RenderStyle(candle_width=7, candle_gap=4),
+        )
+        return series, image, truth
+
+    def _config(self, tmp_path):
+        from poa.config import load_config
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("config_path", str(tmp_path / "config.yaml"))
+        config.set("capture.source", "screen")
+        return config
+
+    def test_a_scan_configures_the_region_pair_and_timeframe(self, tmp_path):
+        from poa.overlay.autoscan import scan_screen
+
+        _series, image, truth = self._screen()
+        config = self._config(tmp_path)
+        result = scan_screen(config, grab=lambda _i: (image, {"left": 0, "top": 0}))
+
+        assert result.applied
+        region = config.get("capture.region")
+        assert abs(region["left"] - truth["chart"][0]) < 40
+        assert config.get("market.asset") == "CAD/JPY OTC"
+        assert config.get("market.chart_timeframe") == 300
+        assert config.get("capture.asset_region")["width"] > 0
+        assert config.get("capture.timeframe_region")["width"] > 0
+        assert "CAD/JPY OTC" in result.message
+
+    def test_the_monitor_origin_is_added_to_every_box(self, tmp_path):
+        """A second monitor's coordinates are offset from the desktop origin."""
+        from poa.overlay.autoscan import scan_screen
+
+        _series, image, _truth = self._screen()
+        origin = {"left": 1920, "top": -200}
+        config = self._config(tmp_path)
+        assert scan_screen(config, grab=lambda _i: (image, origin)).applied
+
+        for key in ("capture.region", "capture.asset_region", "capture.timeframe_region"):
+            box = config.get(key)
+            assert box["left"] >= 1920
+            assert box["top"] >= -200
+
+    def test_a_stale_calibration_is_dropped_with_the_old_region(self, tmp_path):
+        """Pixel rows from the previous region point at different prices now."""
+        from poa.overlay.autoscan import scan_screen
+
+        _series, image, _truth = self._screen()
+        config = self._config(tmp_path)
+        config.set(
+            "capture.calibration",
+            {"enabled": True, "top_pixel": 10, "top_price": 1.09,
+             "bottom_pixel": 400, "bottom_price": 1.08},
+        )
+        scan_screen(config, grab=lambda _i: (image, {"left": 0, "top": 0}))
+        assert config.get("capture.calibration") == {"enabled": False}
+
+    def test_nothing_is_written_when_no_chart_is_found(self, tmp_path):
+        import numpy as np
+
+        from poa.overlay.autoscan import scan_screen
+
+        pytest.importorskip("cv2")
+        config = self._config(tmp_path)
+        config.set("capture.region", {"left": 1, "top": 2, "width": 3, "height": 4})
+        blank = np.full((600, 900, 3), (110, 45, 60), dtype=np.uint8)
+
+        result = scan_screen(config, grab=lambda _i: (blank, {"left": 0, "top": 0}))
+        assert not result.applied
+        assert config.get("capture.region") == {"left": 1, "top": 2, "width": 3, "height": 4}
+        assert "No candle chart" in result.message
+
+    def test_a_capture_failure_is_reported_not_raised(self, tmp_path):
+        from poa.overlay.autoscan import scan_screen
+
+        def explode(_index):
+            raise RuntimeError("no display")
+
+        result = scan_screen(self._config(tmp_path), grab=explode)
+        assert not result.applied
+        assert "no display" in result.message
+
+
+class TestScanDecidesWhenToRelocate:
+    def _app(self, tmp_path, **settings):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        for key, value in settings.items():
+            config.set(key, value)
+        return OverlayApp(config)
+
+    def test_a_non_screen_source_is_never_relocated(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            assert not app._should_relocate()
+        finally:
+            app.shutdown()
+
+    def test_a_screen_source_with_no_region_relocates(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("capture.source", "screen")
+            app.config.set("capture.region", {"left": 0, "top": 0, "width": 0, "height": 0})
+            assert app._should_relocate()
+        finally:
+            app.shutdown()
+
+    def test_a_working_region_is_left_alone(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("capture.source", "screen")
+            app.config.set(
+                "capture.region", {"left": 0, "top": 0, "width": 900, "height": 500}
+            )
+            app.vm.data_confidence = 92.0
+            assert not app._should_relocate()
+            # ...but a region that cannot read the chart is worth replacing.
+            app.vm.data_confidence = 35.0
+            assert app._should_relocate()
+        finally:
+            app.shutdown()

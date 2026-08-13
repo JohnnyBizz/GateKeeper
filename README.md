@@ -415,11 +415,10 @@ of trades means nothing.
 
 The **⚙ button** in the panel header opens settings: which chart to read
 (live screen / demo / CSV), the asset, both timeframes, payout, balance, the
-confidence floors, and alerts. **Select…** next to *Chart area* freezes the
-screen so you can drag a box around your chart and click two known prices to
-calibrate the scale — the same job `tools/select_region.py` does, without
-leaving the app. Everything is applied immediately and saved to `config.yaml`,
-so it survives a restart.
+confidence floors, and alerts. **Find chart** locates everything by itself
+(below); **Select…** is the manual fallback, freezing the screen so you can
+drag a box and click two known prices. Everything is applied immediately and
+saved to `config.yaml`, so it survives a restart.
 
 The overlay needs Tkinter, which ships with Python on Windows/macOS; on Linux
 it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
@@ -428,39 +427,55 @@ it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
 
 ## 8. Connecting it to your chart
 
-1. Open your chart and set it up the way you trade it.
-2. Select the chart area:
+Open your chart, open GateKeeper, press **Scan**. That is the whole setup.
 
-   ```bash
-   python tools/select_region.py
-   ```
+### How it finds the chart
 
-   Drag a box around the plot area — **candles plus the price axis, and none of
-   the platform's buttons, order panel or asset list**. Anything else in the
-   region gets mistaken for candles and lowers recognition confidence. The tool
-   immediately reports how many candles it can see.
+Scan locates the chart itself whenever it has no working region, so there is
+nothing to drag and nothing to type. It rests on one property candles have that
+interface chrome does not: **rhythm**. Candles are drawn at a fixed pitch,
+dozens in a row, all the same width. The BUY button, the SELL button, a green
+account balance and the coloured sidebar icons are all candle-coloured too, but
+none of them repeats forty times at a constant spacing. So the detector does not
+look for green things; it looks for the longest evenly-spaced run of green and
+red things, which is the candle field and nothing else.
 
-3. When prompted, press **Y** and click two horizontal lines whose prices you
-   can read off the axis, then type those prices. This calibrates the price
-   scale exactly.
+Everything after that is positional:
 
-4. Paste the printed YAML into `config.yaml` and set:
+| Part | How it is found |
+|---|---|
+| Price axis | The column of numeric labels immediately right of the candles. Its width is measured, not assumed — a strip narrower than the labels slices the leading digits off *every* one, and what is left is still perfectly linear, so nothing downstream would catch it. |
+| Pair name | Symbol-shaped text near the plot (`EUR/USD`, `CAD/JPY OTC`). Confirmed by parsing, so a stray word is never adopted as an instrument. |
+| Timeframe badge | The nearest token that parses as an interval (`M1`, `5m`, `H3`) *and* matches one the platform actually offers. |
+| GateKeeper's own window | Excluded. The panel is always on top and full of candle-coloured buttons; left in the frame it is a plausible-looking chart sitting over the real one. |
 
-   ```yaml
-   capture:
-     source: screen
-   market:
-     asset: EUR/USD
-     chart_timeframe: 60     # match your chart
-     trade_duration: 180     # the expiration you intend to buy
-   ```
+Text is read by finding each word as a shape first and reading it on its own.
+Handing a whole strip of interface to Tesseract does not work — it picks one
+global threshold, and where the panel, the background and the text are three
+different brightnesses, that threshold separates the panel from the background
+and loses the text entirely.
 
-5. `python run.py`
+Scan re-locates only when it has to: no region configured, or the current one
+scoring under 45% recognition confidence. A region that is reading the chart
+well is never thrown away, because that would discard a good calibration for
+nothing.
 
-**If recognition confidence is low**, widen the region, zoom the chart so more
-candles are visible, or set `capture.colors` if your theme uses unusual candle
-colours. The dashboard shows the confidence at all times — do not trade off a
-reading the tool says it is unsure about.
+**Text recognition needs Tesseract.** The Windows build bundles it. Otherwise:
+`sudo apt install tesseract-ocr`, `brew install tesseract`, or the
+[UB-Mannheim installer](https://github.com/UB-Mannheim/tesseract/wiki). Without
+it candle patterns and direction still work, but the pair, the timeframe and the
+price axis cannot be read — and GateKeeper says so rather than going quiet.
+
+### If it cannot find the chart
+
+* Make sure the chart is fully visible and not covered by another window.
+* Zoom out so more candles are on screen — a field needs at least 18 to register.
+* Set `capture.colors` if your theme uses unusual candle colours.
+* Fall back to **Select…** and drag the box yourself: candles plus the price
+  axis, none of the platform's buttons.
+
+The panel shows recognition confidence at all times. Do not trade off a reading
+the tool says it is unsure about.
 
 ---
 

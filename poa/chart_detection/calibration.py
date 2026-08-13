@@ -22,6 +22,8 @@ from typing import Any, Callable
 
 import numpy as np
 
+from .label_reader import find_text_boxes, ocr_crop
+
 try:  # pragma: no cover - optional
     import cv2
 except ImportError:  # pragma: no cover
@@ -135,6 +137,30 @@ def _parse_price(text: str) -> float | None:
     return value if np.isfinite(value) else None
 
 
+def _consistent_format(
+    reads: list[tuple[float, str, float]]
+) -> list[tuple[float, str, float]]:
+    """Keep only the labels that share the axis's dominant number format.
+
+    Every label on one axis is drawn by the same code with the same precision,
+    so "1.08641" and "08154" cannot both be right. Where they disagree the
+    minority was misread, and a misread that still lands on a straight line is
+    the dangerous kind — nothing further down the pipeline would catch it.
+    """
+    if len(reads) < 2:
+        return reads
+
+    def shape(text: str) -> tuple[bool, int]:
+        head, _, tail = text.partition(".")
+        return ("." in text, len(tail) if "." in text else len(head))
+
+    counts: dict[tuple[bool, int], int] = {}
+    for _row, text, _price in reads:
+        counts[shape(text)] = counts.get(shape(text), 0) + 1
+    dominant = max(counts, key=lambda key: (counts[key], key[0]))
+    return [read for read in reads if shape(read[1]) == dominant]
+
+
 def calibrate_with_ocr(
     image: np.ndarray, axis_width_px: int = 70
 ) -> PriceCalibration | None:
@@ -149,40 +175,29 @@ def calibrate_with_ocr(
         return None
 
     height, width = image.shape[:2]
-    axis_width = min(max(int(axis_width_px), 20), width - 1)
+    # Search a generous strip rather than a tight one. A strip narrower than
+    # the labels slices the leading characters off every one of them — and
+    # because it slices them all the same way, what is left is still perfectly
+    # linear, so every downstream check passes and the chart reports prices
+    # that are wrong by orders of magnitude. Widening is free: labels are found
+    # as text shapes, and a candle is not text.
+    axis_width = min(max(int(axis_width_px), 20, min(width // 3, 220)), width - 1)
     axis = image[:, width - axis_width :]
 
-    grey = cv2.cvtColor(axis, cv2.COLOR_BGR2GRAY)
-    # Upscale before thresholding: axis labels are small and Tesseract does
-    # markedly better with more pixels per glyph.
-    grey = cv2.resize(grey, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-    _, binary = cv2.threshold(grey, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    if binary.mean() < 127:  # light text on dark chart
-        binary = cv2.bitwise_not(binary)
-
-    try:
-        data = pytesseract.image_to_data(
-            binary,
-            config="--psm 6 -c tessedit_char_whitelist=0123456789.,",
-            output_type=pytesseract.Output.DICT,
-        )
-    except Exception:  # pragma: no cover - tesseract binary missing/broken
-        return None
-
-    samples: list[tuple[float, float]] = []
-    for i, text in enumerate(data.get("text", [])):
+    # Find each label as a shape first, then read it on its own. Thresholding
+    # the whole axis strip in one go fails whenever the chart's background and
+    # the axis gutter differ in brightness — the split lands between those two
+    # and the digits go with whichever side they sit on.
+    reads: list[tuple[float, str, float]] = []
+    for box in find_text_boxes(axis):
+        text, _confidence = ocr_crop(axis, box, "0123456789.,")
         price = _parse_price(text)
         if price is None:
             continue
-        try:
-            confidence = float(data["conf"][i])
-        except (KeyError, IndexError, ValueError):
-            confidence = -1.0
-        if confidence < 45:
-            continue
-        # Undo the 3x upscale to get back to original image rows.
-        row = (float(data["top"][i]) + float(data["height"][i]) / 2.0) / 3.0
-        samples.append((row, price))
+        reads.append((box[1] + box[3] / 2.0, text.strip().replace(",", "."), price))
+
+    reads = _consistent_format(reads)
+    samples = [(row, price) for row, _text, price in reads]
 
     if len(samples) < 2:
         return None
@@ -212,6 +227,22 @@ def calibrate_with_ocr(
     if len(samples) >= 4:
         confidence = min(95.0, confidence + 5.0)
 
+    # A decimal point lost from every label is the one misread that leaves the
+    # fit perfect and the prices wrong by a factor of a hundred thousand. It
+    # cannot be ruled out from the numbers alone — an index really does read
+    # 38500 — so it is not rejected, it is said out loud next to the price.
+    note = ""
+    if all("." not in text for _row, text, _price in reads) and min(
+        len(text) for _row, text, _price in reads
+    ) >= 5:
+        confidence = min(confidence, 60.0)
+        note = (
+            "The price axis was read as whole numbers with no decimal point "
+            f"(for example {reads[0][1]}). If the chart's prices have decimals, "
+            "the levels shown are the wrong size — check the price against the "
+            "chart, and set the scale by hand in settings if it disagrees."
+        )
+
     return PriceCalibration(
         top_pixel=0.0,
         top_price=float(intercept),
@@ -219,6 +250,7 @@ def calibrate_with_ocr(
         bottom_price=float(slope * (height - 1) + intercept),
         confidence=confidence,
         method="ocr",
+        note=note,
     )
 
 

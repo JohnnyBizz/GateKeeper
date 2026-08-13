@@ -35,10 +35,12 @@ class SettingsDialog:
         *,
         on_apply: Callable[[dict[str, Any]], None],
         on_pick_region: Callable[[Callable[[str], None]], None] | None = None,
+        on_locate_chart: Callable[[], str] | None = None,
     ) -> None:
         self.config = config
         self.on_apply = on_apply
         self.on_pick_region = on_pick_region
+        self.on_locate_chart = on_locate_chart
         self._vars: dict[str, tk.Variable] = {}
 
         self.window = tk.Toplevel(parent)
@@ -174,7 +176,13 @@ class SettingsDialog:
             font=("TkDefaultFont", 8),
         )
         self._region_label.pack(side="right", padx=(6, 0))
+        # Manual selection stays, but it is the fallback now. Finding the chart
+        # automatically is both easier and more accurate than a dragged box,
+        # which tends to clip the axis or swallow a button.
         self._button(row, "Select…", self._pick_region).pack(side="right")
+        self._button(
+            row, "Find chart", self._locate_chart, primary=True
+        ).pack(side="right", padx=(0, 6))
 
     def _scale_row(self, parent: tk.Widget, key: str, label: str, value: float) -> None:
         row = self._row(parent, label)
@@ -228,6 +236,39 @@ class SettingsDialog:
         return widget
 
     # -- actions ------------------------------------------------------------
+
+    def _locate_chart(self) -> None:
+        """Find the chart on screen without asking the user to draw anything."""
+        if self.on_locate_chart is None:
+            self._status.configure(text="Automatic detection is unavailable.")
+            return
+        self._status.configure(text="Looking for a chart on screen…")
+        self.window.withdraw()
+        self.window.update_idletasks()
+
+        try:
+            message = self.on_locate_chart()
+        except Exception as exc:  # pragma: no cover - defensive
+            message = f"Could not scan the screen: {exc}"
+
+        try:
+            self.window.deiconify()
+            region = self.config.get("capture.region") or {}
+            if int(region.get("width", 0)) > 50:
+                self._region_label.configure(
+                    text=f"{region.get('width')}×{region.get('height')}",
+                    fg=COLORS["call"],
+                )
+            # The detected pair and timeframe are now the live values, so the
+            # fields must not save the stale ones back over them.
+            self._vars["asset"].set(str(self.config.get("market.asset", "")))
+            self._vars["chart_timeframe"].set(
+                format_duration(int(self.config.get("market.chart_timeframe", 60)))
+            )
+            self._vars["source"].set(SOURCE_LABELS["screen"])
+            self._status.configure(text=message)
+        except tk.TclError:  # pragma: no cover - window closed meanwhile
+            pass
 
     def _pick_region(self) -> None:
         if self.on_pick_region is None:

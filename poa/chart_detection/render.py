@@ -30,9 +30,13 @@ class RenderStyle:
     candle_width: int = 7
     candle_gap: int = 4
     padding: int = 24
-    axis_width: int = 70
+    axis_width: int = 80
     draw_axis: bool = True
     axis_labels: int = 6
+    # Roughly 11px of glyph height, matching what a platform actually draws on
+    # its price axis. Drawing it smaller made the fixture harder than reality
+    # and sent the OCR chasing a problem it does not have.
+    axis_font_scale: float = 0.45
 
 
 def render_series(
@@ -102,7 +106,7 @@ def render_series(
                 f"{price:.5f}",
                 (plot_width + 4, min(height - 4, max(12, row + 4))),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
+                style.axis_font_scale,
                 style.axis_text,
                 1,
                 cv2.LINE_AA,
@@ -115,6 +119,136 @@ def render_series(
         bottom_price=low,
     )
     return image, mapping
+
+
+@dataclass
+class ScreenStyle:
+    """Chrome drawn around the chart, to test layout detection against.
+
+    Deliberately includes the things that fool a naive "find the green pixels"
+    detector: a large green BUY button, a large red SELL button, a green
+    account balance, coloured sidebar icons and a scattering of gridlines.
+    """
+
+    width: int = 1600
+    height: int = 900
+    # Blue-violet, like the platform's own theme. Deliberately not a hue the
+    # candle masks match — the point of the fixture is the *shapes* around the
+    # chart, and a hostile-hue variant is a separate test.
+    background: tuple[int, int, int] = (110, 45, 60)
+    chrome: tuple[int, int, int] = (135, 62, 78)
+    text: tuple[int, int, int] = (225, 225, 235)
+    sidebar_width: int = 90
+    header_height: int = 64
+    panel_width: int = 230
+    footer_height: int = 40
+    asset_label: str = "CAD/JPY OTC"
+    timeframe_label: str = "H3"
+    draw_buttons: bool = True
+
+
+def render_platform_screen(
+    series: Series,
+    style: ScreenStyle | None = None,
+    chart_style: RenderStyle | None = None,
+) -> tuple[np.ndarray, dict[str, tuple[int, int, int, int]]]:
+    """Draw a whole trading-platform screen around a chart.
+
+    Returns the image plus the ground-truth boxes for the chart plot, the pair
+    label and the timeframe badge, so a detector can be scored against them.
+    """
+    if cv2 is None:  # pragma: no cover
+        raise RuntimeError("rendering requires OpenCV")
+
+    style = style or ScreenStyle()
+    image = np.full((style.height, style.width, 3), style.background, dtype=np.uint8)
+
+    # Sidebar, header and the right-hand trade panel.
+    cv2.rectangle(image, (0, 0), (style.sidebar_width, style.height), style.chrome, -1)
+    cv2.rectangle(image, (0, 0), (style.width, style.header_height), style.chrome, -1)
+    cv2.rectangle(
+        image,
+        (style.width - style.panel_width, style.header_height),
+        (style.width, style.height),
+        style.chrome,
+        -1,
+    )
+
+    if style.draw_buttons:
+        # The two blocks of saturated colour that a naive detector eats.
+        cv2.rectangle(
+            image,
+            (style.width - style.panel_width + 20, 150),
+            (style.width - 20, 210),
+            (110, 200, 80),
+            -1,
+        )
+        cv2.rectangle(
+            image,
+            (style.width - style.panel_width + 20, 230),
+            (style.width - 20, 290),
+            (70, 70, 225),
+            -1,
+        )
+        # A green balance in the header, and a couple of coloured sidebar icons.
+        cv2.putText(
+            image, "58,810.52", (style.width - 210, 40),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (110, 200, 80), 2, cv2.LINE_AA,
+        )
+        for i, y in enumerate((140, 210, 280)):
+            cv2.circle(image, (style.sidebar_width // 2, y), 12, (110, 200, 80), -1)
+
+    # The chart itself, rendered into its own image and pasted in.
+    plot_left = style.sidebar_width + 30
+    plot_top = style.header_height + 70
+    plot_right = style.width - style.panel_width - 20
+    plot_bottom = style.height - style.footer_height - 20
+    plot_height = plot_bottom - plot_top
+
+    chart_style = chart_style or RenderStyle()
+    chart, _ = render_series(series, height=plot_height, style=chart_style)
+    chart_width = min(chart.shape[1], plot_right - plot_left)
+    # Keep the right-hand edge — that is where the price axis is drawn.
+    chart = chart[:, chart.shape[1] - chart_width :]
+    image[plot_top : plot_top + plot_height, plot_left : plot_left + chart_width] = chart
+
+    # Gridlines over the plot, in the platform's own tint — a shade of the
+    # background rather than a candle colour. A candle-coloured overlay is a
+    # real hazard, but it is the SuperTrend case and gets its own fixture.
+    for i in range(1, 5):
+        y = plot_top + plot_height * i // 5
+        cv2.line(image, (plot_left, y), (plot_left + chart_width, y), (146, 74, 92), 1)
+
+    # The pair name above the plot, and the timeframe badge below it.
+    asset_origin = (plot_left + 10, style.header_height + 44)
+    cv2.putText(
+        image, style.asset_label, asset_origin,
+        cv2.FONT_HERSHEY_SIMPLEX, 0.7, style.text, 2, cv2.LINE_AA,
+    )
+    (asset_w, asset_h), _ = cv2.getTextSize(
+        style.asset_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
+    )
+
+    tf_origin = (plot_left + 6, plot_bottom + 28)
+    cv2.putText(
+        image, style.timeframe_label, tf_origin,
+        cv2.FONT_HERSHEY_SIMPLEX, 0.6, style.text, 2, cv2.LINE_AA,
+    )
+    (tf_w, tf_h), _ = cv2.getTextSize(
+        style.timeframe_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
+    )
+
+    truth = {
+        "chart": (plot_left, plot_top, plot_left + chart_width, plot_bottom),
+        "asset": (
+            asset_origin[0], asset_origin[1] - asset_h,
+            asset_origin[0] + asset_w, asset_origin[1],
+        ),
+        "timeframe": (
+            tf_origin[0], tf_origin[1] - tf_h, tf_origin[0] + tf_w, tf_origin[1],
+        ),
+    }
+    return image, truth
 
 
 @dataclass

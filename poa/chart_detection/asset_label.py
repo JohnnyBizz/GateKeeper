@@ -47,6 +47,14 @@ def normalise(text: str) -> str | None:
     quote = (match.group(2) or "").upper()
     otc = " OTC" if match.group(3) else ""
 
+    # OCR drops the space before the OTC suffix often enough that "CAD/JPYOTC"
+    # is a normal read. Left alone it becomes an instrument named JPYOTC, which
+    # then files journal entries under a pair that does not exist.
+    if not otc and quote.endswith("OTC") and len(quote) > 3:
+        quote, otc = quote[:-3], " OTC"
+    elif not otc and not quote and base.endswith("OTC") and len(base) == 6:
+        base, otc = base[:-3], " OTC"
+
     if quote:
         return f"{base}/{quote}{otc}"
     if len(base) == 6:

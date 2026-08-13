@@ -6,9 +6,19 @@
 #
 # The result lands in dist/GateKeeper.exe (Windows) or dist/GateKeeper.
 
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
+
+# Tesseract, when the build vendored it. Without OCR the app still reads
+# candles, but not the pair name, the timeframe badge or the price axis — on a
+# machine with nothing installed it would come up half blind. Kept optional so
+# a plain local `pyinstaller gatekeeper.spec` still builds.
+tesseract_datas = []
+if os.path.isdir("vendor/tesseract"):
+    tesseract_datas.append(("vendor/tesseract", "vendor/tesseract"))
 
 analysis = Analysis(
     ["gatekeeper_main.py"],
@@ -20,7 +30,7 @@ analysis = Analysis(
         ("poa/dashboard", "poa/dashboard"),
         ("config.example.yaml", "."),
         ("data/sample_eurusd_m1.csv", "data"),
-    ],
+    ] + tesseract_datas,
     hiddenimports=collect_submodules("poa"),
     hookspath=[],
     runtime_hooks=[],
