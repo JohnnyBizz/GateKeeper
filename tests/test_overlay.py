@@ -298,3 +298,104 @@ class TestOverlayAppLogic:
             assert app.vm.session.auto_wins == 0
         finally:
             app.shutdown()
+
+
+class TestChartSwitching:
+    """Switching charts on the platform must not leave a stale read on screen."""
+
+    def _app(self, tmp_path, source="synthetic"):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", source)
+        return OverlayApp(config)
+
+    def test_renaming_the_pair_clears_the_previous_signal(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            app._apply_state()
+            assert app.vm.signal is not None
+
+            app._set_asset("GBP/JPY")
+            assert app.vm.asset == "GBP/JPY"
+            # The old verdict described a different chart.
+            assert app.vm.signal is None
+            assert app.vm.render()["verdict"]["blanked"]
+        finally:
+            app.shutdown()
+
+    def test_renaming_the_pair_resets_the_tracker(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            assert app.engine.tracker.current is not None
+            app._set_asset("AUD/CAD")
+            assert app.engine.tracker.current is None
+        finally:
+            app.shutdown()
+
+    def test_the_asset_reaches_the_engine_and_its_captures(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app._set_asset("USD/CHF")
+            app.engine.tick()
+            # The capture carries the asset, and its name wins over config —
+            # so a rename that did not rebuild the source would be invisible.
+            assert app.engine.state.capture_meta["asset"] == "USD/CHF"
+        finally:
+            app.shutdown()
+
+    def test_an_unchanged_name_is_a_no_op(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            app._apply_state()
+            signal = app.vm.signal
+            app._set_asset(app.vm.asset)
+            assert app.vm.signal is signal
+        finally:
+            app.shutdown()
+
+    def test_a_manual_scan_starts_from_a_clean_slate(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            assert app.engine.tracker.current is not None
+            app._begin_scan()
+            # Scanning re-derives from scratch; the previous peak confidence
+            # and weakening state must not carry over onto a different chart.
+            assert app.engine.tracker.history == [] or app.engine.tracker.current is not None
+            assert app.vm.render()["verdict"]["blanked"]
+        finally:
+            app.shutdown()
+
+    def test_stake_and_balance_edits_reach_the_risk_block(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app._set_balance(500.0)
+            app._set_stake(125.0)
+            risk = app.vm.render()["risk"]
+            assert risk["balance"] == pytest.approx(500.0)
+            assert risk["stake"] == pytest.approx(125.0)
+            assert risk["risk_percent"] == pytest.approx(25.0)
+            assert risk["stake_overridden"] is True
+        finally:
+            app.shutdown()
+
+    def test_clearing_the_stake_returns_to_percentage_sizing(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app._set_balance(1000.0)
+            app._set_stake(400.0)
+            app._set_stake(None)
+            risk = app.vm.render()["risk"]
+            assert risk["stake_overridden"] is False
+            assert risk["stake"] == pytest.approx(20.0)
+        finally:
+            app.shutdown()

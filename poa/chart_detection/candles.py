@@ -164,8 +164,14 @@ def extract_pixel_candles(
     image: np.ndarray,
     profile: ColorProfile | None = None,
     min_body_width: int = 2,
+    strip_lines: bool = True,
 ) -> ExtractionResult:
-    """Locate candles in a chart image, in pixel space."""
+    """Locate candles in a chart image, in pixel space.
+
+    ``strip_lines`` removes indicator overlays drawn in candle colours
+    (SuperTrend, moving averages, entry markers) before the candles are read.
+    Real charts almost always carry some of these, so it is on by default.
+    """
     _require_cv2()
     if image is None or image.size == 0:
         raise CandleExtractionError("empty image")
@@ -174,6 +180,9 @@ def extract_pixel_candles(
 
     profile = profile or ColorProfile()
     bull_mask, bear_mask = build_masks(image, profile)
+    if strip_lines:
+        bull_mask = strip_horizontal_lines(bull_mask)
+        bear_mask = strip_horizontal_lines(bear_mask)
     combined = bull_mask | bear_mask
 
     issues: list[str] = []
@@ -223,10 +232,17 @@ def extract_pixel_candles(
     # Blobs far narrower than a body are stray wick fragments or gridline
     # artefacts; they get folded into their neighbour during the merge below.
     min_width = max(min_body_width, 1)
+    # The diagonal risers of a staircase indicator (SuperTrend and friends)
+    # survive horizontal-line removal because they are vertical. They are far
+    # narrower than a candle body, so width separates them cleanly. Only apply
+    # this once there are enough contours for the median to mean something.
+    narrow_cutoff = typical_width * 0.45 if len(raw) >= 8 else 0.0
 
     candles: list[PixelCandle] = []
     for x, y, w, h, is_bull in raw:
         if w < min_width and typical_width >= min_width * 2:
+            continue
+        if narrow_cutoff and w < narrow_cutoff:
             continue
         body_top, body_bottom = _body_extent(combined, x, w, y, h)
         candles.append(
@@ -310,6 +326,43 @@ def extract_pixel_candles(
         pitch=pitch,
         plot_bounds=plot_bounds,
     )
+
+
+def strip_horizontal_lines(mask: np.ndarray, min_run: int = 31) -> np.ndarray:
+    """Erase long horizontal runs — indicator lines — from a candle mask.
+
+    Overlays like SuperTrend, moving averages, entry markers and price lines
+    are drawn in the same greens and reds as the candles, so colour cannot
+    separate them. Worse, where a line *touches* a candle the two merge into a
+    single contour and the candle's measured extent is wrong.
+
+    The removal is deliberately surgical rather than a blanket vertical
+    opening: an opening erodes every candle a little, which measurably costs
+    accuracy on charts that carry no overlays at all. Instead, only pixels
+    belonging to a horizontal run at least ``min_run`` wide are deleted. No
+    candle is that wide — bodies are a handful of pixels and neighbouring
+    candles are separated by gaps — so clean charts come through untouched.
+
+    Where a removed line crossed a candle it leaves a one-pixel notch, so the
+    mask is closed vertically afterwards to heal the candle back together.
+    """
+    if cv2 is None:  # pragma: no cover - guarded by callers
+        return mask
+
+    horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (max(9, min_run), 1))
+    lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN, horizontal)
+
+    # If "lines" account for most of the coloured pixels, the assumption has
+    # failed (a very zoomed-in chart with enormous bodies, say). Removing them
+    # would destroy the candles, so leave the mask alone and let the ordinary
+    # confidence scoring report whatever mess results.
+    total = float((mask > 0).sum())
+    if total > 0 and float((lines > 0).sum()) / total > 0.35:
+        return mask
+
+    cleaned = cv2.subtract(mask, lines)
+    heal = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
+    return cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, heal)
 
 
 def _body_extent(

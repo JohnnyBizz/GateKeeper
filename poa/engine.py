@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import numpy as np
+
 from .alerts import AlertManager, AlertSettings
 from .alerts.notifiers import Alert
 from .chart_detection import ChartSource, build_source
@@ -93,6 +95,10 @@ class AnalysisEngine:
         self._subscribers: list[Callable[[dict[str, Any]], None]] = []
         self._alert_subscribers: list[Callable[[dict[str, Any]], None]] = []
         self._lock = threading.RLock()
+        # Median close of the last capture, used to notice when the *chart
+        # itself* changed under a vision source (user switched pairs on the
+        # platform). None until the first successful capture.
+        self._last_median_price: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -126,6 +132,10 @@ class AnalysisEngine:
             if "asset" in changes and changes["asset"]:
                 self.config.set("market.asset", str(changes["asset"]))
                 applied["asset"] = self.config.get("market.asset")
+                # The source carries the asset name into every capture (and the
+                # capture's name wins over the config in tick()), so a rename
+                # must rebuild the source or the old label sticks forever.
+                self._rebuild_source()
             if "chart_timeframe" in changes:
                 timeframe = int(changes["chart_timeframe"])
                 if timeframe <= 0:
@@ -232,6 +242,32 @@ class AnalysisEngine:
         # The source may know the asset and timeframe better than the config
         # does (a CSV knows its own spacing; the screen source does not).
         asset = capture.asset or self.asset
+
+        # A vision source keeps reading whatever is on screen — including a
+        # completely different pair after the user switches charts on the
+        # platform. GateKeeper cannot read the pair's *name* off the screen,
+        # but a wholesale change of price level is unmistakable: no 1-minute
+        # market moves several percent between two polls. When that happens,
+        # the previous signal, its peak confidence and its invalidation levels
+        # all describe a chart that no longer exists, so the tracker restarts.
+        chart_changed = False
+        median_price = float(np.median(series.close)) if len(series) else None
+        if (
+            self.source.vision_based
+            and median_price is not None
+            and self._last_median_price is not None
+            and self._last_median_price > 0
+        ):
+            relative_jump = abs(median_price - self._last_median_price) / self._last_median_price
+            if relative_jump > 0.03:
+                chart_changed = True
+                log.info(
+                    "chart change detected (price level moved %.1f%%) — "
+                    "restarting analysis",
+                    relative_jump * 100,
+                )
+                self.tracker.reset()
+        self._last_median_price = median_price
         chart_timeframe = capture.timeframe_seconds or self.chart_timeframe
 
         request = SignalRequest(
@@ -294,6 +330,7 @@ class AnalysisEngine:
                 "quality": quality.to_dict(),
                 "asset": asset,
                 "timeframe_seconds": chart_timeframe,
+                "chart_changed": chart_changed,
             }
             self.state.last_update = utcnow().isoformat()
             self.state.last_error = None

@@ -268,3 +268,37 @@ class TestSessionStats:
         stats.reset()
         assert stats.total == 0
         assert stats.win_rate is None
+
+
+class TestStakeOverride:
+    """The user types the amount they actually intend to stake."""
+
+    def test_an_override_replaces_the_percentage_derived_stake(self):
+        risk = assess_risk(1000.0, 2.0, 0.92, stake_override=75.0)
+        assert risk.stake == pytest.approx(75.0)
+
+    def test_the_percentage_is_derived_backwards_from_the_stake(self):
+        # So the risk warnings still fire on a large typed stake.
+        risk = assess_risk(1000.0, 2.0, 0.92, stake_override=250.0)
+        assert risk.risk_percent == pytest.approx(25.0)
+        assert any("high" in w.lower() for w in risk.warnings)
+
+    def test_profit_tracks_the_override(self):
+        risk = assess_risk(1000.0, 2.0, 0.92, stake_override=50.0)
+        assert risk.potential_profit == pytest.approx(46.0)
+        assert risk.potential_loss == pytest.approx(50.0)
+
+    def test_no_override_falls_back_to_the_percentage(self):
+        assert assess_risk(1000.0, 3.0, 0.92, stake_override=None).stake == pytest.approx(30.0)
+
+    def test_a_non_positive_override_is_ignored(self):
+        assert assess_risk(1000.0, 2.0, 0.92, stake_override=0.0).stake == pytest.approx(20.0)
+
+    def test_a_stake_above_the_balance_is_warned_about(self):
+        risk = assess_risk(100.0, 2.0, 0.92, stake_override=250.0)
+        assert any("larger than the whole balance" in w for w in risk.warnings)
+
+    def test_an_override_with_no_balance_does_not_divide_by_zero(self):
+        risk = assess_risk(0.0, 2.0, 0.92, stake_override=50.0)
+        assert risk.stake == pytest.approx(50.0)
+        assert risk.trades_to_ruin == 0

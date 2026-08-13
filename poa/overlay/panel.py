@@ -30,6 +30,9 @@ class OverlayPanel:
         on_scan: Callable[[], None] | None = None,
         on_reset: Callable[[], None] | None = None,
         on_adjust: Callable[[int, int], None] | None = None,
+        on_asset: Callable[[str], None] | None = None,
+        on_stake: Callable[[float | None], None] | None = None,
+        on_balance: Callable[[float], None] | None = None,
         on_close: Callable[[], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
@@ -38,6 +41,9 @@ class OverlayPanel:
         self.on_scan = on_scan or (lambda: None)
         self.on_reset = on_reset or (lambda: None)
         self.on_adjust = on_adjust or (lambda w, l: None)
+        self.on_asset = on_asset or (lambda a: None)
+        self.on_stake = on_stake or (lambda s: None)
+        self.on_balance = on_balance or (lambda b: None)
         self.on_close = on_close or (lambda: None)
 
         self.root = tk.Tk()
@@ -170,6 +176,36 @@ class OverlayPanel:
         label.bind("<Leave>", lambda _e, w=label: w.configure(fg=COLORS["dim"]))
         return label
 
+    def _entry(
+        self, parent: tk.Widget, *, width: int, on_commit: Callable[[str], None]
+    ) -> tk.Entry:
+        """A themed Entry that commits on Enter or when focus leaves it."""
+        entry = tk.Entry(
+            parent, font=self.f_mono, width=width,
+            bg=COLORS["raised"], fg=COLORS["text"],
+            insertbackground=COLORS["text"], relief="flat",
+            highlightthickness=1, highlightbackground=COLORS["border"],
+            highlightcolor=COLORS["accent"],
+        )
+
+        def commit(_event=None):
+            on_commit(entry.get())
+            # Give focus back to the window so the field stops swallowing keys.
+            self.root.focus_set()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+        return entry
+
+    @staticmethod
+    def _set_entry(entry: tk.Entry, text: str) -> None:
+        """Update an entry's text — but never while the user is typing in it."""
+        if entry.focus_displayof() is entry:
+            return
+        if entry.get() != text:
+            entry.delete(0, "end")
+            entry.insert(0, text)
+
     def _build_tiles(self, parent: tk.Widget) -> None:
         row = self._section(parent, pady=(8, 4))
         for key, caption in (("pair", "PAIR"), ("payout", "PAYOUT"), ("time", "TIME")):
@@ -180,11 +216,18 @@ class OverlayPanel:
                 tile, text=caption, font=self.f_label,
                 bg=COLORS["raised"], fg=COLORS["faint"],
             ).pack(anchor="w", padx=6, pady=(4, 0))
-            value = tk.Label(
-                tile, text="--", font=self.f_mono,
-                bg=COLORS["raised"], fg=COLORS["text"],
-            )
-            value.pack(anchor="w", padx=6, pady=(0, 5))
+            if key == "pair":
+                # Editable: GateKeeper cannot read the pair's name off the
+                # screen, so when the user switches charts on the platform
+                # they rename it here and the analysis restarts.
+                value = self._entry(tile, width=9, on_commit=self.on_asset)
+                value.pack(anchor="w", padx=4, pady=(0, 5))
+            else:
+                value = tk.Label(
+                    tile, text="--", font=self.f_mono,
+                    bg=COLORS["raised"], fg=COLORS["text"],
+                )
+                value.pack(anchor="w", padx=6, pady=(0, 5))
             self._widgets[f"tile_{key}"] = value
 
         # Chart timeframe is shown apart from the trade duration on purpose:
@@ -361,13 +404,36 @@ class OverlayPanel:
 
     def _build_risk(self, parent: tk.Widget) -> None:
         wrap = self._section(parent, pady=(2, 2))
+        header = tk.Frame(wrap, bg=COLORS["panel"])
+        header.pack(fill="x")
         tk.Label(
-            wrap, text="RISK", font=self.f_label,
+            header, text="RISK", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(anchor="w", padx=2)
+        ).pack(side="left", padx=2)
+        self._widgets["risk_percent"] = tk.Label(
+            header, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+        )
+        self._widgets["risk_percent"].pack(side="right", padx=2)
+
+        # Balance and stake are typed in directly. The stake defaults to the
+        # configured percentage of the balance; typing any number overrides it
+        # (the percentage readout above shows what share that actually is).
+        for key, caption, commit in (
+            ("balance", "Balance", self._commit_balance),
+            ("stake", "Stake", self._commit_stake),
+        ):
+            row = tk.Frame(wrap, bg=COLORS["panel"])
+            row.pack(fill="x", pady=1)
+            tk.Label(
+                row, text=caption, font=self.f_small,
+                bg=COLORS["panel"], fg=COLORS["dim"],
+            ).pack(side="left", padx=2)
+            entry = self._entry(row, width=10, on_commit=commit)
+            entry.pack(side="right", padx=2)
+            self._widgets[f"risk_{key}"] = entry
 
         for key, caption in (
-            ("stake", "Stake"),
             ("profit", "Win returns"),
             ("breakeven", "Break-even rate"),
         ):
@@ -382,6 +448,28 @@ class OverlayPanel:
                 bg=COLORS["panel"], fg=COLORS["text"],
             )
             self._widgets[f"risk_{key}"].pack(side="right", padx=2)
+
+    def _commit_stake(self, text: str) -> None:
+        """Empty text returns to percent-derived sizing; a number overrides it."""
+        cleaned = text.strip().replace(",", "")
+        if not cleaned:
+            self.on_stake(None)
+            return
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return  # leave the previous stake untouched on a typo
+        if value > 0:
+            self.on_stake(value)
+
+    def _commit_balance(self, text: str) -> None:
+        cleaned = text.strip().replace(",", "")
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return
+        if value > 0:
+            self.on_balance(value)
 
     def _build_footer(self, parent: tk.Widget) -> None:
         self._widgets["reason"] = tk.Label(
@@ -464,7 +552,7 @@ class OverlayPanel:
         w["status"].configure(text=header["status"], fg=header["status_color"])
 
         tiles = data["tiles"]
-        w["tile_pair"].configure(text=tiles["pair"])
+        self._set_entry(w["tile_pair"], tiles["pair"])
         w["tile_payout"].configure(text=tiles["payout"], fg=COLORS["call"])
         w["tile_time"].configure(text=tiles["time"])
         w["tile_chart"].configure(text=f"chart {tiles['chart']}")
@@ -538,14 +626,25 @@ class OverlayPanel:
                 )
 
         risk = data["risk"]
-        w["risk_stake"].configure(text=f"{risk['stake']:.2f}")
+        self._set_entry(w["risk_balance"], f"{risk['balance']:.2f}")
+        self._set_entry(w["risk_stake"], f"{risk['stake']:.2f}")
         w["risk_profit"].configure(text=f"+{risk['potential_profit']:.2f}", fg=COLORS["call"])
         w["risk_breakeven"].configure(text=f"{risk['breakeven_rate']:.1f}%")
+        # Show what share of the balance the stake actually is, and colour it
+        # when that share is into territory a losing streak would hurt.
+        percent = risk["risk_percent"]
+        w["risk_percent"].configure(
+            text=f"{percent:.1f}% of balance"
+            + (" · manual" if risk.get("stake_overridden") else ""),
+            fg=COLORS["put"] if percent > 10 else COLORS["wait"] if percent > 5 else COLORS["faint"],
+        )
 
         w["reason"].configure(text=data["reason"])
-        warnings = data["warnings"]
+        # Risk warnings (oversized stake, session below break-even) belong on
+        # screen next to the signal warnings, not buried in a log.
+        warnings = list(data["warnings"]) + list(risk.get("warnings", []))
         w["warnings"].configure(
-            text="\n".join(f"⚠ {line}" for line in warnings) if warnings else ""
+            text="\n".join(f"⚠ {line}" for line in warnings[:5]) if warnings else ""
         )
 
         # The reason and warning blocks wrap to a variable number of lines, so

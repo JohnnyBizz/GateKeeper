@@ -112,9 +112,17 @@ class OverlayApp:
     # -- UI callbacks -------------------------------------------------------
 
     def _begin_scan(self) -> None:
-        """Force a fresh evaluation and show the scanning state."""
+        """Force a fresh evaluation and show the scanning state.
+
+        A manual scan means "read the chart in front of you, from scratch" —
+        the user may have switched pairs or timeframes on the platform since
+        the last signal. So the tracker's memory (peak confidence, weakening
+        state, expiry) is dropped first; the revealed verdict describes only
+        what the scan saw, never what an earlier chart looked like.
+        """
         self.vm.scan.begin()
         self._pending_signal = None
+        self.engine.tracker.reset()
         try:
             # Run one cycle immediately rather than waiting for the next poll.
             self.engine.tick()
@@ -134,6 +142,29 @@ class OverlayApp:
 
     def _adjust(self, wins: int, losses: int) -> None:
         self.vm.session.adjust(wins, losses)
+
+    def _set_asset(self, asset: str) -> None:
+        """The user renamed the pair after switching charts on the platform."""
+        asset = asset.strip().upper()
+        if not asset or asset == self.vm.asset:
+            return
+        try:
+            self.engine.update_settings({"asset": asset})
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("asset change failed: %s", exc)
+            return
+        self.vm.asset = asset
+        # The old signal described a different chart; blank until re-analysed.
+        self.vm.signal = None
+        self._refresh_session()
+
+    def _set_stake(self, stake: float | None) -> None:
+        self.vm.stake_override = stake if (stake is None or stake > 0) else None
+
+    def _set_balance(self, balance: float) -> None:
+        if balance > 0:
+            self.vm.balance = balance
+            self.config.set("risk.balance", balance)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -159,6 +190,9 @@ class OverlayApp:
             on_scan=self._begin_scan,
             on_reset=self._reset,
             on_adjust=self._adjust,
+            on_asset=self._set_asset,
+            on_stake=self._set_stake,
+            on_balance=self._set_balance,
             on_close=self.shutdown,
             position=(
                 int(self.config.get("overlay.x", 40)),

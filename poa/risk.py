@@ -68,13 +68,24 @@ def assess_risk(
     payout: float,
     *,
     observed_win_rate: float | None = None,
+    stake_override: float | None = None,
 ) -> RiskAssessment:
-    """Size a stake and report what it needs to achieve to be worth placing."""
+    """Size a stake and report what it needs to achieve to be worth placing.
+
+    ``stake_override`` lets the user type the exact amount they intend to put
+    on, instead of deriving it from a percentage. The percentage is then
+    computed *backwards* from the stake so the risk warnings still fire — a
+    typed stake of a quarter of the balance is still a quarter of the balance.
+    """
     balance = max(0.0, float(balance))
-    risk_percent = max(0.0, min(100.0, float(risk_percent)))
     payout = max(0.0, float(payout))
 
-    stake = balance * risk_percent / 100.0
+    if stake_override is not None and stake_override > 0:
+        stake = float(stake_override)
+        risk_percent = (stake / balance * 100.0) if balance > 0 else 100.0
+    else:
+        risk_percent = max(0.0, min(100.0, float(risk_percent)))
+        stake = balance * risk_percent / 100.0
     breakeven = breakeven_win_rate(payout)
 
     # Expected value at a few reference win rates, so the break-even number is
@@ -95,7 +106,12 @@ def assess_risk(
     trades_to_ruin = int(balance // stake) if stake > 0 else 0
 
     warnings: list[str] = []
-    if risk_percent > 5:
+    if balance > 0 and stake > balance:
+        warnings.append(
+            f"The stake ({stake:.2f}) is larger than the whole balance "
+            f"({balance:.2f})."
+        )
+    elif risk_percent > 5:
         warnings.append(
             f"Risking {risk_percent:.0f}% of the balance per trade is high. "
             f"A run of {trades_to_ruin} losses would clear the account."

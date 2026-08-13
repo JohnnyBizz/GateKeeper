@@ -297,3 +297,116 @@ class TestCsvSource:
         for _ in range(200):
             capture = source.capture()
         assert capture.series is not None
+
+
+class TestIndicatorOverlays:
+    """Charts carry indicator lines drawn in candle colours.
+
+    A SuperTrend, a moving average or a horizontal level is the same green or
+    red as the candles, so colour cannot separate them — and where one touches
+    a candle the two merge into a single contour, corrupting that candle's
+    high, low and body. These tests pin down that overlays are removed without
+    costing anything on charts that have none.
+    """
+
+    def _chart(self, seed=11, height=460):
+        series = generate_series(60, seed=seed)
+        image, mapping = render_series(series, height=height)
+        return series, image, mapping
+
+    def _recover(self, image, mapping, series):
+        extraction = extract_pixel_candles(image)
+        recovered = pixel_candles_to_series(
+            extraction.candles,
+            mapping.price_at_row,
+            timeframe_seconds=60,
+            symbol="X",
+            mark_last_incomplete=False,
+        )
+        return extraction, recovered
+
+    @staticmethod
+    def _staircase(image, colour=(110, 200, 80)):
+        """Draw a SuperTrend-style rising staircase across the chart."""
+        height, width = image.shape[:2]
+        y = int(height * 0.82)
+        points = []
+        for x in range(20, width - 80, 40):
+            y = max(int(height * 0.26), y - 14)
+            points.append((x, y))
+            points.append((x + 40, y))
+        for i in range(len(points) - 1):
+            cv2.line(image, points[i], points[i + 1], colour, 2)
+        return image
+
+    def test_horizontal_lines_are_removed_entirely(self):
+        series, clean, mapping = self._chart()
+        overlaid = clean.copy()
+        width = overlaid.shape[1]
+        for row in (150, 200, 300, 350):
+            cv2.line(overlaid, (0, row), (width - 80, row), (70, 70, 225), 1)
+
+        baseline, _ = self._recover(clean, mapping, series)
+        result, _ = self._recover(overlaid, mapping, series)
+        assert len(result.candles) == len(baseline.candles)
+
+    def test_a_staircase_indicator_does_not_destroy_the_read(self):
+        series, image, mapping = self._chart()
+        self._staircase(image)
+        cv2.line(image, (0, 250), (image.shape[1] - 80, 250), (110, 200, 80), 1)
+
+        extraction, recovered = self._recover(image, mapping, series)
+        # Without line removal this collapses to roughly two-thirds of the
+        # candles with wildly wrong prices.
+        assert len(extraction.candles) >= len(series) - 2
+
+        count = min(len(recovered), len(series))
+        agreeing = sum(
+            1
+            for a, b in zip(series.candles[-count:], recovered.candles[-count:])
+            if a.bullish == b.bullish
+        )
+        assert agreeing >= count - 3
+
+    def test_prices_survive_an_overlay(self):
+        series, image, mapping = self._chart()
+        self._staircase(image)
+        _, recovered = self._recover(image, mapping, series)
+
+        span = float(series.high.max() - series.low.min())
+        count = min(len(recovered), len(series))
+        errors = [
+            abs(a.close - b.close)
+            for a, b in zip(series.candles[-count:], recovered.candles[-count:])
+        ]
+        assert statistics.median(errors) / span < 0.01
+
+    def test_clean_charts_are_not_degraded_by_the_removal(self):
+        # The removal must be surgical: a blanket morphological opening would
+        # erode every candle slightly and measurably cost accuracy here.
+        for seed in (11, 23, 44):
+            series, image, mapping = self._chart(seed=seed)
+            extraction, recovered = self._recover(image, mapping, series)
+            assert len(extraction.candles) == len(series)
+
+            count = min(len(recovered), len(series))
+            agreeing = sum(
+                1
+                for a, b in zip(series.candles[-count:], recovered.candles[-count:])
+                if a.bullish == b.bullish
+            )
+            assert agreeing == count
+
+    def test_stripping_can_be_disabled(self):
+        series, image, mapping = self._chart()
+        assert extract_pixel_candles(image, strip_lines=False).candles
+
+    def test_a_mask_that_is_mostly_line_is_left_alone(self):
+        # On a heavily zoomed chart the bodies themselves could be wide enough
+        # to look like runs; wiping them would be catastrophic, so the removal
+        # backs off instead.
+        from poa.chart_detection.candles import strip_horizontal_lines
+
+        mask = np.zeros((40, 200), dtype=np.uint8)
+        mask[10:30, :] = 255  # one enormous solid block
+        assert (strip_horizontal_lines(mask) > 0).sum() == (mask > 0).sum()

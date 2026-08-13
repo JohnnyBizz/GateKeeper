@@ -107,9 +107,15 @@ WAIT rather than a guess.
    *wick*. This step is what makes open and close recoverable at all; without
    it the bounding box returns the wick extremes and every candle looks like a
    marubozu.
-4. **Pitch check** — the spacing of candle centres tells us whether we found a
+4. **Indicator overlays are stripped first** — a SuperTrend, moving average or
+   price level is drawn in the same green or red as the candles, and where one
+   *touches* a candle the two merge into one shape and corrupt its high, low
+   and body. Pixels belonging to a long horizontal run are removed before the
+   candles are read. The removal is surgical rather than a blanket erosion,
+   because eroding costs accuracy on charts carrying no overlays at all.
+5. **Pitch check** — the spacing of candle centres tells us whether we found a
    coherent series or a mess. Irregular spacing lowers confidence.
-5. **Price mapping** — pixel rows become prices via calibration (below).
+6. **Price mapping** — pixel rows become prices via calibration (below).
 
 Measured on rendered charts with known values, this recovers **100% of candles
 with correct direction and a median close-price error under 0.1% of the chart's
@@ -348,6 +354,19 @@ never be readable as the new one — then the new verdict is revealed. The
 engine also keeps monitoring continuously in the background either way;
 alerts and setup-weakening/invalidation tracking stay live between scans.
 
+The **PAIR, Balance and Stake fields are typed in directly.** GateKeeper
+cannot read the pair's *name* off the screen, so when you switch charts on the
+platform you rename it here — the previous verdict is dropped immediately
+rather than lingering over a chart it never analysed. Typing a Stake overrides
+the configured percentage, and the panel computes what share of the balance
+that actually is, warning you when it's into territory a losing streak would
+hurt. Clearing the field returns to percentage sizing.
+
+On a vision source GateKeeper also notices a chart switch by itself: no
+1-minute market moves several percent between two polls, so a wholesale change
+in price level restarts the analysis automatically. Pressing **Scan** likewise
+starts from a clean slate.
+
 The **session tally** fills itself from settled journal outcomes; the +/−
 buttons adjust it for trades you took that the assistant never signalled. The
 win rate is shown against the **break-even rate for your configured payout**
@@ -506,7 +525,7 @@ settled signals, because a win rate over ten trades says close to nothing.
 ## 12. Tests
 
 ```bash
-pytest -q                    # 326 tests
+pytest -q                    # 346 tests
 pytest tests/test_signals.py -v
 ```
 
@@ -547,7 +566,7 @@ pocket-option-assistant/
 │   ├── dashboard/         index.html, app.js, styles.css
 │   ├── overlay/           always-on-top panel (view model + Tk renderer)
 │   ├── config.py  engine.py  server.py  models.py  risk.py  logging_setup.py
-├── tests/                 326 tests
+├── tests/                 346 tests
 ├── tools/                 select_region.py, make_sample_data.py, backtest.py
 ├── data/                  sample candle CSV
 ├── config.example.yaml    fully commented

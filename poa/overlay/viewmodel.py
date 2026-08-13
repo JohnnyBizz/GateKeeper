@@ -139,6 +139,8 @@ class OverlayViewModel:
     payout: float = 0.92
     balance: float = 1000.0
     risk_percent: float = 2.0
+    # When set, the user typed a stake directly; it beats the percentage.
+    stake_override: float | None = None
     scan: ScanController = field(default_factory=ScanController)
     asset: str = "EUR/USD"
     chart_timeframe: int = 60
@@ -156,6 +158,7 @@ class OverlayViewModel:
             self.risk_percent,
             self.payout,
             observed_win_rate=self.session.win_rate,
+            stake_override=self.stake_override,
         )
 
     def render(self) -> dict[str, Any]:
@@ -236,7 +239,7 @@ class OverlayViewModel:
                 "scanning": scanning,
             },
             "session": self.session.to_dict(self.payout),
-            "risk": risk.to_dict(),
+            "risk": {**risk.to_dict(), "stake_overridden": self.stake_override is not None},
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),
