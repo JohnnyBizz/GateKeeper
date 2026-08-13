@@ -1,0 +1,122 @@
+# Pocket Option Technical Analysis Assistant — sample configuration.
+#
+# Copy this file to config.yaml and edit it. Anything you leave out falls back
+# to the defaults in poa/config.py. Every value can also be overridden with an
+# environment variable, e.g. POA_SERVER__PORT=9000 or POA_CAPTURE__SOURCE=screen.
+
+server:
+  host: 127.0.0.1        # localhost only; this tool reads your screen
+  port: 8765
+  open_browser: false     # open the dashboard automatically on start
+
+capture:
+  # synthetic — generated demo data, works anywhere, good for trying the tool
+  # csv       — replay a recorded candle file (see capture.csv_path)
+  # screen    — capture a region of your screen and read the candles with OpenCV
+  source: synthetic
+
+  poll_seconds: 2.0       # how often to re-read the chart
+
+  # -- screen source ---------------------------------------------------------
+  # Run `python tools/select_region.py` to fill this in by dragging over your
+  # chart. Select the plot area only: candles plus the price axis, and none of
+  # the platform's own buttons or panels.
+  region:
+    left: 0
+    top: 0
+    width: 0
+    height: 0
+
+  monitor: 1
+
+  # Two reference points from the chart's price axis, so pixel rows can be
+  # converted into real prices. This is exact and does not break when the
+  # platform changes its fonts, so prefer it over OCR.
+  #
+  # To fill it in: note the pixel row and the price of two horizontal
+  # gridlines (select_region.py prints rows as you hover).
+  calibration:
+    enabled: false
+    top_pixel: 0
+    top_price: 0.0
+    bottom_pixel: 0
+    bottom_price: 0.0
+
+  # OCR is tried when no manual calibration is set. It needs Tesseract
+  # installed, and it refuses to return a calibration it cannot verify.
+  ocr:
+    enabled: true
+    axis_width_px: 70
+
+  # Candle colours, as HSV ranges. Defaults cover the usual green/red palettes.
+  # Only set this if your chart is themed unusually and candles are being missed.
+  # colors:
+  #   bullish:
+  #     - {low: [35, 60, 60], high: [90, 255, 255]}
+  #   bearish:
+  #     - {low: [0, 60, 60], high: [12, 255, 255]}
+  #     - {low: [165, 60, 60], high: [180, 255, 255]}
+
+  # -- csv source ------------------------------------------------------------
+  csv_path: data/sample_eurusd_m1.csv
+  csv_replay_speed: 0.0
+
+  save_screenshots: true
+
+market:
+  asset: EUR/USD
+
+  # The candles on your chart. Separate from trade_duration below.
+  chart_timeframe: 60      # seconds — 60 = 1 minute candles
+
+  # The expiration you intend to buy. THIS IS NOT THE CHART TIMEFRAME.
+  trade_duration: 180      # seconds — 180 = a 3 minute trade
+
+  # The higher-timeframe view is built by aggregating this many chart candles.
+  higher_timeframe_multiple: 5   # 1-minute chart -> 5-minute higher view
+  entry_timeframe_multiple: 1    # 1 = the chart itself is the entry view
+
+  min_candles: 60          # below this, data quality is reported as poor
+  max_candles: 600         # how much history to keep in memory
+
+signals:
+  min_confidence: 75              # setup score needed before a direction is shown
+  min_duration_compatibility: 65  # duration fit needed before a direction is shown
+  min_data_confidence: 70         # chart-reading confidence needed to analyse
+
+  # Structural requirements. Every one must pass or the answer is WAIT.
+  require_multi_timeframe_agreement: true
+  require_heikin_ashi_confirmation: true
+  min_component_agreement: 0.55   # share of scoring weight that must agree
+  max_atr_percentile: 92          # refuse to signal in the top volatility decile
+  resistance_proximity_atr: 0.75  # how close to a major level counts as blocked
+
+  cooldown_seconds: 60
+  weakening_drop: 15              # confidence drop that marks a setup WEAKENING
+  invalidation_drop: 25           # confidence drop that INVALIDATES it
+
+alerts:
+  enabled: true
+  desktop_notifications: true
+  sound: false
+  sound_command: ""        # leave blank to auto-detect a player
+  cooldown_seconds: 120    # suppress repeats of the same alert
+  min_confidence: 75       # only alert on directional signals at least this strong
+  notify_on:
+    - BUY_SIGNAL
+    - SELL_SIGNAL
+    - SETUP_INVALIDATED
+    - SETUP_WEAKENING
+    - TREND_REVERSAL
+    - HIGH_VOLATILITY
+    - CONFLICTING_SIGNALS
+    - DATA_QUALITY
+
+storage:
+  database: storage/journal.db
+  screenshot_dir: storage/screenshots
+  retain_screenshots: 500
+
+logging:
+  level: INFO              # DEBUG for verbose analysis logging
+  file: storage/poa.log

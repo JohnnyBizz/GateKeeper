@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pocket Option Technical Analysis Assistant</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◪</span>
+    <div>
+      <h1>Technical Analysis Assistant</h1>
+      <p class="brand-sub">Analysis and alerts only — this tool never places a trade.</p>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="control">
+      <span>Asset</span>
+      <input id="asset-input" type="text" value="EUR/USD" autocomplete="off" />
+    </label>
+    <label class="control">
+      <span>Chart timeframe</span>
+      <select id="chart-timeframe"></select>
+    </label>
+    <label class="control control-accent">
+      <span>Trade duration</span>
+      <select id="trade-duration"></select>
+    </label>
+    <label class="control">
+      <span>Min confidence</span>
+      <select id="min-confidence">
+        <option value="60">60</option>
+        <option value="65">65</option>
+        <option value="70">70</option>
+        <option value="75">75</option>
+        <option value="80">80</option>
+        <option value="85">85</option>
+        <option value="90">90</option>
+      </select>
+    </label>
+    <div class="control control-status">
+      <span>Connection</span>
+      <div id="connection" class="status-pill status-idle">connecting…</div>
+    </div>
+  </div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<section class="summary" id="summary">
+  <div class="summary-item">
+    <span class="summary-label">Asset</span>
+    <span class="summary-value" id="sum-asset">--</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Chart timeframe</span>
+    <span class="summary-value" id="sum-chart">--</span>
+  </div>
+  <div class="summary-item summary-accent">
+    <span class="summary-label">Trade duration</span>
+    <span class="summary-value" id="sum-duration">--</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Market regime</span>
+    <span class="summary-value" id="sum-regime">--</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Signal</span>
+    <span class="summary-value" id="sum-signal">--</span>
+  </div>
+  <div class="summary-item">
+    <span class="summary-label">Confidence</span>
+    <span class="summary-value" id="sum-confidence">--</span>
+  </div>
+</section>
+
+<main class="layout">
+
+  <!-- LEFT: chart -->
+  <section class="panel panel-chart">
+    <header class="panel-head">
+      <h2>Chart</h2>
+      <div class="chart-toggle">
+        <button class="toggle active" data-mode="candles">Candles</button>
+        <button class="toggle" data-mode="heikin">Heikin Ashi</button>
+      </div>
+    </header>
+    <div class="chart-wrap">
+      <canvas id="chart" width="900" height="420"></canvas>
+    </div>
+    <footer class="panel-foot">
+      <span id="chart-source">source: --</span>
+      <span id="chart-price">--</span>
+      <span id="chart-quality">data quality: --</span>
+    </footer>
+  </section>
+
+  <!-- CENTER: analysis -->
+  <section class="panel panel-analysis">
+    <header class="panel-head"><h2>Analysis</h2></header>
+
+    <div class="tf-stack" id="tf-stack"></div>
+
+    <div class="readings" id="readings"></div>
+
+    <div class="levels-block">
+      <h3>Support &amp; resistance</h3>
+      <div id="levels"></div>
+    </div>
+
+    <div class="score-block">
+      <h3>Score breakdown</h3>
+      <div id="score-components"></div>
+    </div>
+  </section>
+
+  <!-- RIGHT: signal dashboard -->
+  <section class="panel panel-signal">
+    <header class="panel-head"><h2>Signal</h2></header>
+
+    <div id="signal-card" class="signal-card signal-wait">
+      <div class="signal-direction" id="signal-direction">WAIT</div>
+      <div class="signal-headline" id="signal-headline">Waiting for data…</div>
+
+      <div class="signal-metrics">
+        <div class="metric">
+          <span class="metric-label">Direction confidence</span>
+          <div class="meter"><div class="meter-fill" id="meter-direction"></div></div>
+          <span class="metric-value" id="value-direction">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Duration compatibility</span>
+          <div class="meter"><div class="meter-fill" id="meter-duration"></div></div>
+          <span class="metric-value" id="value-duration">--</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Overall</span>
+          <div class="meter"><div class="meter-fill" id="meter-overall"></div></div>
+          <span class="metric-value" id="value-overall">--</span>
+        </div>
+      </div>
+
+      <div class="signal-grid">
+        <div><span class="k">Setup quality</span><span class="v" id="setup-quality">--</span></div>
+        <div><span class="k">Your duration</span><span class="v" id="selected-duration">--</span></div>
+        <div><span class="k">Recommended</span><span class="v" id="recommended-duration">--</span></div>
+        <div><span class="k">Status</span><span class="v" id="signal-state">--</span></div>
+        <div><span class="k">Time remaining</span><span class="v" id="countdown">--</span></div>
+      </div>
+
+      <p class="signal-reason" id="signal-reason">--</p>
+
+      <button class="why-button" id="why-button" aria-expanded="false">WHY? ▾</button>
+      <div class="why-body hidden" id="why-body"></div>
+
+      <div class="invalidation">
+        <span class="k">Invalidation</span>
+        <p id="invalidation">--</p>
+      </div>
+
+      <div id="warnings" class="warnings"></div>
+    </div>
+
+    <div class="duration-block">
+      <h3>Duration comparison</h3>
+      <div id="duration-ladder"></div>
+    </div>
+
+    <div class="alerts-block">
+      <h3>Alerts</h3>
+      <div id="alert-list" class="alert-list"><p class="muted">No alerts yet.</p></div>
+    </div>
+  </section>
+</main>
+
+<!-- BOTTOM: journal -->
+<section class="panel panel-journal">
+  <header class="panel-head">
+    <h2>Signal journal</h2>
+    <div class="journal-actions">
+      <span id="journal-stats" class="muted"></span>
+      <button id="refresh-journal" class="ghost-button">Refresh</button>
+    </div>
+  </header>
+  <div class="table-wrap">
+    <table class="journal-table">
+      <thead>
+        <tr>
+          <th>Time</th><th>Asset</th><th>Chart</th><th>Duration</th>
+          <th>Signal</th><th>Conf.</th><th>Regime</th><th>Heikin Ashi</th>
+          <th>Outcome</th><th>Reason</th>
+        </tr>
+      </thead>
+      <tbody id="journal-body">
+        <tr><td colspan="10" class="muted">No signals recorded yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer class="disclaimer" id="disclaimer">
+  This tool performs technical analysis and provides decision support only. It does not
+  place trades. Every signal is probabilistic — most market conditions should result in
+  WAIT. Trading binary options carries a high risk of losing money.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

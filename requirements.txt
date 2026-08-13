@@ -1,0 +1,25 @@
+# Core — needed to run the analysis engine, server and dashboard.
+numpy>=1.24
+pandas>=2.0
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+websockets>=12.0
+
+# Screen-capture chart recognition. Only needed when capture.source is "screen";
+# the synthetic and csv sources run without them.
+opencv-python>=4.8          # use opencv-python-headless on a server
+mss>=9.0
+
+# Optional: reads the chart's price axis so pixel rows map to real prices.
+# Needs the Tesseract binary as well:
+#   Debian/Ubuntu  sudo apt install tesseract-ocr
+#   macOS          brew install tesseract
+#   Windows        https://github.com/UB-Mannheim/tesseract/wiki
+# Without it, set capture.calibration manually in config.yaml.
+pytesseract>=0.3.10
+
+# Tests
+pytest>=8.0
+httpx>=0.27
