@@ -17,6 +17,7 @@ from typing import Any, Callable
 from ..config import Config, load_config
 from ..engine import AnalysisEngine
 from ..logging_setup import get_logger, setup_logging
+from ..models import utcnow
 from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState
 
@@ -48,6 +49,12 @@ class OverlayApp:
             trade_duration=self.engine.trade_duration,
         )
         self.vm.scan.duration = float(self.config.get("overlay.scan_seconds", 2.4))
+
+        # Where this session's tally starts. The journal outlives the app, so
+        # without a boundary the "session" win rate would be every trade ever
+        # recorded in the file — and Reset would clear it only until the next
+        # refresh read it all back.
+        self._session_since = utcnow()
 
         # The engine publishes from its own thread; the UI thread drains this.
         self._updates: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=32)
@@ -112,8 +119,15 @@ class OverlayApp:
             self.vm.signal = signal
 
     def _refresh_session(self) -> None:
+        # Scoped to the pair *and* the data source currently in use. A tally
+        # that mixes a synthetic-feed session into a live one is not a record
+        # of anything, and the user reads it as their real win rate.
         try:
-            stats = self.engine.journal.statistics(asset=self.engine.asset)
+            stats = self.engine.journal.statistics(
+                asset=self.vm.asset or self.engine.asset,
+                source=getattr(self.engine.source, "name", None),
+                since=self._session_since,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("session refresh failed: %s", exc)
             return
@@ -145,7 +159,13 @@ class OverlayApp:
         self._pending_signal = None
 
     def _reset(self) -> None:
-        """Clear the session tally and drop the tracked signal."""
+        """Start a new session: clear the tally and drop the tracked signal.
+
+        The boundary moves too, otherwise the next journal refresh would read
+        the cleared trades straight back in and Reset would appear to do
+        nothing.
+        """
+        self._session_since = utcnow()
         self.vm.session.reset()
         self.engine.tracker.reset()
         self.vm.scan.reset()

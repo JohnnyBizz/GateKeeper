@@ -299,6 +299,63 @@ class TestOverlayAppLogic:
         finally:
             app.shutdown()
 
+    def test_reset_survives_the_next_journal_refresh(self, tmp_path):
+        """Reset has to mean something after the journal is read again."""
+        from datetime import timedelta
+
+        from poa.models import Direction, utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            signal = app.engine.state.signal
+            assert signal is not None
+            signal.direction = Direction.CALL
+            signal.price = 1.08
+            signal.asset = app.vm.asset
+            signal.trade_duration = 60
+            app.engine.journal.record(signal, source="synthetic")
+            app.engine.journal.resolve_outcomes(
+                1.09,
+                utcnow() + timedelta(seconds=90),
+                source="synthetic",
+                asset=app.vm.asset,
+            )
+
+            app._refresh_session()
+            assert app.vm.session.wins == 1
+
+            app._reset()
+            app._refresh_session()
+            assert app.vm.session.total == 0
+        finally:
+            app.shutdown()
+
+    def test_the_session_tally_ignores_another_data_source(self, tmp_path):
+        from datetime import timedelta
+
+        from poa.models import Direction, utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app.engine.tick()
+            signal = app.engine.state.signal
+            assert signal is not None
+            signal.direction = Direction.CALL
+            signal.price = 1.08
+            signal.asset = app.vm.asset
+            signal.trade_duration = 60
+            # Recorded while the screen source was in use; this app is running
+            # on the synthetic feed, so it is not this session's trade.
+            app.engine.journal.record(signal, source="screen")
+            app.engine.journal.resolve_outcomes(
+                1.09, utcnow() + timedelta(seconds=90), source="screen"
+            )
+            app._refresh_session()
+            assert app.vm.session.total == 0
+        finally:
+            app.shutdown()
+
 
 class TestChartSwitching:
     """Switching charts on the platform must not leave a stale read on screen."""

@@ -138,6 +138,114 @@ class TestOutcomeSettlement:
         assert tmp_journal.get(signal.id)["outcome"] == "win"
 
 
+class TestSettlementIsolation:
+    """A price may only settle a signal it could actually have decided."""
+
+    def _record(self, journal, *, price=1.08, source=None, asset="EUR/USD"):
+        signal = make_signal(
+            pullback_trend(400, direction=1), trade_duration=60, asset=asset
+        )
+        assert signal.direction is Direction.CALL
+        signal.price = price
+        journal.record(signal, source=source)
+        return signal
+
+    def test_a_signal_from_another_source_is_voided_not_settled(self, tmp_journal):
+        signal = self._record(tmp_journal, price=1.08, source="synthetic")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        entry = tmp_journal.get(signal.id)
+        assert entry["outcome"] == "void"
+        assert entry["outcome_price"] is None
+        assert "synthetic" in entry["notes"]
+
+    def test_a_signal_from_the_same_source_settles_normally(self, tmp_journal):
+        signal = self._record(tmp_journal, price=1.08, source="screen")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        assert tmp_journal.get(signal.id)["outcome"] == "win"
+
+    def test_rows_from_before_sources_were_recorded_are_voided(self, tmp_journal):
+        signal = self._record(tmp_journal, price=1.08, source=None)
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        assert tmp_journal.get(signal.id)["outcome"] == "void"
+
+    def test_a_different_pair_cannot_settle_the_row(self, tmp_journal):
+        signal = self._record(tmp_journal, source="screen", asset="EUR/USD")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen", asset="GBP/USD")
+        assert tmp_journal.get(signal.id)["outcome"] == "void"
+
+    def test_an_incompatible_price_scale_is_voided(self, tmp_journal):
+        # Entry recorded on an uncalibrated 0-100 relative scale, settlement
+        # price read off a real axis. Comparing them is meaningless.
+        signal = self._record(tmp_journal, price=54.0, source="screen")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        entry = tmp_journal.get(signal.id)
+        assert entry["outcome"] == "void"
+        assert "scale" in entry["notes"]
+
+    def test_a_price_arriving_long_after_expiry_is_voided(self, tmp_journal):
+        # The app was closed over the expiry; today's price is not the price
+        # at expiry, and pretending otherwise invents an outcome.
+        signal = self._record(tmp_journal, price=1.08, source="screen")
+        much_later = utcnow() + timedelta(hours=3)
+        tmp_journal.resolve_outcomes(1.0805, much_later, source="screen")
+        assert tmp_journal.get(signal.id)["outcome"] == "void"
+
+    def test_settling_within_the_grace_window_still_works(self, tmp_journal):
+        signal = self._record(tmp_journal, price=1.08, source="screen")
+        later = utcnow() + timedelta(seconds=200)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        assert tmp_journal.get(signal.id)["outcome"] == "win"
+
+    def test_voided_rows_are_excluded_from_the_win_rate(self, tmp_journal):
+        self._record(tmp_journal, price=1.08, source="synthetic")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        stats = tmp_journal.statistics()
+        assert stats["wins"] == 0
+        assert stats["losses"] == 0
+        assert stats["voided"] == 1
+        assert stats["win_rate"] is None
+
+    def test_statistics_can_be_scoped_to_one_source(self, tmp_journal):
+        demo = self._record(tmp_journal, price=1.08, source="synthetic")
+        live = make_signal(pullback_trend(400, direction=1), trade_duration=60)
+        live.price = 1.08
+        tmp_journal.record(live, source="screen")
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+        assert tmp_journal.get(demo.id)["outcome"] == "void"
+        assert tmp_journal.statistics(source="screen")["wins"] == 1
+        assert tmp_journal.statistics(source="synthetic")["settled"] == 0
+
+    def test_an_old_journal_file_gains_the_source_column(self, tmp_path):
+        import sqlite3
+
+        from poa.storage import Journal
+
+        path = tmp_path / "legacy.db"
+        # A journal written before the column existed.
+        with sqlite3.connect(str(path)) as connection:
+            connection.execute(
+                "CREATE TABLE signals (id TEXT PRIMARY KEY, timestamp TEXT, "
+                "asset TEXT, direction TEXT, trade_duration INTEGER, price REAL, "
+                "outcome TEXT, notes TEXT)"
+            )
+        journal = Journal(path)
+        try:
+            columns = {
+                row[1]
+                for row in journal._connection.execute("PRAGMA table_info(signals)")
+            }
+            assert "source" in columns
+        finally:
+            journal.close()
+
+
 class TestStatistics:
     def _rows(self, wins, losses, **kwargs):
         rows = []

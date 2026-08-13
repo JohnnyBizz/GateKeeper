@@ -282,9 +282,14 @@ class AnalysisEngine:
         change = self.tracker.update(signal)
 
         # Settle anything whose expiration has elapsed, using the live price.
+        # The source and asset go with it: a price may only settle a signal it
+        # could actually have decided, and the journal refuses the rest.
+        source_name = getattr(self.source, "name", None)
         try:
             if signal.price is not None:
-                self.journal.resolve_outcomes(signal.price)
+                self.journal.resolve_outcomes(
+                    signal.price, source=source_name, asset=asset
+                )
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("outcome resolution failed: %s", exc)
 
@@ -297,7 +302,7 @@ class AnalysisEngine:
                     capture.screenshot_png, signal.id, signal.timestamp
                 )
             try:
-                self.journal.record(signal, screenshot_path)
+                self.journal.record(signal, screenshot_path, source=source_name)
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("journal write failed: %s", exc)
 

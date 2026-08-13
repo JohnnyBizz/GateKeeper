@@ -210,8 +210,10 @@ def create_app(config: Config | None = None, autostart: bool = True) -> FastAPI:
         return {"ok": True}
 
     @app.get("/api/statistics")
-    def statistics(asset: str | None = None) -> dict[str, Any]:
-        return engine.journal.statistics(asset=asset)
+    def statistics(
+        asset: str | None = None, source: str | None = None
+    ) -> dict[str, Any]:
+        return engine.journal.statistics(asset=asset, source=source)
 
     @app.get("/api/alerts")
     def alerts(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:

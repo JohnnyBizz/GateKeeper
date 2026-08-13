@@ -271,6 +271,8 @@ class ScreenChartSource(ChartSource):
             expected_timeframe=self.timeframe_seconds,
         )
         quality.issues.extend(extraction.issues)
+        if calibration.note:
+            quality.issues.append(calibration.note)
         if calibration.method == "uncalibrated":
             quality.issues.append(
                 "Price scale is not calibrated — levels shown are relative, not "

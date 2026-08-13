@@ -187,6 +187,25 @@ class TestDataQualityGate:
         signal = evaluate(series, quality=bad)
         assert signal.overall_confidence <= 50.0
 
+    def test_usable_data_still_carries_its_issues(self):
+        """Good enough to analyse is not the same as nothing to report.
+
+        A disputed price scale leaves every pattern readable and every printed
+        price suspect, so the warning has to reach the panel even though the
+        signal itself goes ahead.
+        """
+        series = pullback_trend(400, direction=1)
+        note = "The saved price scale disagrees with the axis on screen."
+        usable = DataQuality(
+            ok=True,
+            confidence=88.0,
+            candle_count=len(series),
+            issues=[note],
+            source="test",
+        )
+        signal = evaluate(series, quality=usable)
+        assert note in signal.warnings
+
 
 class TestTimeframeAndDurationAreSeparate:
     def test_the_same_chart_supports_different_durations(self):

@@ -150,6 +150,63 @@ class TestCalibration:
         assert calibration.method == "uncalibrated"
         assert calibration.confidence < 50
 
+
+class TestCalibrationAgainstTheAxis:
+    """A saved price scale is checked against the axis actually on screen."""
+
+    def _image(self):
+        return np.zeros((200, 300, 3), dtype=np.uint8)
+
+    def _patch_ocr(self, monkeypatch, result):
+        from poa.chart_detection import calibration as module
+
+        monkeypatch.setattr(module, "calibrate_with_ocr", lambda *a, **k: result)
+
+    def test_an_agreeing_axis_leaves_the_manual_scale_untouched(self, monkeypatch):
+        from poa.chart_detection.calibration import check_against_axis
+
+        manual = PriceCalibration(0.0, 1.1530, 199.0, 1.1520)
+        self._patch_ocr(monkeypatch, PriceCalibration(0.0, 1.1530, 199.0, 1.1520))
+        checked = check_against_axis(self._image(), manual)
+        assert checked is manual
+        assert checked.confidence == 100.0
+        assert checked.note == ""
+
+    def test_a_disagreeing_axis_lowers_confidence_and_explains(self, monkeypatch):
+        from poa.chart_detection.calibration import (
+            DISPUTED_CONFIDENCE,
+            check_against_axis,
+        )
+
+        # The saved scale says 1.055 mid-chart; the axis on screen says 1.152.
+        manual = PriceCalibration(0.0, 1.0555, 199.0, 1.0545)
+        self._patch_ocr(monkeypatch, PriceCalibration(0.0, 1.1530, 199.0, 1.1520))
+        checked = check_against_axis(self._image(), manual)
+        assert checked.method == "manual-disputed"
+        assert checked.confidence == DISPUTED_CONFIDENCE
+        assert "1.055" in checked.note and "1.152" in checked.note
+        # The mapping itself is untouched — the user is not overruled.
+        assert checked.price_at_row(0) == pytest.approx(1.0555)
+
+    def test_an_unreadable_axis_is_not_evidence_of_anything(self, monkeypatch):
+        from poa.chart_detection.calibration import check_against_axis
+
+        manual = PriceCalibration(0.0, 1.0555, 199.0, 1.0545)
+        self._patch_ocr(monkeypatch, None)
+        checked = check_against_axis(self._image(), manual)
+        assert checked is manual
+        assert checked.confidence == 100.0
+
+    def test_resolve_runs_the_check_when_ocr_is_enabled(self, monkeypatch):
+        from poa.chart_detection.calibration import resolve_calibration
+
+        manual = PriceCalibration(0.0, 1.0555, 199.0, 1.0545)
+        self._patch_ocr(monkeypatch, PriceCalibration(0.0, 1.1530, 199.0, 1.1520))
+        disputed = resolve_calibration(self._image(), manual, use_ocr=True)
+        assert disputed.method == "manual-disputed"
+        # With OCR off there is nothing to compare against, so the scale stands.
+        assert resolve_calibration(self._image(), manual, use_ocr=False) is manual
+
     def test_config_parsing_requires_enabled(self):
         raw = {
             "enabled": False,

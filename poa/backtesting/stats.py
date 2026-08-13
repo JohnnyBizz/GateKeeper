@@ -155,6 +155,9 @@ def summarise_outcomes(
     ]
 
     settled = [o for o in outcomes if o.settled]
+    # Voided rows could not be settled honestly (wrong source, wrong scale, or
+    # settled far too late). They are reported, never counted.
+    voided = sum(1 for o in outcomes if o.outcome in ("void", "unknown"))
     wins = sum(1 for o in settled if o.outcome == "win")
     losses = sum(1 for o in settled if o.outcome == "loss")
     flat = sum(1 for o in settled if o.outcome == "flat")
@@ -165,7 +168,8 @@ def summarise_outcomes(
     return {
         "total_signals": len(outcomes),
         "settled": len(settled),
-        "pending": len(outcomes) - len(settled),
+        "pending": len(outcomes) - len(settled) - voided,
+        "voided": voided,
         "wins": wins,
         "losses": losses,
         "flat": flat,

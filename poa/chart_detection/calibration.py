@@ -46,6 +46,9 @@ class PriceCalibration:
     bottom_price: float
     confidence: float = 100.0
     method: str = "manual"
+    # Set when something about this mapping deserves saying out loud — most
+    # often that it disagrees with the axis currently on screen.
+    note: str = ""
 
     @property
     def valid(self) -> bool:
@@ -82,6 +85,7 @@ class PriceCalibration:
             "bottom_pixel": self.bottom_pixel,
             "bottom_price": self.bottom_price,
             "valid": self.valid,
+            "note": self.note,
         }
 
     @classmethod
@@ -218,6 +222,66 @@ def calibrate_with_ocr(
     )
 
 
+# How far the manual scale may sit from the axis on screen before it is
+# treated as describing a different chart. Expressed as a fraction of price:
+# a real axis pan over a session moves the visible window, not the price by 0.5%.
+CALIBRATION_DISAGREEMENT_TOLERANCE = 0.005
+
+# Confidence a disputed manual scale is allowed to keep. Low enough to show in
+# the status bar and raise an issue, high enough that shape-based analysis —
+# which does not care about the absolute scale at all — still runs.
+DISPUTED_CONFIDENCE = 55.0
+
+
+def check_against_axis(
+    image: np.ndarray,
+    calibration: PriceCalibration,
+    *,
+    axis_width_px: int = 70,
+) -> PriceCalibration:
+    """Compare a manual scale against the axis on screen right now.
+
+    A manual calibration is exact at the moment it is made and never expires by
+    itself, which is the problem: the platform rescales its axis as price moves,
+    the user may have switched pairs, or a digit may simply have been typed
+    wrong. Any of those leaves the app printing precise, confident, wrong
+    prices — and those prices go into the journal and settle outcomes.
+
+    So the axis is re-read and the two are compared at the middle of the chart.
+    Disagreement does not overrule the user; it lowers confidence and says so.
+    """
+    if not calibration.valid:
+        return calibration
+    ocr = calibrate_with_ocr(image, axis_width_px)
+    if ocr is None or not ocr.valid:
+        # Nothing to compare against. Silence here is correct: an unreadable
+        # axis is not evidence the manual scale is wrong.
+        return calibration
+
+    mid_row = float(image.shape[0]) / 2.0
+    mine = calibration.price_at_row(mid_row)
+    theirs = ocr.price_at_row(mid_row)
+    reference = max(abs(mine), abs(theirs), 1e-9)
+    drift = abs(mine - theirs) / reference
+    if drift <= CALIBRATION_DISAGREEMENT_TOLERANCE:
+        return calibration
+
+    return PriceCalibration(
+        top_pixel=calibration.top_pixel,
+        top_price=calibration.top_price,
+        bottom_pixel=calibration.bottom_pixel,
+        bottom_price=calibration.bottom_price,
+        confidence=min(calibration.confidence, DISPUTED_CONFIDENCE),
+        method="manual-disputed",
+        note=(
+            f"The saved price scale says {mine:g} at the middle of the chart, "
+            f"but the axis on screen reads about {theirs:g}. Prices and levels "
+            "shown may be wrong — re-run Select next to Chart area and click "
+            "two prices again. Patterns and direction are unaffected."
+        ),
+    )
+
+
 def resolve_calibration(
     image: np.ndarray,
     manual: PriceCalibration | None,
@@ -227,6 +291,8 @@ def resolve_calibration(
 ) -> PriceCalibration:
     """Pick the best available calibration, falling back to a relative scale."""
     if manual is not None and manual.valid:
+        if use_ocr:
+            return check_against_axis(image, manual, axis_width_px=axis_width_px)
         return manual
     if use_ocr:
         ocr = calibrate_with_ocr(image, axis_width_px)

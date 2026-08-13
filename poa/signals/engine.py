@@ -234,7 +234,12 @@ class SignalEngine:
         # Advisory gate failures (reversal risk, HA contraction) are already
         # phrased better by the narrative builder; repeating both fills the
         # panel with near-duplicates, so only the narrative's wording ships.
-        warnings: list[str] = []
+        #
+        # Data-quality issues are different: the data can be good enough to
+        # analyse and still carry something the user has to know — a price scale
+        # that disagrees with the axis leaves every pattern valid and every
+        # printed price wrong. Those ride along with the signal.
+        warnings: list[str] = list(quality.issues)
 
         if not regime.regime.tradeable and regime.regime.value == "HIGH_VOLATILITY":
             # Distinct from an ordinary WAIT: conditions are actively hostile.

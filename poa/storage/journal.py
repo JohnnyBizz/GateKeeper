@@ -6,6 +6,21 @@ journal also resolves outcomes: once a signal's expiration has elapsed, the
 price at that moment is compared against the entry price and the row is marked
 won/lost/flat.
 
+Settlement is deliberately fussy about *which* price it settles against. A
+binary option is decided by the price of one instrument at one moment, so a row
+may only be settled by a price that could plausibly be that instrument at that
+moment. Three things disqualify a price:
+
+* it came from a different data source (a synthetic-feed signal cannot be
+  settled by a screen-read price, or vice versa);
+* it is on an incompatible scale (a mis-calibrated axis, or a different pair
+  entirely, reads as a price that is not a small perturbation of the entry);
+* it arrives far too late (the app was closed over the expiry, so the current
+  price says nothing about where price sat when the option actually expired).
+
+Those rows are marked ``void`` rather than guessed at. A wrong outcome is worse
+than no outcome: it feeds a win rate the user then reads as real.
+
 This records analysis only. No trade is ever placed from here.
 """
 
@@ -25,6 +40,18 @@ from ..models import Direction, utcnow
 from ..signals.engine import Signal
 
 log = get_logger(__name__)
+
+# How late a settlement price may arrive and still be treated as the price at
+# expiry. Within a running session the engine settles within one poll of the
+# expiration, so this only bites after the app has been closed or paused across
+# an expiry — exactly the case where the "current" price is meaningless.
+SETTLEMENT_GRACE_FACTOR = 2.0
+SETTLEMENT_GRACE_FLOOR_SECONDS = 180.0
+
+# How far a settlement price may sit from the entry price and still be believed
+# to be the same instrument on the same scale. A real move over one expiry is a
+# fraction of a percent; a factor of two is a different chart or a broken axis.
+SCALE_TOLERANCE = 2.0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (
@@ -55,6 +82,9 @@ CREATE TABLE IF NOT EXISTS signals (
     warnings            TEXT,
     screenshot          TEXT,
     payload             TEXT,
+    -- which data source produced the price on this row. Outcomes may only be
+    -- settled by a price from the same source.
+    source              TEXT,
     -- outcome, filled in once the expiration has elapsed
     outcome             TEXT,
     outcome_price       REAL,
@@ -67,6 +97,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp);
 CREATE INDEX IF NOT EXISTS idx_signals_asset ON signals(asset);
 CREATE INDEX IF NOT EXISTS idx_signals_outcome ON signals(outcome);
 CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
+-- idx_signals_source is created after the migration, since an older journal
+-- file has no source column at the point this script runs.
 
 CREATE TABLE IF NOT EXISTS alerts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,7 +136,27 @@ class Journal:
         self._connection.row_factory = sqlite3.Row
         with self._lock:
             self._connection.executescript(SCHEMA)
+            self._migrate()
             self._connection.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a journal file was first written.
+
+        Called with the lock held. A journal from an older build has no
+        ``source`` column; its existing rows get NULL, which settlement treats
+        as "source unknown" and therefore refuses to settle.
+        """
+        existing = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(signals)")
+        }
+        for column, ddl in (("source", "source TEXT"),):
+            if column not in existing:
+                log.info("adding journal column %s", column)
+                self._connection.execute(f"ALTER TABLE signals ADD COLUMN {ddl}")
+        self._connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source)"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -112,9 +164,18 @@ class Journal:
 
     # ------------------------------------------------------------------
 
-    def record(self, signal: Signal, screenshot_path: str | None = None) -> str:
-        """Persist a signal. Returns the signal id."""
-        row = _signal_to_row(signal, screenshot_path)
+    def record(
+        self,
+        signal: Signal,
+        screenshot_path: str | None = None,
+        source: str | None = None,
+    ) -> str:
+        """Persist a signal. Returns the signal id.
+
+        ``source`` names the data source the price came from. It is what keeps
+        a demo run's outcomes out of a live run's win rate.
+        """
+        row = _signal_to_row(signal, screenshot_path, source)
         columns = ", ".join(row)
         placeholders = ", ".join(f":{key}" for key in row)
         with self._lock:
@@ -151,7 +212,13 @@ class Journal:
 
     # ------------------------------------------------------------------
 
-    def resolve_outcomes(self, current_price: float, now: datetime | None = None) -> int:
+    def resolve_outcomes(
+        self,
+        current_price: float,
+        now: datetime | None = None,
+        source: str | None = None,
+        asset: str | None = None,
+    ) -> int:
         """Settle any directional signals whose expiration has elapsed.
 
         A binary option settles on where price sits at expiry relative to entry,
@@ -159,6 +226,12 @@ class Journal:
         unchanged, which on a real platform is usually a refund or a loss
         depending on the broker — it is recorded honestly rather than counted
         as a win.
+
+        ``current_price`` is only applied to rows it could legitimately settle.
+        Rows from another source, another instrument, another price scale, or
+        an expiry the app slept through are marked ``void`` and excluded from
+        every statistic. Returns the number of rows that stopped being pending,
+        voids included.
         """
         now = now or utcnow()
         pending = self.pending_outcomes(now)
@@ -166,12 +239,16 @@ class Journal:
             return 0
 
         resolved = 0
+        voided = 0
         with self._lock:
             for row in pending:
                 entry_price = row["price"]
-                if entry_price is None:
-                    outcome = "unknown"
-                    change = None
+                reason = _settlement_block(row, current_price, now, source, asset)
+                if reason is not None:
+                    outcome, change = "void", None
+                    voided += 1
+                elif entry_price is None:
+                    outcome, change = "unknown", None
                 else:
                     change = current_price - entry_price
                     if abs(change) < 1e-12:
@@ -182,19 +259,23 @@ class Journal:
                         outcome = "win" if change < 0 else "loss"
                 self._connection.execute(
                     "UPDATE signals SET outcome = ?, outcome_price = ?, "
-                    "outcome_at = ?, price_change = ? WHERE id = ?",
+                    "outcome_at = ?, price_change = ?, "
+                    "notes = COALESCE(notes, ?) WHERE id = ?",
                     (
                         outcome,
-                        float(current_price),
+                        None if reason else float(current_price),
                         now.isoformat(),
                         None if change is None else float(change),
+                        reason,
                         row["id"],
                     ),
                 )
                 resolved += 1
             self._connection.commit()
         if resolved:
-            log.debug("resolved %d journal outcome(s)", resolved)
+            log.debug(
+                "resolved %d journal outcome(s), %d voided", resolved, voided
+            )
         return resolved
 
     def pending_outcomes(self, now: datetime | None = None) -> list[sqlite3.Row]:
@@ -202,8 +283,8 @@ class Journal:
         now = now or utcnow()
         with self._lock:
             rows = self._connection.execute(
-                "SELECT id, timestamp, direction, trade_duration, price FROM signals "
-                "WHERE outcome IS NULL AND direction IN (?, ?)",
+                "SELECT id, timestamp, asset, direction, trade_duration, price, source "
+                "FROM signals WHERE outcome IS NULL AND direction IN (?, ?)",
                 (Direction.CALL.value, Direction.PUT.value),
             ).fetchall()
         due: list[sqlite3.Row] = []
@@ -252,8 +333,22 @@ class Journal:
             row = self._connection.execute("SELECT COUNT(*) AS n FROM signals").fetchone()
         return int(row["n"])
 
-    def statistics(self, asset: str | None = None) -> dict[str, Any]:
-        """Aggregate performance over settled signals."""
+    def statistics(
+        self,
+        asset: str | None = None,
+        source: str | None = None,
+        since: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate performance over settled signals.
+
+        ``source`` scopes the numbers to one data source. Without it a run on
+        the synthetic feed and a run on the live chart share a win rate, which
+        makes the live win rate meaningless — they are not the same experiment.
+
+        ``since`` scopes them to one stretch of time, which is what makes a
+        *session* tally a session tally rather than the whole history of the
+        file.
+        """
         query = (
             "SELECT direction, trade_duration, chart_timeframe, setup_quality, "
             "overall_confidence, outcome, market_regime, timestamp FROM signals "
@@ -263,6 +358,12 @@ class Journal:
         if asset:
             query += " AND asset = ?"
             params.append(asset)
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        if since is not None:
+            query += " AND timestamp >= ?"
+            params.append(since.isoformat())
         query += " ORDER BY timestamp ASC"
         with self._lock:
             rows = self._connection.execute(query, params).fetchall()
@@ -296,7 +397,70 @@ class Journal:
 # --------------------------------------------------------------------------
 
 
-def _signal_to_row(signal: Signal, screenshot_path: str | None) -> dict[str, Any]:
+def _settlement_block(
+    row: sqlite3.Row,
+    current_price: float,
+    now: datetime,
+    source: str | None,
+    asset: str | None,
+) -> str | None:
+    """Why ``current_price`` may not settle ``row`` — or None if it may.
+
+    The question this answers is not "did the trade win" but "is this price
+    entitled to decide". Everything below is a way of the price belonging to a
+    different chart, a different scale, or a different moment.
+    """
+    row_source = row["source"] if "source" in row.keys() else None
+    if source is not None and row_source is not None and row_source != source:
+        return (
+            f"Voided: recorded on the '{row_source}' data source, and the only "
+            f"price available to settle it came from '{source}'."
+        )
+    if source is not None and row_source is None:
+        return (
+            "Voided: recorded by an older version that did not record which "
+            "data source the price came from, so it cannot be settled safely."
+        )
+
+    row_asset = row["asset"] if "asset" in row.keys() else None
+    if asset and row_asset and row_asset != asset:
+        return (
+            f"Voided: recorded on {row_asset}, and the chart now shows {asset}."
+        )
+
+    # Late settlement. The price at expiry is gone; today's price is not it.
+    try:
+        started = datetime.fromisoformat(row["timestamp"])
+    except (TypeError, ValueError):  # pragma: no cover - corrupt row
+        started = None
+    if started is not None:
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        duration = float(row["trade_duration"] or 0)
+        grace = max(SETTLEMENT_GRACE_FACTOR * duration, SETTLEMENT_GRACE_FLOOR_SECONDS)
+        late = (now - started).total_seconds() - duration
+        if late > grace:
+            return (
+                f"Voided: the expiry passed {late / 60:.0f} minutes before a "
+                "price was available, so the settlement price is not the price "
+                "at expiry."
+            )
+
+    entry_price = row["price"]
+    if entry_price is not None and entry_price > 0 and current_price > 0:
+        ratio = current_price / entry_price
+        if ratio > SCALE_TOLERANCE or ratio < 1.0 / SCALE_TOLERANCE:
+            return (
+                f"Voided: entry price {entry_price:g} and settlement price "
+                f"{current_price:g} are not on the same scale — the price axis "
+                "was read differently, or this is a different instrument."
+            )
+    return None
+
+
+def _signal_to_row(
+    signal: Signal, screenshot_path: str | None, source: str | None = None
+) -> dict[str, Any]:
     mtf = signal.mtf
     current = mtf.current if mtf else None
     indicators = current.indicators if current else None
@@ -340,6 +504,7 @@ def _signal_to_row(signal: Signal, screenshot_path: str | None) -> dict[str, Any
         "warnings": json.dumps(signal.warnings),
         "screenshot": screenshot_path,
         "payload": json.dumps(signal.to_dict(include_mtf=False)),
+        "source": source,
         "outcome": None,
         "outcome_price": None,
         "outcome_at": None,
