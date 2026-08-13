@@ -145,6 +145,14 @@ class ScreenStyle:
     asset_label: str = "CAD/JPY OTC"
     timeframe_label: str = "H3"
     draw_buttons: bool = True
+    # Menu items down the left rail. These are the decoys: read as text and
+    # glued together, "Profile" becomes the instrument PROF/ILE.
+    sidebar_labels: tuple[str, ...] = (
+        "Trading", "Finance", "Profile", "Market", "Signals", "Help",
+    )
+    # Some platforms only show the interval inside the plot, beside the
+    # countdown to the next candle.
+    inside_timeframe: bool = False
 
 
 def render_platform_screen(
@@ -198,6 +206,13 @@ def render_platform_screen(
         for i, y in enumerate((140, 210, 280)):
             cv2.circle(image, (style.sidebar_width // 2, y), 12, (110, 200, 80), -1)
 
+    # Sidebar menu items — the text a symbol search must not mistake for one.
+    for i, label in enumerate(style.sidebar_labels):
+        cv2.putText(
+            image, label, (6, 130 + i * 70),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, style.text, 1, cv2.LINE_AA,
+        )
+
     # The chart itself, rendered into its own image and pasted in.
     plot_left = style.sidebar_width + 30
     plot_top = style.header_height + 70
@@ -229,14 +244,18 @@ def render_platform_screen(
         style.asset_label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
     )
 
-    tf_origin = (plot_left + 6, plot_bottom + 28)
+    if style.inside_timeframe:
+        # Beside the countdown to the next candle, inside the plot.
+        tf_text = f"{style.timeframe_label} 00:18"
+        tf_origin = (plot_left + 12, plot_top + 26)
+    else:
+        tf_text = style.timeframe_label
+        tf_origin = (plot_left + 6, plot_bottom + 28)
     cv2.putText(
-        image, style.timeframe_label, tf_origin,
+        image, tf_text, tf_origin,
         cv2.FONT_HERSHEY_SIMPLEX, 0.6, style.text, 2, cv2.LINE_AA,
     )
-    (tf_w, tf_h), _ = cv2.getTextSize(
-        style.timeframe_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2
-    )
+    (tf_w, tf_h), _ = cv2.getTextSize(tf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
 
     truth = {
         "chart": (plot_left, plot_top, plot_left + chart_width, plot_bottom),

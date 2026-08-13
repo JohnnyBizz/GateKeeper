@@ -29,6 +29,42 @@ _CONFUSIONS = str.maketrans({"0": "O", "1": "I", "5": "S", "8": "B"})
 # Words that appear near the pair label and must never be taken for a symbol.
 _NOT_SYMBOLS = {"OTC", "TIME", "AMOUNT", "PAYOUT", "BUY", "SELL", "DEMO", "USD"}
 
+# What can legitimately sit on either side of the slash. Without this list any
+# two adjacent words on screen can be welded into an instrument: the platform's
+# own "Profile" menu item, read as the tokens PROF and ILE, becomes the pair
+# PROF/ILE, and the app then confidently labels the chart with it and files
+# journal entries under an instrument that does not exist.
+_CURRENCIES = {
+    "USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY", "CNH",
+    "HKD", "SGD", "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "RUB", "TRY",
+    "ZAR", "MXN", "BRL", "ARS", "CLP", "COP", "PEN", "INR", "IDR", "MYR",
+    "PHP", "THB", "VND", "KRW", "TWD", "ILS", "AED", "SAR", "QAR", "KWD",
+    "BHD", "OMR", "JOD", "EGP", "NGN", "KES", "GHS", "MAD", "TND", "DZD",
+    "UAH", "RON", "BGN", "HRK", "ISK", "PKR", "BDT", "LKR", "NPR",
+}
+_CRYPTO = {
+    "BTC", "ETH", "LTC", "XRP", "BCH", "ADA", "DOT", "SOL", "BNB", "DOGE",
+    "TRX", "AVAX", "LINK", "MATIC", "XLM", "ETC", "USDT", "USDC", "TON",
+    "SHIB", "PEPE", "NEAR", "ATOM", "UNI", "FIL", "APT", "ARB", "OP",
+}
+_COMMODITIES = {"XAU", "XAG", "XPT", "XPD", "GOLD", "SILVER", "OIL", "BRENT", "WTI", "GAS"}
+
+KNOWN_CODES = frozenset(_CURRENCIES | _CRYPTO | _COMMODITIES)
+
+
+def is_known_pair(name: str | None) -> bool:
+    """Whether both halves of ``name`` are codes an instrument is made of.
+
+    Used where a symbol is being *discovered* rather than read from a box the
+    user pointed at — searching a whole screen turns up plenty of text that
+    parses as a pair and is not one.
+    """
+    if not name or "/" not in name:
+        return False
+    base, _, rest = name.partition("/")
+    quote = rest.replace(" OTC", "").strip()
+    return base.strip() in KNOWN_CODES and quote in KNOWN_CODES
+
 
 def normalise(text: str) -> str | None:
     """Turn raw OCR output into a canonical pair name, or None if implausible."""

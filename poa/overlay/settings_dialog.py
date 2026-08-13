@@ -35,7 +35,7 @@ class SettingsDialog:
         *,
         on_apply: Callable[[dict[str, Any]], None],
         on_pick_region: Callable[[Callable[[str], None]], None] | None = None,
-        on_locate_chart: Callable[[], str] | None = None,
+        on_locate_chart: Callable[[Callable[[str], None]], None] | None = None,
     ) -> None:
         self.config = config
         self.on_apply = on_apply
@@ -238,19 +238,29 @@ class SettingsDialog:
     # -- actions ------------------------------------------------------------
 
     def _locate_chart(self) -> None:
-        """Find the chart on screen without asking the user to draw anything."""
+        """Find the chart on screen without asking the user to draw anything.
+
+        The search runs on a worker and calls back when it is done. Waiting for
+        it here would block Tk for the whole capture-and-OCR pass, and a dialog
+        that hides itself and then stops responding looks exactly like one that
+        has crashed.
+        """
         if self.on_locate_chart is None:
             self._status.configure(text="Automatic detection is unavailable.")
             return
         self._status.configure(text="Looking for a chart on screen…")
+        # Out of the way so the panel is not photographed as part of the chart,
+        # but still on screen, so the window is visibly alive while it works.
         self.window.withdraw()
         self.window.update_idletasks()
 
         try:
-            message = self.on_locate_chart()
+            self.on_locate_chart(self._locate_finished)
         except Exception as exc:  # pragma: no cover - defensive
-            message = f"Could not scan the screen: {exc}"
+            self._locate_finished(f"Could not scan the screen: {exc}")
 
+    def _locate_finished(self, message: str) -> None:
+        """Called back on the UI thread once the search has finished."""
         try:
             self.window.deiconify()
             region = self.config.get("capture.region") or {}
@@ -265,7 +275,12 @@ class SettingsDialog:
             self._vars["chart_timeframe"].set(
                 format_duration(int(self.config.get("market.chart_timeframe", 60)))
             )
-            self._vars["source"].set(SOURCE_LABELS["screen"])
+            self._vars["source"].set(
+                SOURCE_LABELS.get(
+                    str(self.config.get("capture.source", "screen")),
+                    SOURCE_LABELS["screen"],
+                )
+            )
             self._status.configure(text=message)
         except tk.TclError:  # pragma: no cover - window closed meanwhile
             pass

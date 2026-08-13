@@ -763,3 +763,74 @@ class TestScanDoesNotBlockTheUi:
             assert not app._should_relocate()
         finally:
             app.shutdown()
+
+
+class TestFindChartDoesNotBlock:
+    """The settings dialog's Find chart froze the UI exactly like Scan did."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("capture.source_chosen", True)
+        return OverlayApp(config)
+
+    def test_locate_chart_returns_immediately_and_calls_back(
+        self, tmp_path, monkeypatch
+    ):
+        import threading
+        import time
+
+        app = self._app(tmp_path)
+        try:
+            release = threading.Event()
+
+            def slow_scan(_config, exclude=None):
+                release.wait(5)
+                from poa.chart_detection.autodetect import Layout
+                from poa.overlay.autoscan import AutoScanResult
+
+                return AutoScanResult(
+                    layout=Layout(), applied=False, message="nothing found"
+                )
+
+            monkeypatch.setattr(
+                "poa.overlay.autoscan.scan_screen", slow_scan, raising=True
+            )
+            monkeypatch.setattr(app, "_own_windows", lambda: [])
+
+            reported: list[str] = []
+            began = time.monotonic()
+            app.locate_chart(reported.append)
+            # Returned without waiting for the search.
+            assert time.monotonic() - began < 1.0
+            assert reported == []
+            assert app._scan_busy
+
+            release.set()
+            for _ in range(50):
+                app._tick()
+                if reported:
+                    break
+                time.sleep(0.05)
+            assert reported == ["nothing found"]
+            assert not app._scan_busy
+        finally:
+            app.shutdown()
+
+    def test_a_second_find_while_searching_is_told_so(self, tmp_path, monkeypatch):
+        app = self._app(tmp_path)
+        try:
+            monkeypatch.setattr(app, "_own_windows", lambda: [])
+            app._scan_busy = True
+            reported: list[str] = []
+            app.locate_chart(reported.append)
+            assert reported == ["Already looking for the chart…"]
+        finally:
+            app.shutdown()

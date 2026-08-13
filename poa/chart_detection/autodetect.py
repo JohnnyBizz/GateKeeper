@@ -29,7 +29,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from ..logging_setup import get_logger
-from .asset_label import normalise
+from .asset_label import is_known_pair, normalise
 from .candles import ColorProfile, build_masks
 from .label_reader import find_text_boxes, ocr_crop
 from .timeframe_label import parse_timeframe, snap_to_known
@@ -458,10 +458,17 @@ def find_candle_field(
     top = min(c.top for c in run)
     bottom = max(c.bottom for c in run)
 
-    # Breathe outwards: the extremes of a wick can be a pixel outside the blob,
-    # and the engine reads better with a little empty space around the field.
-    pad_x = int(max(2, pitch))
-    pad_y = int(max(6, (bottom - top) * 0.06))
+    # Breathe outwards. A box drawn tight to the extremes leaves the highest
+    # and lowest candles touching the edge, and the extractor then reports them
+    # as possibly clipped — which is right, and drags recognition confidence
+    # down over nothing. Wicks also overshoot their blob by a pixel or two.
+    # Sized from the candle pitch rather than the field height. A percentage of
+    # the height reads as "more padding on a taller chart", which is backwards:
+    # the taller the field, the more chrome that padding drags in above and
+    # below it. A couple of candle widths is enough to stop the extremes
+    # touching the edge, which is all this is for.
+    pad_x = int(max(3, pitch * 1.5))
+    pad_y = int(max(10, pitch * 2.0))
     box = Box(left - pad_x, top - pad_y, (right - left) + pad_x * 2, (bottom - top) + pad_y * 2)
     return box.clip(width, height), count, pitch
 
@@ -476,6 +483,10 @@ _NUMERIC = re.compile(r"^\d{1,7}([.,]\d{1,6})?$")
 # A strip of interface can hold a lot of text; reading all of it would make a
 # scan take minutes. The badges being looked for are short and near the chart.
 MAX_TEXT_BOXES = 60
+
+# Badge-sized words that failed to parse get one retry under a narrower
+# alphabet. Capped because each retry is another OCR subprocess.
+MAX_BADGE_RETRIES = 10
 
 
 def _ocr_words(image: np.ndarray, whitelist: str) -> list[dict[str, Any]]:
@@ -516,7 +527,9 @@ def measure_axis_width(image: np.ndarray, chart: Box) -> int:
 # Step 3 and 4: the labels
 
 
-_LABEL_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/-0123456789 "
+_LABEL_WHITELIST = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/-0123456789: "
+)
 
 
 def _search_strips(image: np.ndarray, chart: Box) -> list[Box]:
@@ -536,6 +549,12 @@ def _search_strips(image: np.ndarray, chart: Box) -> list[Box]:
         Box(0, chart.bottom, width, min(90, max(0, height - chart.bottom))),
         # The very top of the screen: the platform's own toolbar.
         Box(0, 0, width, min(120, height)),
+        # Inside the plot, along its left edge. This is where the platform
+        # writes the interval next to the countdown to the next candle
+        # ("M1 00:18"), and it is the only place some layouts show it at all.
+        Box(chart.left, chart.top, min(220, chart.width), chart.height),
+        # Inside the plot, along its top edge.
+        Box(chart.left, chart.top, chart.width, min(70, chart.height)),
         # A left rail, for layouts that stack the instrument vertically.
         Box(0, 0, min(320, width), height),
     ]
@@ -586,7 +605,11 @@ def _asset_in(words: list[dict[str, Any]]) -> tuple[Box, str] | None:
             if merged.height > word["box"].height * 2:
                 break  # tokens on different lines are not one label
             name = normalise(phrase)
-            if name and "/" in name:
+            # Both halves must be codes an instrument is actually made of.
+            # Anything looser lets the platform's own menu text through: the
+            # sidebar's "Profile", split by OCR into PROF and ILE, parses as a
+            # perfectly well-formed pair.
+            if is_known_pair(name):
                 score = word["confidence"] + len(phrase)
                 if best is None or score > best[0]:
                     best = (score, merged, name)
@@ -605,16 +628,19 @@ def _timeframe_in(
     beside the plot.
     """
     best: tuple[float, Box, int] | None = None
+    retries = 0
     for word in words:
         seconds = _as_timeframe(word["text"])
-        if seconds is None and len(word["text"]) <= 4:
-            # Short badges are where the general alphabet hurts: "M1" comes
-            # back as "MI" or "H3" as "H8". One retry against digits and unit
-            # letters only is cheap and recovers most of them.
+        if seconds is None and word["box"].width <= 140 and retries < MAX_BADGE_RETRIES:
+            # Badge-sized text is where the general alphabet hurts: "M1" comes
+            # back as "MI", "H3" as "H8". One retry against digits and unit
+            # letters only is cheap and recovers most of them. Bounded, because
+            # each retry is another subprocess.
+            retries += 1
             retry, _confidence = ocr_crop(
                 crop,
                 (word["box"].left, word["box"].top, word["box"].width, word["box"].height),
-                "SMHDsmhd0123456789 ",
+                "SMHDsmhd0123456789: ",
             )
             seconds = _as_timeframe(retry)
         if seconds is None:
@@ -634,8 +660,19 @@ def _timeframe_in(
 
 
 def _as_timeframe(text: str) -> int | None:
-    parsed = parse_timeframe(text)
-    return snap_to_known(parsed) if parsed else None
+    """Read an interval out of a label, which may carry a companion.
+
+    Platforms rarely draw the interval alone. Pocket Option writes it beside
+    the countdown to the next candle — "M1 00:18" — so the whole string parses
+    as nothing and the timeframe goes unread. Each word gets its own try.
+    """
+    for candidate in (text, *text.split()):
+        parsed = parse_timeframe(candidate)
+        if parsed:
+            snapped = snap_to_known(parsed)
+            if snapped:
+                return snapped
+    return None
 
 
 def _read_labels(

@@ -32,6 +32,11 @@ _UNIT_SECONDS = {
     "D": 86400, "DAY": 86400, "DAYS": 86400,
 }
 
+# A badge run together with the countdown beside it: M1 00:18 arrives as
+# M10018 once OCR drops the space and the colon. The clock is four digits
+# (MMSS) or six (HHMMSS); anything else is not a clock.
+_WITH_CLOCK = re.compile(r"^([SMHD])\s*([\d:.\s]{5,12})$", re.IGNORECASE)
+
 # OCR confuses these reading small uppercase text. Only applied to the unit
 # letter, never to the digits, where a substitution would change the value.
 _UNIT_CONFUSIONS = {"0": "D", "5": "S", "1": "M", "8": "B"}
@@ -60,6 +65,23 @@ def parse_timeframe(text: str) -> int | None:
     if match:
         count, unit = int(match.group(1)), match.group(2).upper()
         return _validate(count * _UNIT_SECONDS.get(unit, 0))
+
+    # "M1 00:18" — the interval followed by the countdown to the next candle.
+    # OCR delivers this as M1 00:18, M100:18 or M10018 depending on whether it
+    # kept the space and the colon, so the digits are recovered and the split
+    # tried explicitly. A regex cannot do this on its own: it commits to one
+    # split, and the greedy one reads M10018 as M100 with an 18-second clock.
+    match = _WITH_CLOCK.match(cleaned)
+    if match:
+        unit = match.group(1).upper()
+        digits = re.sub(r"\D", "", match.group(2))
+        for take in (1, 2, 3):
+            # The clock is mm:ss or hh:mm:ss — four digits or six, never three.
+            if len(digits) - take not in (4, 6):
+                continue
+            seconds = _validate(int(digits[:take]) * _UNIT_SECONDS.get(unit, 0))
+            if seconds is not None and snap_to_known(seconds) is not None:
+                return seconds
 
     # A leading digit misread as a letter, e.g. "M1" seen as "MI".
     collapsed = cleaned.replace(" ", "")
@@ -94,7 +116,7 @@ def snap_to_known(seconds: int, tolerance: float = 0.2) -> int | None:
 class TimeframeLabelReader(LabelReader[int]):
     """Reads the chart timeframe badge, e.g. ``M1``."""
 
-    whitelist = "SMHDsmhd0123456789 "
+    whitelist = "SMHDsmhd0123456789: "
 
     def __init__(self, region: dict[str, int] | None, confirmations: int = 2) -> None:
         super().__init__(

@@ -762,8 +762,11 @@ class TestFindingTheChart:
         axis_width = RenderStyle().axis_width
         assert abs(box.left - plot_left) < 40
         assert abs(box.right - (plot_right - axis_width)) < 40
-        assert box.top >= plot_top - 40
-        assert box.bottom <= plot_bottom + 40
+        # A little padding outside the plot is expected and harmless: candles
+        # that reach the top of the plot must not sit flush against the edge of
+        # the region, or the extractor reports them as clipped.
+        assert box.top >= plot_top - 60
+        assert box.bottom <= plot_bottom + 60
 
     def test_the_buy_and_sell_buttons_are_not_mistaken_for_candles(self):
         """The buttons are the same green and red, and much bigger."""
@@ -926,3 +929,59 @@ class TestWithoutOcr:
         monkeypatch.setattr(tesseract_setup, "_works", lambda: False)
         monkeypatch.setattr(tesseract_setup, "_bundle_root", lambda: tmp_path)
         assert tesseract_setup.configure() is False
+
+
+class TestSymbolsAreNotInvented:
+    """Searching a whole screen turns up text that parses as a pair, and isn't."""
+
+    def test_sidebar_menu_text_is_not_read_as_an_instrument(self):
+        """"Profile", split by OCR into PROF and ILE, parses as PROF/ILE."""
+        from poa.chart_detection.asset_label import is_known_pair, normalise
+
+        assert normalise("PROF ILE") == "PROF/ILE"  # it really does parse
+        assert not is_known_pair("PROF/ILE")  # and it really must be rejected
+        assert not is_known_pair("TIME/AMOUNT")
+        assert not is_known_pair("EUR")
+        assert not is_known_pair(None)
+
+    def test_real_instruments_survive(self):
+        from poa.chart_detection.asset_label import is_known_pair
+
+        for name in ("EUR/USD", "EUR/USD OTC", "CAD/JPY OTC", "BTC/USD", "XAU/USD"):
+            assert is_known_pair(name), name
+
+    def test_a_screen_full_of_menu_text_yields_the_chart_pair(self):
+        _series, image, _truth = platform_screen(asset_label="EUR/USD OTC")
+        layout = detect_layout(image)
+        # The fixture draws Trading / Finance / Profile / Market / Signals /
+        # Help down the left rail, which is where PROF/ILE came from.
+        assert layout.asset_name == "EUR/USD OTC"
+
+
+class TestTimeframeBadgeVariants:
+    def test_the_interval_is_read_beside_its_countdown(self):
+        """Pocket Option draws "M1 00:18" inside the plot, not a bare badge."""
+        for label, expected in (("M1", 60), ("M5", 300), ("H3", 10800)):
+            _series, image, _truth = platform_screen(
+                timeframe_label=label, inside_timeframe=True
+            )
+            layout = detect_layout(image)
+            assert layout.timeframe_seconds == expected, label
+
+    def test_every_way_ocr_mangles_a_clocked_badge(self):
+        from poa.chart_detection.timeframe_label import parse_timeframe
+
+        # Space kept, space lost, colon lost — all the same badge.
+        for text in ("M1 00:18", "M100:18", "M10018"):
+            assert parse_timeframe(text) == 60, text
+        for text in ("M5 00:04", "M50004"):
+            assert parse_timeframe(text) == 300, text
+        # Two-digit intervals split correctly rather than greedily.
+        assert parse_timeframe("M150018") == 900
+        assert parse_timeframe("H400:12") == 14400
+
+    def test_a_bare_clock_is_not_a_timeframe(self):
+        from poa.chart_detection.timeframe_label import parse_timeframe
+
+        assert parse_timeframe("00:18") is None
+        assert parse_timeframe("09:45:42") is None

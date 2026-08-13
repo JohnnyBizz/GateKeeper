@@ -82,6 +82,7 @@ class OverlayApp:
         # Results from the chart-search worker, handed back to the UI thread.
         self._scan_results: queue.Queue[Any] = queue.Queue()
         self._scan_busy = False
+        self._scan_done: Callable[[str], None] | None = None
 
     # -- engine plumbing ----------------------------------------------------
 
@@ -222,6 +223,7 @@ class OverlayApp:
 
         self._scan_busy = False
         self._last_layout = result.layout
+        notify, self._scan_done = self._scan_done, None
         if result.applied:
             log.info("auto-scan: %s", result.message)
             try:
@@ -240,6 +242,12 @@ class OverlayApp:
             log.warning("auto-scan found nothing: %s", result.message)
 
         self._run_engine_cycle()
+
+        if notify is not None:
+            try:
+                notify(result.message)
+            except Exception:  # pragma: no cover - the dialog may have closed
+                log.debug("scan callback failed", exc_info=True)
 
     def _run_engine_cycle(self) -> None:
         """One immediate capture-analyse pass, instead of waiting for the poll."""
@@ -294,18 +302,25 @@ class OverlayApp:
             for key in ("capture.asset_region", "capture.timeframe_region")
         )
 
-    def locate_chart(self) -> str:
+    def locate_chart(self, on_done: Callable[[str], None] | None = None) -> None:
         """Find the chart on screen and reconfigure from what is found.
 
-        Synchronous — for the settings dialog, which has already hidden itself
-        and has nothing to paint while it waits.
+        Asynchronous, like Scan, and for the same reason: this is seconds of
+        screen capture and OCR, and running it on the UI thread stops Tk
+        answering the window manager. A settings dialog that hides itself and
+        then freezes is indistinguishable from one that has crashed.
         """
-        from .autoscan import scan_screen
+        if self._scan_busy:
+            if on_done is not None:
+                on_done("Already looking for the chart…")
+            return
 
-        result = scan_screen(self.config, exclude=self._own_windows())
-        self._scan_results.put(result)
-        self._collect_scan_result()
-        return result.message
+        self._scan_done = on_done
+        exclude = self._own_windows()
+        self._scan_busy = True
+        threading.Thread(
+            target=self._locate_worker, args=(exclude,), daemon=True
+        ).start()
 
     def _own_windows(self) -> list[Any]:
         """GateKeeper's own windows, so the detector never analyses itself.
