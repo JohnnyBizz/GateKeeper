@@ -204,81 +204,249 @@ class _Component:
     width: int
 
 
-def _strip_wide_runs(mask: np.ndarray, image_width: int) -> np.ndarray:
-    """Erase every pixel that belongs to a long horizontal run.
+def _strip_thin_lines(mask: np.ndarray, image_width: int) -> np.ndarray:
+    """Erase gridlines and indicator overlays: long runs that are also thin.
 
-    Two things on a trading screen are candle-coloured and horizontally
-    continuous: gridlines and indicator overlays, which fuse neighbouring
-    candles into one unusable blob, and the platform's BUY/SELL buttons, which
-    are solid slabs of exactly the same green and red. One opening removes
-    both, because neither a candle body nor a wick is anywhere near this wide.
-
-    The chart pipeline's own stripper is not used here. It backs off when the
-    runs it finds dominate the mask — a sensible guard on a cropped chart, and
-    exactly wrong on a whole screen, where the buttons dominate by design and
-    trip the guard every single time.
+    Both halves of that test matter. Removing every long horizontal run took
+    the lines *and* the candles with them the moment a chart was zoomed in far
+    enough for neighbouring bodies to touch — a run of five adjacent candles at
+    the same level is exactly as horizontally continuous as a gridline, and
+    deleting it punched a hole through the middle of the chart. So only runs
+    that are a few pixels tall are removed; a solid slab stays, and the
+    fill-ratio test below is what tells a button from a row of candles.
     """
     min_run = max(31, image_width // 40)
     horizontal = cv2.getStructuringElement(cv2.MORPH_RECT, (min_run, 1))
-    cleaned = cv2.subtract(mask, cv2.morphologyEx(mask, cv2.MORPH_OPEN, horizontal))
+    runs = cv2.morphologyEx(mask, cv2.MORPH_OPEN, horizontal)
+    # Of those runs, keep only the parts that are NOT several pixels tall.
+    tall = cv2.morphologyEx(
+        runs, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
+    )
+    lines = cv2.subtract(runs, tall)
+
+    cleaned = cv2.subtract(mask, lines)
     # A removed line leaves a one-pixel notch across every candle it crossed;
     # close vertically to heal them back into single blobs.
     heal = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 5))
     return cv2.morphologyEx(cleaned, cv2.MORPH_CLOSE, heal)
 
 
-def _drop_oversized(mask: np.ndarray, width: int, height: int) -> np.ndarray:
-    """Blank out blobs far too big to be a candle — buttons, banners, fills."""
-    max_width = max(4, int(width * MAX_COMPONENT_WIDTH_FRACTION))
-    max_area = max(64, int(width * height * MAX_COMPONENT_AREA_FRACTION))
-
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    cleaned = mask.copy()
-    for index in range(1, count):
-        blob_width, blob_height, area = (
-            int(stats[index][2]),
-            int(stats[index][3]),
-            int(stats[index][4]),
-        )
-        # A gridline is wide but paper thin; it is the stripper's job, not this
-        # one's, and removing it here would take the candles it crosses too.
-        if blob_height <= 2:
-            continue
-        if blob_width > max_width or area > max_area:
-            cleaned[labels == index] = 0
-    return cleaned
+# A solid rectangle this full is interface, not candles. A row of candles
+# leaves a ragged silhouette however tightly it is packed, because neighbouring
+# bodies open and close at different prices.
+UI_FILL_RATIO = 0.85
 
 
 def _candidate_components(
     mask: np.ndarray, image_width: int, image_height: int
-) -> list[_Component]:
-    """Blobs small enough to be a candle rather than a button or a panel."""
-    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+) -> tuple[list[_Component], list[_Component]]:
+    """Split candle-coloured blobs into (single candles, fused runs).
+
+    Zooming a chart in far enough makes neighbouring bodies touch, and they
+    then arrive as one blob spanning a dozen candles. Discarding those as "too
+    wide to be a candle" is how a chart with 200 candles on it gets read as 43:
+    every packed stretch vanishes, leaving only the gaps between them, and the
+    detected region shrinks to whichever fragment survived.
+
+    A fused run is not a button, though, and the difference is measurable. A
+    button is a filled rectangle; a row of candles is ragged along the top and
+    bottom because each body opens and closes at a different price.
+    """
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
     max_width = max(4, int(image_width * MAX_COMPONENT_WIDTH_FRACTION))
     max_area = max(64, int(image_width * image_height * MAX_COMPONENT_AREA_FRACTION))
 
-    components: list[_Component] = []
+    singles: list[_Component] = []
+    fused: list[_Component] = []
+    keep = np.zeros(count, dtype=bool)
     for index in range(1, count):  # 0 is the background
         left, top, width, height, area = (int(v) for v in stats[index])
-        if width > max_width or area > max_area:
+        if area < 3 or height < 2:
             continue
-        if area < 3:
-            continue
-        # A candle is at least as tall as it is wide once its wick is attached.
-        # A flat dash of the same width is a gridline fragment or an underline.
-        if height < 2:
-            continue
-        components.append(
-            _Component(
-                x=float(centroids[index][0]),
-                left=left,
-                top=top,
-                right=left + width,
-                bottom=top + height,
-                width=width,
-            )
+
+        component = _Component(
+            x=float(centroids[index][0]),
+            left=left,
+            top=top,
+            right=left + width,
+            bottom=top + height,
+            width=width,
         )
-    return components
+        if width <= max_width and area <= max_area:
+            singles.append(component)
+            keep[index] = True
+            continue
+
+        if area >= width * height * UI_FILL_RATIO:
+            continue  # a solid slab: a button, a banner, a filled background
+        if height <= 3:
+            continue  # a line, not a body
+        # Deliberately no upper width limit. A chart filling most of the screen
+        # with its candles touching is a single blob almost as wide as the
+        # display, and capping the width here threw exactly that away.
+        fused.append(component)
+        keep[index] = True
+
+    cleaned = np.where(keep[labels], np.uint8(255), np.uint8(0))
+    return singles, fused, cleaned
+
+
+def _widest_column_run(cleaned: np.ndarray, gap_tolerance: int = 26) -> tuple[int, int]:
+    """The widest stretch of columns holding candle material. Returns (x0, x1).
+
+    This is what finally decides the region, and it deliberately assumes almost
+    nothing: no pitch, no rhythm, no vertical alignment. Earlier versions grew
+    the field by joining blobs that overlapped vertically, which quietly
+    required the chart to be roughly level — on a steep trend one stretch of
+    candles sits entirely above the next, they share no rows at all, and the
+    region stopped at the bend.
+    """
+    occupied = cleaned.any(axis=0)
+    if not occupied.any():
+        return 0, 0
+
+    columns = np.nonzero(occupied)[0]
+    best = (columns[0], columns[0])
+    start = previous = columns[0]
+    for column in columns[1:]:
+        if column - previous > gap_tolerance:
+            if previous - start > best[1] - best[0]:
+                best = (start, previous)
+            start = column
+        previous = column
+    if previous - start > best[1] - best[0]:
+        best = (start, previous)
+    return int(best[0]), int(best[1]) + 1
+
+
+def _split_fused(fused: list[_Component], pitch: float) -> list[_Component]:
+    """Cut each fused run into pitch-wide slices, one per candle it contains."""
+    if pitch <= 1:
+        return []
+    slices: list[_Component] = []
+    for run in fused:
+        parts = int(round(run.width / pitch))
+        if parts < 1:
+            continue
+        step = run.width / parts
+        for i in range(parts):
+            left = int(run.left + i * step)
+            right = int(run.left + (i + 1) * step)
+            slices.append(
+                _Component(
+                    x=left + step / 2.0,
+                    left=left,
+                    top=run.top,
+                    right=right,
+                    bottom=run.bottom,
+                    width=max(1, right - left),
+                )
+            )
+    return slices
+
+
+def _grow_field(
+    seed: list[_Component], pool: list[_Component], reach: float
+) -> list[_Component]:
+    """Extend a seed sideways over everything that continues the same row.
+
+    A chart is one horizontal band. Anything in the pool that sits within
+    ``reach`` of the band's current edge, at roughly the band's height, is part
+    of the same chart; anything further away or at a different height is not.
+    Growing outwards rather than taking a single contiguous run means a packed
+    stretch of candles in the middle cannot cut the field in two.
+    """
+    field = list(seed)
+    remaining = [c for c in pool if c not in field]
+
+    changed = True
+    while changed and remaining:
+        changed = False
+        left = min(c.left for c in field)
+        right = max(c.right for c in field)
+        top = min(c.top for c in field)
+        bottom = max(c.bottom for c in field)
+        height = max(1.0, bottom - top)
+
+        still: list[_Component] = []
+        for candidate in remaining:
+            near = candidate.left <= right + reach and candidate.right >= left - reach
+            overlap = min(bottom, candidate.bottom) - max(top, candidate.top)
+            # Must genuinely share the band, not merely sit beside it: a
+            # sidebar icon level with the chart is not part of the chart.
+            share = overlap >= min(candidate.bottom - candidate.top, height) * 0.4
+            if near and share:
+                field.append(candidate)
+                changed = True
+            else:
+                still.append(candidate)
+        remaining = still
+    return field
+
+
+def _pitch_from_columns(mask: np.ndarray, region: _Component) -> float:
+    """Recover the candle spacing from the mask's column profile.
+
+    Needed when every candle on screen is touching its neighbours, so there are
+    no isolated blobs left to measure the spacing between. The silhouette still
+    steps up and down once per candle, and autocorrelating it finds that beat.
+    """
+    strip = mask[region.top : region.bottom, region.left : region.right]
+    if strip.size == 0:
+        return 0.0
+    profile = strip.sum(axis=0).astype(np.float64)
+    if profile.size < 16 or not np.any(profile):
+        return 0.0
+
+    # High-pass first. The profile of a trending stretch of candles is mostly
+    # the trend — a slow rise or fall across the whole width — and that swamps
+    # the per-candle beat completely: autocorrelating the raw profile returns
+    # the length of the trend, not the spacing of the candles.
+    window = 25
+    if profile.size > window:
+        smooth = np.convolve(profile, np.ones(window) / window, mode="same")
+        profile = profile - smooth
+    profile -= profile.mean()
+    if not np.any(profile):
+        return 0.0
+
+    correlation = np.correlate(profile, profile, mode="full")[len(profile) - 1 :]
+    # Undo the triangular bias: at lag k only N-k samples overlap, so the raw
+    # curve decays whatever the signal does. Without this the largest value
+    # after lag zero is simply the smallest lag on offer, and the beat is never
+    # found at all.
+    counts = np.arange(len(correlation), 0, -1, dtype=np.float64)
+    correlation = correlation / counts
+
+    # A chart holds many candles, so the spacing is a small fraction of the
+    # width. Searching further just offers the trend another way back in.
+    upper = min(len(correlation), 60, max(8, strip.shape[1] // 6))
+    if upper <= 6:
+        return 0.0
+
+    # Walk past the initial descent so a monotonically falling shoulder cannot
+    # be mistaken for a peak.
+    lag = 1
+    while lag + 1 < upper and correlation[lag + 1] < correlation[lag]:
+        lag += 1
+    if lag + 2 >= upper:
+        return 0.0
+
+    window = correlation[lag:upper]
+    strongest = float(window.max())
+    if strongest <= 0:
+        return 0.0
+
+    # Take the *smallest* lag that is nearly as strong as the best one. A
+    # periodic signal correlates just as well at two and three times its
+    # period, and the taller peak is often a harmonic — adopting it reports a
+    # spacing several candles wide, which then lets the field grow across the
+    # whole screen.
+    good = np.nonzero(window >= strongest * 0.75)[0]
+    peak = int(good[0]) + lag if good.size else int(np.argmax(window)) + lag
+    return float(peak) if peak >= 2 else 0.0
 
 
 def _merge_by_column(components: list[_Component], tolerance: float) -> list[_Component]:
@@ -420,8 +588,7 @@ def find_candle_field(
 
     height, width = image.shape[:2]
     bull, bear = build_masks(image, profile or ColorProfile())
-    mask = _strip_wide_runs(bull | bear, width)
-    mask = _drop_oversized(mask, width, height)
+    mask = _strip_thin_lines(bull | bear, width)
 
     # Blank out anything we already know is not the platform — most importantly
     # GateKeeper's own window, which is full of candle-coloured buttons and
@@ -433,32 +600,57 @@ def find_candle_field(
                 clipped.top : clipped.bottom, clipped.left : clipped.right
             ] = 0
 
-    components = _candidate_components(mask, width, height)
-    if len(components) < MIN_RUN:
-        return None, len(components), 0.0
-
-    typical_width = float(np.median([c.width for c in components]))
-    components = _merge_by_column(components, tolerance=max(1.0, typical_width * 0.6))
-    run = _longest_rhythmic_run(components)
-    if not run:
+    singles, fused, cleaned = _candidate_components(mask, width, height)
+    if len(singles) + len(fused) == 0:
         return None, 0, 0.0
-    count = len(run)
 
-    pitch = float(np.median([run[i + 1].x - run[i].x for i in range(len(run) - 1)]))
+    typical_width = float(np.median([c.width for c in singles])) if singles else 1.0
+    singles = _merge_by_column(singles, tolerance=max(1.0, typical_width * 0.6))
 
-    # Antialiased text over a coloured background sheds specks that are candle
-    # coloured, candle sized and occasionally land on the lattice. They are
-    # nothing like as tall as a candle, and letting one into the bounds drags
-    # the box up into the interface, so the run's own height sets the floor.
-    median_height = float(np.median([c.bottom - c.top for c in run]))
-    solid = [c for c in run if (c.bottom - c.top) >= max(3.0, median_height * 0.15)]
-    if len(solid) >= MIN_RUN:
-        run = solid
+    run: list[_Component] = []
+    if len(singles) >= MIN_RUN:
+        run = _longest_rhythmic_run(singles)
 
-    left = min(c.left for c in run)
-    right = max(c.right for c in run)
-    top = min(c.top for c in run)
-    bottom = max(c.bottom for c in run)
+    if run:
+        pitch = float(np.median([run[i + 1].x - run[i].x for i in range(len(run) - 1)]))
+        # Antialiased text over a coloured background sheds specks that are
+        # candle coloured, candle sized and occasionally land on the lattice.
+        # They are nothing like as tall as a candle, and letting one into the
+        # bounds drags the box up into the interface.
+        median_height = float(np.median([c.bottom - c.top for c in run]))
+        run = [
+            c for c in run if (c.bottom - c.top) >= max(3.0, median_height * 0.15)
+        ] or run
+        count = len(run)
+    elif fused:
+        # Nothing is isolated: every candle is touching its neighbours, so
+        # there is no rhythm left to measure. A big ragged blob of candle
+        # colour is not a button — the fill test already ruled that out — so it
+        # is the chart. No pitch is needed here: the extractor measures it
+        # again on the cropped region, and every attempt to guess it at this
+        # stage was wrong in a way that moved the region.
+        widest = max(fused, key=lambda c: c.width)
+        pitch = _pitch_from_columns(mask, widest)
+        count = int(round(widest.width / pitch)) if pitch >= 2 else 0
+    else:
+        return None, len(singles), 0.0
+
+    left, right = _widest_column_run(cleaned)
+    if right - left < 120:
+        return None, count, pitch
+
+    rows = np.nonzero(cleaned[:, left:right].any(axis=1))[0]
+    if rows.size == 0:
+        return None, count, pitch
+    top, bottom = int(rows[0]), int(rows[-1]) + 1
+
+    # Gate on the geometry, not on the candle count. In the packed case the
+    # count is an estimate built on a spacing that could not be measured
+    # reliably, and rejecting a perfectly good region because that estimate
+    # came out low is how a readable chart gets reported as no chart at all.
+    if (bottom - top) < 40:
+        return None, count, pitch
+    count = count or max(MIN_RUN, int((right - left) / max(pitch, 4.0)))
 
     # Breathe outwards. A box drawn tight to the extremes leaves the highest
     # and lowest candles touching the edge, and the extractor then reports them

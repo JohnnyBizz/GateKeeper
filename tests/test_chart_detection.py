@@ -1032,3 +1032,65 @@ class TestTheAppDoesNotSitOnTheChart:
         layout = detect_layout(image, exclude=[beside], read_labels=False)
         assert not layout.overlapped_by_app
         assert not any("sitting on top" in i for i in layout.issues)
+
+
+class TestPackedCharts:
+    """Zoomed in far enough, neighbouring candles touch and fuse into one blob."""
+
+    def _detect_and_extract(self, candle_width, gap, seed=9):
+        series = generate_series(120, seed=seed)
+        image, _truth = render_platform_screen(
+            series,
+            ScreenStyle(),
+            RenderStyle(candle_width=candle_width, candle_gap=gap),
+        )
+        layout = detect_layout(image, read_labels=False)
+        assert layout.chart is not None, "the chart must still be located"
+        box = layout.chart
+        crop = image[box.top : box.bottom, box.left : box.right]
+        plot_width = _truth["chart"][2] - _truth["chart"][0]
+        return series, layout, extract_pixel_candles(crop), plot_width
+
+    def test_the_region_is_still_found_when_every_candle_touches(self):
+        """A packed chart is one huge blob, not a row of separate ones.
+
+        Discarding it as "too wide to be a candle" is how a chart with 200
+        candles on it came back as 43, with a region a third of its width.
+        """
+        for candle_width, gap in ((10, 1), (10, 0), (14, 0), (9, 0), (4, 0)):
+            _series, layout, _extraction, plot_width = self._detect_and_extract(
+                candle_width, gap
+            )
+            assert layout.chart.width > plot_width * 0.9, (
+                candle_width, gap, layout.chart.width, plot_width,
+            )
+
+    def test_touching_candles_are_refused_rather_than_misread(self):
+        """What comes out of a fused chart is a different chart, not a worse one.
+
+        Fewer, wider candles, each one's open and close taken from whichever
+        candle happened to start and end the run. Every number downstream still
+        looks perfectly ordinary, so silence here is the dangerous outcome.
+        """
+        for candle_width, gap in ((10, 1), (10, 0), (14, 0), (9, 0), (4, 0)):
+            _series, _layout, extraction, _w = self._detect_and_extract(
+                candle_width, gap
+            )
+            assert any("touching" in issue for issue in extraction.issues), (
+                candle_width,
+                gap,
+            )
+            assert extraction.confidence <= 40
+
+    def test_a_chart_with_gaps_is_read_normally(self):
+        """The warning must not fire on charts that are perfectly readable."""
+        for candle_width, gap in ((10, 4), (10, 2), (7, 4), (5, 1), (12, 6), (3, 1)):
+            series, _layout, extraction, _w = self._detect_and_extract(
+                candle_width, gap
+            )
+            assert not any("touching" in i for i in extraction.issues), (
+                candle_width,
+                gap,
+            )
+            assert extraction.confidence >= 90
+            assert len(extraction.candles) > 55

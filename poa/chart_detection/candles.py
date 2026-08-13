@@ -321,6 +321,29 @@ def extract_pixel_candles(
         confidence -= 10.0
         issues.append("Candles occupy only a small part of the selected region.")
 
+    # Zoom the chart in far enough and neighbouring bodies touch. They then
+    # arrive as one blob spanning several candles, and what comes out is not a
+    # slightly worse reading of the chart — it is a different chart, with a
+    # third of the candles and each one's open and close taken from whichever
+    # candle happened to start and end the run. Silence here would be the worst
+    # outcome, because every number downstream still looks perfectly ordinary.
+    # Measured straight off the mask rather than inferred from the blobs: on a
+    # separated chart the gaps between candles leave a fifth to a third of the
+    # columns empty, and when the candles touch there are no empty columns at
+    # all. Comparing blob widths instead does not work, because once they fuse
+    # the blobs and the spacing between them both grow together.
+    band = combined[y0:y1, x0:x1]
+    if band.size:
+        column_fill = float((band.any(axis=0)).mean())
+        if column_fill >= 0.94:
+            confidence = min(confidence, 40.0)
+            issues.append(
+                "Candles are touching each other, so they cannot be told "
+                "apart — what is read back has fewer, wider candles than the "
+                "chart really has. Zoom the chart out a step until there is a "
+                "visible gap between candles."
+            )
+
     confidence = float(max(0.0, min(100.0, confidence)))
 
     return ExtractionResult(
