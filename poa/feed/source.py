@@ -20,7 +20,7 @@ from typing import Any
 from ..chart_detection.base import Capture, ChartSource, ChartSourceError
 from ..logging_setup import get_logger
 from ..models import DataQuality, Series
-from .cdp import BrowserError, list_targets, pick_target
+from .cdp import BrowserError, launch_browser, list_targets, pick_target
 from .frames import decode_frame
 from .protocol import (
     infer_period,
@@ -54,6 +54,8 @@ class FeedChartSource(ChartSource):
         match: str = "pocketoption",
         min_candles: int = 60,
         max_candles: int = 500,
+        auto_launch: bool = True,
+        profile_dir: Any = None,
     ) -> None:
         if websockets is None:  # pragma: no cover - guaranteed by requirements
             raise ChartSourceError("Reading the feed needs the 'websockets' package.")
@@ -61,6 +63,9 @@ class FeedChartSource(ChartSource):
         self.match = match
         self.min_candles = int(min_candles)
         self.max_candles = int(max_candles)
+        self.auto_launch = bool(auto_launch)
+        self.profile_dir = profile_dir
+        self._launched = False
 
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -107,11 +112,22 @@ class FeedChartSource(ChartSource):
                 time.sleep(2.0)  # the tab may be reloading; try again shortly
 
     async def _listen(self) -> None:
-        targets = list_targets(self.port)
+        try:
+            targets = list_targets(self.port)
+        except BrowserError:
+            # Nothing is listening. Start the browser rather than telling the
+            # user to — the whole point is that opening GateKeeper is the only
+            # thing they have to do.
+            if not self.auto_launch:
+                raise
+            self._open_browser()
+            targets = list_targets(self.port)
+
         target = pick_target(targets, self.match)
         if target is None:
             raise BrowserError(
-                f"No {self.match} tab is open in the debugged browser."
+                f"No {self.match} tab is open in the debugged browser. Sign in "
+                "and open your chart in the window GateKeeper opened."
             )
 
         async with websockets.connect(
@@ -148,6 +164,19 @@ class FeedChartSource(ChartSource):
                 pending_name = frame.announces
                 if frame.payload is not None:
                     self._handle(name, frame.payload)
+
+    def _open_browser(self) -> None:
+        """Start the debuggable browser once, and only once per session."""
+        if self._launched:
+            raise BrowserError(
+                "The browser was started but is not answering. Close any "
+                "GateKeeper browser windows and try again."
+            )
+        self._launched = True
+        from ..config import data_root
+
+        profile = self.profile_dir or (data_root() / "browser-profile")
+        launch_browser(profile, port=self.port)
 
     # -- state --------------------------------------------------------------
 

@@ -69,6 +69,7 @@ def build_source(config: Config) -> ChartSource:
                 match=str(config.get("capture.match", "pocketoption")),
                 min_candles=min_candles,
                 max_candles=max_candles,
+                auto_launch=bool(config.get("capture.auto_launch_browser", True)),
             )
         except (ChartSourceError, ImportError) as exc:
             log.error("Feed source unavailable (%s); falling back to synthetic.", exc)

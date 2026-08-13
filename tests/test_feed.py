@@ -465,3 +465,49 @@ class TestFeedSource:
         assert capture.timeframe_seconds == 60
         assert len(capture.series) == 80
         assert capture.quality.ok
+
+    def test_the_browser_is_started_rather_than_demanded(self, monkeypatch):
+        """Opening GateKeeper should be the only thing the user has to do."""
+        import asyncio
+
+        from poa.feed import source as module
+
+        feed = module.FeedChartSource(port=59997)
+        calls: list[Any] = []
+
+        def fake_list(port, timeout=2.0):
+            if not calls:
+                raise module.BrowserError("nothing listening")
+            return []
+
+        monkeypatch.setattr(module, "list_targets", fake_list)
+        monkeypatch.setattr(
+            module, "launch_browser", lambda profile, port=0: calls.append(port)
+        )
+
+        with pytest.raises(module.BrowserError):
+            asyncio.run(feed._listen())  # no tab yet, but the browser started
+        assert calls == [59997]
+
+    def test_it_does_not_relaunch_the_browser_in_a_loop(self, monkeypatch):
+        import asyncio
+
+        from poa.feed import source as module
+
+        feed = module.FeedChartSource(port=59996)
+        launches: list[Any] = []
+        monkeypatch.setattr(
+            module,
+            "list_targets",
+            lambda port, timeout=2.0: (_ for _ in ()).throw(
+                module.BrowserError("nothing listening")
+            ),
+        )
+        monkeypatch.setattr(
+            module, "launch_browser", lambda profile, port=0: launches.append(port)
+        )
+
+        for _ in range(3):
+            with pytest.raises(module.BrowserError):
+                asyncio.run(feed._listen())
+        assert len(launches) == 1

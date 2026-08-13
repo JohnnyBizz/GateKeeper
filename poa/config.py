@@ -104,6 +104,9 @@ DEFAULTS: dict[str, Any] = {
         # reads. Only used by the "feed" source.
         "debug_port": 9222,
         "match": "pocketoption",
+        # Start the debuggable browser if none is running. Opening
+        # GateKeeper should be the only thing the user has to do.
+        "auto_launch_browser": True,
         "poll_seconds": 2.0,
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},
