@@ -65,6 +65,12 @@ def build_narrative(
         f"Market regime: {current.regime.regime.label}",
         f"Market structure: {current.structure.label}",
         f"Heikin Ashi: {current.heikin_ashi.pattern}",
+        f"Candle pattern: {current.pattern.name}"
+        + (
+            f" ({current.pattern.bias.value.lower()})"
+            if current.pattern.bias is not Bias.NEUTRAL
+            else ""
+        ),
         f"Momentum: {current.momentum.label.title()}"
         + (
             " and increasing"
@@ -168,6 +174,19 @@ def build_narrative(
         )
     if current.heikin_ashi.momentum_weakening:
         warnings.append("Heikin Ashi bodies are contracting — the push is losing force.")
+    # A named pattern pointing the other way is worth saying out loud, since it
+    # is the thing a trader would notice first when looking at the same chart.
+    wanted_bias = Bias.BULLISH if bullish else Bias.BEARISH
+    if current.pattern.bias is not Bias.NEUTRAL and current.pattern.bias is not wanted_bias:
+        if current.pattern.strength >= 0.5:
+            warnings.append(
+                f"The last candles form a {current.pattern.name}, which points "
+                f"{current.pattern.bias.value.lower()} — against this direction."
+            )
+    elif current.pattern.name == "Doji" and current.pattern.strength >= 0.5:
+        warnings.append(
+            "The most recent candle is a Doji — neither side finished in control."
+        )
     if current.volatility.regime in ("elevated", "extreme"):
         warnings.append(f"Volatility is {current.volatility.regime}; risk is elevated.")
     obstacle = resistance if bullish else support

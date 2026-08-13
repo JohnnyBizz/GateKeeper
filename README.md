@@ -316,18 +316,46 @@ and needs none of this.
 
 ## 7. Running it
 
+Two front ends share the same engine — run whichever suits, or both:
+
 ```bash
 cp config.example.yaml config.yaml     # optional; defaults work as-is
-python run.py
+
+python overlay.py     # compact always-on-top panel, drag it next to your chart
+python run.py         # full browser dashboard at http://127.0.0.1:8765
 ```
 
-Open **http://127.0.0.1:8765**. Out of the box it runs on synthetic demo data
-so you can see everything working before wiring it to a real chart.
+Out of the box both run on synthetic demo data so you can see everything
+working before wiring anything to a real chart.
 
 ```bash
-python run.py -c my-config.yaml    # a specific config
+python run.py -c my-config.yaml       # a specific config
 POA_SERVER__PORT=9000 python run.py   # override any setting via env
 ```
+
+### The overlay panel
+
+A frameless, draggable window that stays above the chart. Top to bottom:
+**PAIR / PAYOUT / TIME** tiles (with the chart timeframe shown separately —
+the two are never conflated), the big **SIGNAL** box, the 0–100 score with a
+HIGH/MEDIUM/LOW badge and the named candle pattern, **duration fit** and the
+engine's suggested expiration, **Scan / Reset**, a session WIN/LOSS tally, and
+a risk block.
+
+The **Scan** button forces a fresh evaluation. While it runs, the previous
+verdict is deliberately blanked and three dots cycle — the old answer must
+never be readable as the new one — then the new verdict is revealed. The
+engine also keeps monitoring continuously in the background either way;
+alerts and setup-weakening/invalidation tracking stay live between scans.
+
+The **session tally** fills itself from settled journal outcomes; the +/−
+buttons adjust it for trades you took that the assistant never signalled. The
+win rate is shown against the **break-even rate for your configured payout**
+(52.1% at 92%), and greyed out below 20 trades because a rate over a handful
+of trades means nothing.
+
+The overlay needs Tkinter, which ships with Python on Windows/macOS; on Linux
+it is `sudo apt install python3-tk`. The browser dashboard needs none of this.
 
 ---
 
@@ -478,7 +506,7 @@ settled signals, because a win rate over ten trades says close to nothing.
 ## 12. Tests
 
 ```bash
-pytest -q                    # 254 tests
+pytest -q                    # 326 tests
 pytest tests/test_signals.py -v
 ```
 
@@ -507,7 +535,7 @@ Two safety invariants are asserted directly:
 ```
 pocket-option-assistant/
 ├── poa/
-│   ├── analysis/          Heikin Ashi, structure, levels, regime,
+│   ├── analysis/          Heikin Ashi, structure, levels, regime, patterns,
 │   │                      volatility, momentum, resampling, multi-timeframe
 │   ├── chart_detection/   sources (screen/CSV/synthetic), OpenCV candle
 │   │                      extraction, calibration, data validation, renderer
@@ -517,13 +545,15 @@ pocket-option-assistant/
 │   ├── backtesting/       paper trading, statistics
 │   ├── storage/           SQLite journal, screenshots
 │   ├── dashboard/         index.html, app.js, styles.css
-│   ├── config.py  engine.py  server.py  models.py  logging_setup.py
-├── tests/                 254 tests
+│   ├── overlay/           always-on-top panel (view model + Tk renderer)
+│   ├── config.py  engine.py  server.py  models.py  risk.py  logging_setup.py
+├── tests/                 326 tests
 ├── tools/                 select_region.py, make_sample_data.py, backtest.py
 ├── data/                  sample candle CSV
 ├── config.example.yaml    fully commented
 ├── requirements.txt
-└── run.py
+├── run.py                 browser dashboard
+└── overlay.py             overlay panel
 ```
 
 ---

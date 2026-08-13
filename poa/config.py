@@ -71,6 +71,20 @@ DEFAULTS: dict[str, Any] = {
         "entry_timeframe_multiple": 1,
         "min_candles": 60,
         "max_candles": 600,
+        # Broker payout on a win, as a fraction. This sets the break-even win
+        # rate, so it is not cosmetic: 0.92 means 52.1% wins is break-even.
+        "payout": 0.92,
+    },
+    "risk": {
+        "balance": 1000.0,
+        "risk_percent": 2.0,
+    },
+    "overlay": {
+        "x": 40,
+        "y": 80,
+        "opacity": 0.96,
+        # How long the scanning state is held before the verdict is revealed.
+        "scan_seconds": 2.4,
     },
     "signals": {
         "min_confidence": 75,

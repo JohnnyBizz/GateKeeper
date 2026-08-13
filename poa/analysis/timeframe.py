@@ -17,6 +17,7 @@ from ..models import Bias, Series, format_duration
 from .heikin_ashi import HeikinAshiReading, analyze_heikin_ashi
 from .levels import LevelsReading, detect_levels
 from .momentum import MomentumReading, analyze_momentum
+from .patterns import NO_PATTERN, Pattern, primary_pattern
 from .regime import RegimeReading, classify_regime
 from .structure import StructureReading, analyze_structure
 from .volatility import VolatilityReading, analyze_volatility
@@ -35,6 +36,7 @@ class TimeframeAnalysis:
     volatility: VolatilityReading
     momentum: MomentumReading
     regime: RegimeReading
+    pattern: Pattern = NO_PATTERN
 
     @property
     def label(self) -> str:
@@ -94,6 +96,7 @@ class TimeframeAnalysis:
             "volatility": self.volatility.to_dict(),
             "momentum": self.momentum.to_dict(),
             "regime": self.regime.to_dict(),
+            "pattern": self.pattern.to_dict(),
         }
         if include_levels:
             data["levels"] = self.levels.to_dict()
@@ -109,6 +112,10 @@ def analyze_timeframe(series: Series) -> TimeframeAnalysis:
     volatility = analyze_volatility(series, indicators)
     momentum = analyze_momentum(series, indicators)
     regime = classify_regime(series, indicators, structure, ha, volatility, levels)
+    # Named purely for reporting — the wick and body evidence a pattern encodes
+    # is already measured by the Heikin Ashi and structure components, so it is
+    # not scored again here.
+    pattern = primary_pattern(series)
     return TimeframeAnalysis(
         series=series,
         timeframe_seconds=series.timeframe_seconds,
@@ -119,4 +126,5 @@ def analyze_timeframe(series: Series) -> TimeframeAnalysis:
         volatility=volatility,
         momentum=momentum,
         regime=regime,
+        pattern=pattern,
     )

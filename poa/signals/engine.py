@@ -231,7 +231,10 @@ class SignalEngine:
         # --- 6. Combine into a state ---------------------------------------
         regime = mtf.current.regime
         direction_confidence = best_score.total
-        warnings = [w.detail for w in gates.warnings]
+        # Advisory gate failures (reversal risk, HA contraction) are already
+        # phrased better by the narrative builder; repeating both fills the
+        # panel with near-duplicates, so only the narrative's wording ships.
+        warnings: list[str] = []
 
         if not regime.regime.tradeable and regime.regime.value == "HIGH_VOLATILITY":
             # Distinct from an ordinary WAIT: conditions are actively hostile.

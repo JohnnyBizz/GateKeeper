@@ -79,6 +79,24 @@ market:
   min_candles: 60          # below this, data quality is reported as poor
   max_candles: 600         # how much history to keep in memory
 
+  # Broker payout on a win, as a fraction (0.92 = 92%). Not cosmetic: it sets
+  # the break-even win rate shown everywhere. 92% payout -> 52.1% break-even;
+  # 80% payout -> 55.6%.
+  payout: 0.92
+
+# Stake sizing shown in the overlay's risk block. Informational only — nothing
+# here places or sizes a real trade.
+risk:
+  balance: 1000.0          # account balance to size against
+  risk_percent: 2.0        # stake as a percentage of balance
+
+# The always-on-top overlay panel (python overlay.py).
+overlay:
+  x: 40                    # initial window position
+  y: 80
+  opacity: 0.96            # 1.0 = fully opaque
+  scan_seconds: 2.4        # how long the Scan animation holds before revealing
+
 signals:
   min_confidence: 75              # setup score needed before a direction is shown
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
