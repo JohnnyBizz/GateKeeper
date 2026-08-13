@@ -60,9 +60,19 @@ jobs:
           Copy-Item "$root\tessdata\eng.traineddata" vendor\tesseract\tessdata\
       - name: Build executable
         run: pyinstaller gatekeeper.spec --noconfirm
+      # A separate, temporary tool: it records what the platform's socket
+      # sends so the format can be read off a sample rather than guessed at.
+      - name: Build the feed recorder
+        run: pyinstaller recordfeed.spec --noconfirm
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: GateKeeper-windows
           path: dist/GateKeeper.exe
+          if-no-files-found: error
+      - name: Upload the feed recorder
+        uses: actions/upload-artifact@v4
+        with:
+          name: RecordFeed-windows
+          path: dist/RecordFeed.exe
           if-no-files-found: error

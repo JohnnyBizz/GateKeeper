@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """Capture a sample of the platform's WebSocket traffic, safely.
 
-    python tools/record_feed.py --launch          # start a browser and record
-    python tools/record_feed.py --port 9222       # use one already running
+Double-click the packaged RecordFeed.exe, or from a checkout:
 
-Secrets are stripped before anything is written, so the summary this prints is
-safe to paste into a message. Nothing is ever sent to the platform.
+    python tools/record_feed.py                   # start a browser and record
+    python tools/record_feed.py --attach          # use one already debugging
+
+Secrets are stripped before anything is written, so the summary this produces
+is safe to share. Nothing is ever sent to the platform and no trade is placed:
+this subscribes to the browser's own network events and listens.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -20,50 +24,97 @@ from poa.config import data_root  # noqa: E402
 from poa.feed import BrowserError, launch_browser, record_platform  # noqa: E402
 from poa.logging_setup import setup_logging  # noqa: E402
 
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _pause(message: str = "\nPress Enter to close this window... ") -> None:
+    """Keep a double-clicked console window open long enough to read it."""
+    if FROZEN:
+        try:
+            input(message)
+        except EOFError:  # pragma: no cover - no console attached
+            pass
+
+
+def _reveal(path: Path) -> None:
+    """Open the summary, so it can be copied without hunting for the file."""
+    try:
+        if os.name == "nt":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            os.system(f'open "{path}"')
+    except Exception:  # pragma: no cover - best effort
+        pass
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=9222)
     parser.add_argument("--seconds", type=float, default=60.0)
-    parser.add_argument("--launch", action="store_true", help="start the browser too")
+    parser.add_argument(
+        "--attach",
+        action="store_true",
+        help="use a browser already started with a debugging port",
+    )
     parser.add_argument("--match", default="pocketoption")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    setup_logging("INFO", data_root() / "storage" / "feed.log")
+    storage = data_root() / "storage"
+    setup_logging("INFO", storage / "feed.log")
 
-    if args.launch:
+    print("=" * 70)
+    print("GateKeeper — feed recorder")
+    print("=" * 70)
+    print(
+        "\nThis listens to the data your browser already receives from the\n"
+        "platform, so GateKeeper can read exact prices instead of reading them\n"
+        "off the screen. It sends nothing and places no trades.\n"
+        "\nPasswords, session tokens and your balance are removed before\n"
+        "anything is written to disk.\n"
+    )
+
+    if not args.attach:
         try:
             launch_browser(data_root() / "browser-profile", port=args.port)
         except BrowserError as exc:
-            print(f"Could not start a debuggable browser: {exc}")
+            print(f"Could not start a browser with debugging enabled:\n  {exc}")
+            _pause()
             return 1
         print(
-            "A browser window has opened. Sign in, open your chart, then leave "
-            f"it alone for {args.seconds:.0f} seconds while this records.\n"
+            "A browser window has opened. In THAT window:\n"
+            "  1. Sign in. It starts signed out the first time — it uses its own\n"
+            "     profile, which is the thing that lets this work at all.\n"
+            "  2. Open the chart you normally trade.\n"
         )
-        input("Press Enter once your chart is on screen... ")
+        try:
+            input("Then come back here and press Enter to start recording... ")
+        except EOFError:
+            pass
 
+    print(f"\nRecording for {args.seconds:.0f} seconds. Leave the chart open.\n")
     try:
         capture = record_platform(args.port, seconds=args.seconds, needle=args.match)
     except BrowserError as exc:
         print(f"\n{exc}")
+        _pause()
         return 1
 
-    print("\n" + "=" * 70)
-    print("SOCKETS")
-    print("=" * 70)
-    for url in capture.sockets:
-        print(f"  {url}")
+    lines = ["SOCKETS", "-" * 70]
+    lines.extend(f"  {url}" for url in capture.sockets)
+    lines += ["", "WHAT CAME THROUGH", "-" * 70, capture.summary.render()]
+    report = "\n".join(lines)
+    print("\n" + report)
 
-    print("\n" + "=" * 70)
-    print("WHAT CAME THROUGH")
-    print("=" * 70)
-    print(capture.summary.render())
+    summary_path = args.out or (storage / "feed-summary.txt")
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(report, encoding="utf-8")
+    capture.write(storage / "feed-sample.jsonl")
 
-    out = args.out or (data_root() / "storage" / "feed-sample.jsonl")
-    capture.write(out)
-    print(f"\nFull redacted capture written to {out}")
+    print(f"\nSaved to {summary_path}")
+    print("Copy everything in that file and send it over.")
+    _reveal(summary_path)
+    _pause()
     return 0
 
 
