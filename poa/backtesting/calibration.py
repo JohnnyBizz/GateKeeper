@@ -29,6 +29,7 @@ number is exactly what a tool like this is tempted to show.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Sequence
@@ -81,6 +82,30 @@ class Bucket:
         if not self.meaningful or self.win_rate is None:
             return None
         return self.win_rate >= breakeven
+
+    @property
+    def standard_error(self) -> float | None:
+        """How far this rate would wander on a sample this size, in points."""
+        if self.settled == 0 or self.win_rate is None:
+            return None
+        p = self.win_rate / 100.0
+        return round(math.sqrt(max(p * (1.0 - p), 0.0) / self.settled) * 100.0, 2)
+
+    def clearly_below(self, breakeven: float) -> bool:
+        """Is this rate short of break-even by more than the sample's own noise?
+
+        Twenty trades at 50% against a 52.1% break-even is not evidence of
+        anything — the standard error on twenty trades is around eleven points,
+        so that gap is well inside what chance produces. Refusing to trade on
+        it would be superstition with a decimal point. The shortfall has to
+        exceed one standard error before it counts as a finding.
+        """
+        if not self.meaningful or self.win_rate is None:
+            return False
+        error = self.standard_error
+        if error is None:
+            return False
+        return (breakeven - self.win_rate) > error
 
     def to_dict(self, breakeven: float = 52.1) -> dict[str, Any]:
         return {
@@ -176,13 +201,19 @@ class Calibration:
         # A regime that loses on its own record overrides a score band that
         # looks fine, because the band is averaged across every regime.
         slice_ = self.by_regime.get(regime)
-        if slice_ is not None and slice_.beats(breakeven) is False:
+        if slice_ is not None and slice_.clearly_below(breakeven):
             return False, (
                 f"{detail}; and in a {regime.replace('_', ' ').lower()} market "
                 f"they have settled at {slice_.win_rate:.0f}% over "
                 f"{slice_.settled}"
             )
-        return band.beats(breakeven), detail
+        # Short of break-even is not the same as *measurably* short of it.
+        # Twenty trades at 50% against a 52.1% break-even is inside the noise,
+        # and refusing to trade on that gap is superstition with a decimal
+        # point. Only a shortfall bigger than the sample's own error counts.
+        if band.clearly_below(breakeven):
+            return False, detail
+        return True, detail
 
     def recommended_threshold(self) -> tuple[int, Bucket] | None:
         """The score gate the record says was worth the most.

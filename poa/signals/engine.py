@@ -252,6 +252,15 @@ class SignalEngine:
         # printed price wrong. Those ride along with the signal.
         warnings: list[str] = list(quality.issues)
 
+        # The measured record is the exception to the rule above. It is a fact
+        # about how setups like this one have settled, not a reading of the
+        # candles, so the narrative builder has nothing to say about it — and
+        # when it is advisory rather than blocking, this is the only place it
+        # would ever be seen.
+        warnings.extend(
+            result.detail for result in gates.warnings if result.name == "measured_edge"
+        )
+
         if not regime.regime.tradeable and regime.regime.value == "HIGH_VOLATILITY":
             # Distinct from an ordinary WAIT: conditions are actively hostile.
             direction = Direction.NO_TRADE

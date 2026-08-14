@@ -48,9 +48,18 @@ MEANINGFUL_TRADES = 20
 # produces a confident-looking "0 signals" that means nothing.
 MIN_BARS = 150
 
-# The warm-up the engine sees at each step. Smaller than the backtest default
-# so a few hundred candles of platform history still yields evaluated bars.
+# The warm-up the engine sees at each step, and the least it can be. Every bar
+# spent on warm-up is a bar that cannot be evaluated, so a fixed 120 out of 150
+# available spends four fifths of a short history on nothing and leaves fifteen
+# decisions to measure — which is no sample at all. The window shrinks toward
+# the floor when history is short and grows back when there is plenty.
 WINDOW = 120
+MIN_WINDOW = 70
+
+
+def _window_for(bars: int) -> int:
+    """Warm-up that leaves a usable number of decisions behind it."""
+    return max(MIN_WINDOW, min(WINDOW, bars // 2))
 
 
 @dataclass
@@ -103,10 +112,20 @@ class ProofResult:
         if self.error:
             return self.error
         if self.settled == 0:
-            return (
+            line = (
                 f"Replayed {self.bars} bars of {self.asset}: no setup passed "
-                "the gates. Nothing to measure yet."
+                "the gates."
             )
+            # "Nothing to measure" is a dead end unless it says why. On a short
+            # history the honest reason is usually the history: most of it is
+            # spent warming the indicators up, and what is left is too few
+            # decisions to be a sample of anything.
+            if self.evaluated < 40:
+                return (
+                    f"{line} Only {self.evaluated} decisions could be tested on "
+                    "this much history — scroll the chart back to load more."
+                )
+            return f"{line} Either a quiet stretch, or the gates are too tight here."
         rate = self.win_rate or 0.0
         line = (
             f"Replayed {self.bars} bars: {self.settled} setups, "
@@ -181,7 +200,7 @@ def measure(
 
     backtester = Backtester(
         settings=settings or GateSettings(),
-        window=WINDOW,
+        window=_window_for(bars),
         higher_multiple=higher_multiple,
         entry_multiple=entry_multiple,
         payout=payout,

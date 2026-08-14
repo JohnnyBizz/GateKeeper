@@ -448,11 +448,18 @@ class TestCalibration:
     measurement is allowed to say the score is worthless.
     """
 
-    def _records(self, score, win_every, n=40, regime="STRONG_UPTREND"):
+    def _records(self, score, rate, n=40, regime="STRONG_UPTREND"):
+        """``rate`` is the win rate as a percentage, stated outright.
+
+        An earlier version of this helper took "one loss every N", which reads
+        as the loss rate and is in fact the inverse — and duly produced 75%
+        where a test wanted 25%.
+        """
         from poa.backtesting.calibration import Record
 
+        wins = round(n * rate / 100.0)
         return [
-            Record(score=score, won=(i % win_every != 0), regime=regime, hour=9,
+            Record(score=score, won=(i < wins), regime=regime, hour=9,
                    direction="CALL")
             for i in range(n)
         ]
@@ -460,7 +467,7 @@ class TestCalibration:
     def test_a_band_reports_what_that_score_actually_settled_at(self):
         from poa.backtesting.calibration import build_calibration
 
-        cal = build_calibration(self._records(75, win_every=4), payout=0.92)
+        cal = build_calibration(self._records(75, rate=75), payout=0.92)
         band = cal.band_for(75)
         assert band.label == "70-80"
         assert band.settled == 40
@@ -473,7 +480,7 @@ class TestCalibration:
 
         # Five trades, every one of them a win: flawless, and worth nothing.
         cal = build_calibration(
-            [r for r in self._records(75, win_every=2, n=5) if r.won], payout=0.92
+            self._records(75, rate=100, n=5), payout=0.92
         )
         band = cal.band_for(75)
         assert band.win_rate == 100.0
@@ -489,8 +496,8 @@ class TestCalibration:
 
         # Weak setups below 70, strong ones above.
         cal = build_calibration(
-            self._records(60, win_every=2, n=40)      # 50%, below break-even
-            + self._records(80, win_every=5, n=40),   # 80%, well above
+            self._records(60, rate=50, n=40)      # below break-even
+            + self._records(80, rate=80, n=40),   # well above
             payout=0.92,
         )
         rows = dict(cal.thresholds)
@@ -510,7 +517,7 @@ class TestCalibration:
         from poa.backtesting.calibration import build_calibration
 
         cal = build_calibration(
-            self._records(60, win_every=2, n=40) + self._records(80, win_every=5, n=40),
+            self._records(60, rate=50, n=40) + self._records(80, rate=80, n=40),
             payout=0.92,
         )
         rows = dict(cal.thresholds)
@@ -527,15 +534,15 @@ class TestCalibration:
     def test_no_threshold_clears_when_nothing_does(self):
         from poa.backtesting.calibration import build_calibration
 
-        cal = build_calibration(self._records(80, win_every=2), payout=0.92)
+        cal = build_calibration(self._records(80, rate=50), payout=0.92)
         assert cal.recommended_threshold() is None
 
     def test_a_losing_regime_overrides_a_band_that_looks_fine(self):
         from poa.backtesting.calibration import build_calibration
 
         cal = build_calibration(
-            self._records(80, win_every=5, n=40, regime="STRONG_UPTREND")
-            + self._records(80, win_every=2, n=40, regime="CHOPPY"),
+            self._records(80, rate=80, n=40, regime="STRONG_UPTREND")
+            + self._records(80, rate=25, n=40, regime="CHOPPY"),
             payout=0.92,
         )
         good, _ = cal.verdict(80, "STRONG_UPTREND")
@@ -543,6 +550,33 @@ class TestCalibration:
         assert good is True
         assert bad is False
         assert "choppy" in why.lower()
+
+    def test_a_shortfall_inside_the_noise_is_not_a_finding(self):
+        """50% over 40 trades against a 52.1% break-even is not evidence.
+
+        The standard error on forty trades is about eight points. Refusing to
+        trade on a two-point gap is superstition with a decimal point, and it
+        would silence the tool on any record that is merely unremarkable.
+        """
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(self._records(80, rate=50, n=40), payout=0.92)
+        band = cal.band_for(80)
+        assert band.win_rate == 50.0
+        assert band.beats(cal.breakeven) is False   # strictly, it is below …
+        assert not band.clearly_below(cal.breakeven)  # … but not measurably
+        beats, _why = cal.verdict(80)
+        assert beats is True
+
+    def test_a_shortfall_bigger_than_the_noise_is_a_finding(self):
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(self._records(80, rate=25, n=40), payout=0.92)
+        band = cal.band_for(80)
+        assert band.win_rate == 25.0
+        assert band.clearly_below(cal.breakeven)
+        beats, _why = cal.verdict(80)
+        assert beats is False
 
     def test_flat_expiries_are_left_out_of_the_record(self):
         from poa.backtesting.calibration import records_from_trades
@@ -584,16 +618,20 @@ class TestTheMeasuredEdgeGate:
             )
         )
 
-    def _calibration(self, score, win_every, n=40):
+    def _calibration(self, score, rate, n=40, real=True):
+        """``rate`` is the win rate as a percentage."""
         from poa.backtesting.calibration import Record, build_calibration
 
-        return build_calibration(
+        wins = round(n * rate / 100.0)
+        calibration = build_calibration(
             [
-                Record(score=score, won=(i % win_every != 0), regime="STRONG_UPTREND")
+                Record(score=score, won=(i < wins), regime="STRONG_UPTREND")
                 for i in range(n)
             ],
             payout=0.92,
         )
+        calibration.from_real_trades = real
+        return calibration
 
     def test_without_a_record_nothing_changes(self):
         """A gate that blocked until a record existed would prevent one forming."""
@@ -601,25 +639,41 @@ class TestTheMeasuredEdgeGate:
         assert signal.direction is Direction.CALL
         assert signal.actionable
 
-    def test_a_losing_record_turns_the_setup_into_a_wait(self):
+    def test_a_measurably_losing_record_turns_the_setup_into_a_wait(self):
         score = self._signal().direction_confidence
-        signal = self._signal(self._calibration(score, win_every=2))  # 50%
+        signal = self._signal(self._calibration(score, rate=25))
         assert signal.direction is Direction.WAIT
         assert not signal.actionable
-        assert "settled at 50%" in signal.reason
+        assert "settled at 25%" in signal.reason
 
     def test_a_winning_record_leaves_it_alone(self):
         score = self._signal().direction_confidence
-        signal = self._signal(self._calibration(score, win_every=5))  # 80%
+        signal = self._signal(self._calibration(score, rate=80))
         assert signal.direction is Direction.CALL
         assert signal.actionable
 
     def test_a_tiny_losing_record_is_not_acted_on(self):
         """Six trades cannot condemn a setup any more than they can bless one."""
         score = self._signal().direction_confidence
-        signal = self._signal(self._calibration(score, win_every=2, n=6))
+        signal = self._signal(self._calibration(score, rate=25, n=6))
         assert signal.direction is Direction.CALL
         assert signal.actionable
+
+    def test_a_replay_never_gets_a_veto(self):
+        """The loop that closes on itself and never reopens.
+
+        Live setups land in the same score band a replay is dominated by, so a
+        band that replayed badly would block every signal — and a tool that
+        signals nothing takes no trades, builds no real record, and stays
+        blocked forever. Only trades that were actually placed can veto.
+        """
+        score = self._signal().direction_confidence
+        replayed = self._calibration(score, rate=25, real=False)
+        signal = self._signal(replayed)
+        assert signal.direction is Direction.CALL
+        assert signal.actionable
+        # The finding is still reported — it just does not hold the veto.
+        assert any("25%" in text for text in signal.warnings + [signal.reason])
 
 
 class TestTheTradeHasToBePlaceable:

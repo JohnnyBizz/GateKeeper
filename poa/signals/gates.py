@@ -343,19 +343,21 @@ def evaluate_gates(
         # together here would calibrate against a number that does not yet
         # exist and blur two different questions into one bucket.
         beats, detail = calibration.verdict(score.total, current.regime.regime.name)
+        # Only a record of trades that were actually *placed* earns a veto.
+        # A replay's opinion cannot have one: live setups land in the same
+        # score band the replay is dominated by, so a band that measured badly
+        # would silence the tool completely — and a silent tool takes no
+        # trades, so no real record forms, so it stays silent. That loop closes
+        # on itself and never reopens.
+        vetoing = bool(getattr(calibration, "from_real_trades", False))
         if beats is False:
-            results.append(GateResult("measured_edge", False, detail))
+            # A replay saying this loses is worth reporting either way. It just
+            # does not get to stop the trade unless real trades are behind it.
+            results.append(GateResult("measured_edge", False, detail, blocking=vetoing))
         else:
-            # No opinion is not a failure. Early in a session, on a new pair,
-            # or after a settings change there is no record yet, and refusing
-            # to signal until one exists would mean never building one.
-            results.append(
-                GateResult(
-                    "measured_edge",
-                    True,
-                    detail,
-                    blocking=False if beats is None else True,
-                )
-            )
+            # No opinion is not a failure. Early in a session, on a new pair, or
+            # after a settings change there is no record yet, and refusing to
+            # signal until one exists would mean never building one.
+            results.append(GateResult("measured_edge", True, detail, blocking=False))
 
     return GateReport(results=results)
