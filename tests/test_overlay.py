@@ -684,6 +684,12 @@ class TestScanDecidesWhenToRelocate:
             app.config.set(
                 "capture.region", {"left": 0, "top": 0, "width": 900, "height": 500}
             )
+            # "Working" means the label boxes were found too — a region that
+            # reads candles perfectly still leaves the pair frozen on whatever
+            # was typed last if the name was never located. Stated here rather
+            # than inherited from whatever config file happens to be present.
+            for key in ("capture.asset_region", "capture.timeframe_region"):
+                app.config.set(key, {"left": 0, "top": 0, "width": 120, "height": 40})
             app.vm.data_confidence = 92.0
             assert not app._should_relocate()
             # ...but a region that cannot read the chart is worth replacing.

@@ -609,8 +609,13 @@ class TestChartChangeDetection:
         config.set("logging.file", str(tmp_path / "p.log"))
         config.set("alerts.desktop_notifications", False)
         engine = AnalysisEngine(config)
-        # Pretend the source reads pixels; the detection only applies there.
+        # This is the *vision* path: a source that reads pixels and has to
+        # infer a chart switch from the candles themselves. Both attributes are
+        # set explicitly, because a source that names its own chart is asked
+        # instead — and leaving that to whatever build_source happened to
+        # return made this pass or fail on the contents of a config file.
         engine.source.vision_based = True
+        engine.source.names_own_chart = False
         return engine
 
     def test_a_price_level_jump_is_detected(self, tmp_path):
@@ -701,6 +706,7 @@ class TestCalibrationInvalidation:
         engine = AnalysisEngine(config)
         try:
             engine.source.vision_based = True
+            engine.source.names_own_chart = False  # the inferring path
             calls: list[bool] = []
             engine.source.invalidate_calibration = lambda: calls.append(True)  # type: ignore[attr-defined]
 

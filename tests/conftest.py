@@ -21,6 +21,23 @@ from poa.models import Candle, DataQuality, Series
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _ignore_any_local_config(monkeypatch, tmp_path):
+    """Run every test against the shipped example, never a developer's own file.
+
+    ``load_config`` prefers ``config.yaml`` in the project directory when one
+    exists, so anyone who has pointed the app at their own chart gets a
+    different source, different gates and different timeframes from CI, which
+    has no such file. Three tests once passed here and failed there for exactly
+    that reason, and it cost a build to find rather than a test run.
+    """
+    from poa import config as config_module
+
+    monkeypatch.setattr(
+        config_module, "DEFAULT_CONFIG_PATH", tmp_path / "no-such-config.yaml"
+    )
+
+
 def build_series(
     closes,
     *,
