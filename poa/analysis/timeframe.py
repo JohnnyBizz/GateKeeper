@@ -7,6 +7,7 @@ the three readings.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,11 @@ class TimeframeAnalysis:
     momentum: MomentumReading
     regime: RegimeReading
     pattern: Pattern = NO_PATTERN
+    # The most recent traded price, including the bar still forming. ``series``
+    # holds closed candles only, so its last close can be a whole bar old —
+    # which is right for reading shapes and wrong for deciding how far price
+    # has to travel before an expiry.
+    live_price: float | None = None
 
     @property
     def label(self) -> str:
@@ -44,6 +50,8 @@ class TimeframeAnalysis:
 
     @property
     def price(self) -> float:
+        if self.live_price is not None and math.isfinite(self.live_price):
+            return float(self.live_price)
         return self.indicators.price
 
     @property
@@ -104,20 +112,42 @@ class TimeframeAnalysis:
 
 
 def analyze_timeframe(series: Series) -> TimeframeAnalysis:
-    """Run the full analysis stack over one timeframe's candles."""
-    indicators = compute_indicators(series)
-    ha = analyze_heikin_ashi(series)
-    structure = analyze_structure(series)
-    levels = detect_levels(series)
-    volatility = analyze_volatility(series, indicators)
-    momentum = analyze_momentum(series, indicators)
-    regime = classify_regime(series, indicators, structure, ha, volatility, levels)
+    """Run the full analysis stack over one timeframe's candles.
+
+    Anchored on **closed** candles. Every reading below asks about a shape —
+    did this bar close as a pin bar, did Heikin Ashi change colour, did a swing
+    high print — and a bar that has not closed has no shape yet. Ten seconds
+    into a minute it is a doji; forty seconds later it is a full-bodied candle
+    pointing the other way. Reading the live bar means the answer keeps
+    changing as the bar builds, and a signal fires on whichever moment it
+    happened to be looked at rather than on anything the market did.
+
+    The live price is carried separately, because *where price is now* is a
+    different question from *what the last bar did*, and the duration, level
+    proximity and expiry maths all need the current number.
+    """
+    settled = series.closed()
+    live_price = series.last_price
+
+    # One forming candle has nothing closed behind it. Analysing the empty
+    # remainder would raise rather than report an empty read, so the forming
+    # bar stands in — the data-quality gate already refuses a series this short.
+    if len(settled) == 0:
+        settled = series
+
+    indicators = compute_indicators(settled)
+    ha = analyze_heikin_ashi(settled)
+    structure = analyze_structure(settled)
+    levels = detect_levels(settled)
+    volatility = analyze_volatility(settled, indicators)
+    momentum = analyze_momentum(settled, indicators)
+    regime = classify_regime(settled, indicators, structure, ha, volatility, levels)
     # Named purely for reporting — the wick and body evidence a pattern encodes
     # is already measured by the Heikin Ashi and structure components, so it is
     # not scored again here.
-    pattern = primary_pattern(series)
+    pattern = primary_pattern(settled)
     return TimeframeAnalysis(
-        series=series,
+        series=settled,
         timeframe_seconds=series.timeframe_seconds,
         indicators=indicators,
         heikin_ashi=ha,
@@ -127,4 +157,5 @@ def analyze_timeframe(series: Series) -> TimeframeAnalysis:
         momentum=momentum,
         regime=regime,
         pattern=pattern,
+        live_price=live_price,
     )

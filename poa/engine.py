@@ -102,6 +102,10 @@ class AnalysisEngine:
         # Normalised shape of the last frame's candles, for the same purpose:
         # two pairs can trade at similar levels but never draw the same candles.
         self._last_shape: np.ndarray | None = None
+        # The candles the current signal was made from, kept whole.
+        self._last_series: Series | None = None
+        # (asset, timeframe) last seen from a source that names its own chart.
+        self._last_chart_key: tuple[Any, ...] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -246,12 +250,14 @@ class AnalysisEngine:
         # does (a CSV knows its own spacing; the screen source does not).
         asset = capture.asset or self.asset
 
-        # A vision source keeps reading whatever is on screen — including a
-        # completely different pair after the user switches charts on the
-        # platform. When that happens the previous signal, its peak confidence
-        # and its invalidation levels all describe a chart that no longer
-        # exists, so everything derived from it has to restart.
-        chart_changed = self._detect_chart_change(series)
+        # Switching charts on the platform leaves the previous signal, its peak
+        # confidence and its invalidation levels describing a chart that no
+        # longer exists, so everything derived from it has to restart. The
+        # timeframe counts as much as the instrument: the same pair at M5 is a
+        # different chart from the same pair at M1.
+        chart_changed = self._detect_chart_change(
+            series, asset, capture.timeframe_seconds or self.chart_timeframe
+        )
         if chart_changed:
             self.tracker.reset()
             # A manual price calibration belongs to the old chart. Keeping it
@@ -333,13 +339,34 @@ class AnalysisEngine:
             self.state.consecutive_errors = 0
             self.state.candles = _candle_payload(series)
             self.state.heikin_ashi_candles = _heikin_ashi_payload(series)
+            # Kept whole, not as the dict payload, so anything wanting to
+            # re-analyse this chart works from the same candles the signal was
+            # made from rather than a lossy copy of them.
+            self._last_series = series
 
         self._broadcast()
         return self.state
 
-    def _detect_chart_change(self, series: Series) -> bool:
-        """Has the chart on screen been swapped for a different one?
+    def latest_series(self) -> Series | None:
+        """The candles behind the current signal, or None before the first read."""
+        with self._lock:
+            return self._last_series
 
+    def _detect_chart_change(
+        self, series: Series, asset: str | None = None, timeframe: int | None = None
+    ) -> bool:
+        """Has the chart been swapped for a different one?
+
+        A source that names its own chart is simply asked. The instrument and
+        the period come from the platform's own messages, so a switch is a fact
+        rather than an inference — and inferring it from pixels when the answer
+        is available would be guessing at something already known. Missing the
+        switch is not cosmetic: the tracked signal's peak confidence, its
+        invalidation levels and its expiry all describe the chart that was
+        replaced, and carrying them onto the new one reports one instrument's
+        setup over another's candles.
+
+        Everything below is for the vision sources, which have no such answer.
         Two independent tests, because either alone misses real cases:
 
         * **price level** — switching EUR/USD to a pair trading at a different
@@ -353,9 +380,20 @@ class AnalysisEngine:
           timeframe on the same one, which invalidates the analysis just as
           thoroughly).
         """
+        if getattr(self.source, "names_own_chart", False):
+            self._last_median_price = None
+            self._last_shape = None
+            key = (asset, timeframe)
+            previous, self._last_chart_key = self._last_chart_key, key
+            if previous is None or previous == key:
+                return False
+            log.info("chart changed: %s → %s", previous, key)
+            return True
+
         if not self.source.vision_based or len(series) == 0:
             self._last_median_price = None
             self._last_shape = None
+            self._last_chart_key = None
             return False
 
         closes = series.close

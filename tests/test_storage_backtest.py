@@ -378,3 +378,63 @@ class TestBacktester:
         result = Backtester(window=200).run(generate_series(700, seed=6), step=10)
         payload = json.dumps(result.to_dict())
         assert "NaN" not in payload
+
+
+class TestMeasuringTheEngineOnItsOwnChart:
+    """The one number on the panel that is a fact rather than a forecast.
+
+    It has to be honest in both directions: no look-ahead in how it is
+    produced, and no confidence in how it is reported until the sample can
+    carry it.
+    """
+
+    def test_a_short_history_measures_nothing_and_says_so(self):
+        from poa.overlay.proof import measure
+
+        result = measure(pullback_trend(80, direction=1), trade_duration=180, payout=0.92)
+        assert result.settled == 0
+        assert result.win_rate is None
+        assert "150 are needed" in result.summary()
+
+    def test_a_real_history_produces_a_measured_rate(self):
+        from poa.overlay.proof import measure
+
+        result = measure(
+            pullback_trend(500, direction=1), trade_duration=180, payout=0.92
+        )
+        assert result.bars == 508
+        assert result.settled > 0
+        assert result.win_rate is not None
+        assert result.breakeven == pytest.approx(52.1, abs=0.2)
+        assert result.edge == pytest.approx(result.win_rate - result.breakeven, abs=0.2)
+
+    def test_a_small_sample_is_never_reported_as_an_edge(self):
+        """A green 100% over three trades is the worst thing it could paint."""
+        from poa.overlay.proof import ProofResult
+
+        tiny = ProofResult(
+            asset="EUR/USD", timeframe_seconds=60, trade_duration=180,
+            bars=400, evaluated=100, signals=3, wins=3, losses=0, payout=0.92,
+        )
+        assert tiny.win_rate == 100.0
+        assert not tiny.meaningful
+        assert "too few to read" in tiny.summary()
+
+    def test_it_splits_by_direction(self):
+        """All-calls-right on a rising chart is the trend, not an edge."""
+        from poa.overlay.proof import measure
+
+        result = measure(
+            pullback_trend(500, direction=1), trade_duration=180, payout=0.92
+        )
+        assert set(result.by_direction) == {"CALL", "PUT"}
+
+    def test_a_flat_expiry_counts_as_neither_a_win_nor_a_loss(self):
+        from poa.overlay.proof import ProofResult
+
+        result = ProofResult(
+            asset="EUR/USD", timeframe_seconds=60, trade_duration=180,
+            bars=400, evaluated=100, signals=25, wins=12, losses=8, payout=0.92,
+        )
+        assert result.settled == 20  # the five flats are not in it
+        assert result.win_rate == 60.0

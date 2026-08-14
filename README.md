@@ -387,6 +387,34 @@ The **RISK header folds the block away** — click it, and the panel remembers
 across restarts. It is the tallest section and the one that changes least once
 a stake is set.
 
+### MEASURED ON THIS CHART
+
+Everything else on the panel is an opinion about what price will do. This line
+is the one that checks.
+
+When enough history has loaded, GateKeeper replays *that chart's own candles*
+through the same signal engine, bar by bar, at the expiry you have selected,
+and reports what the result would have been:
+
+```
+Replayed 508 bars: 77 setups, 39W/38L — 51% at 3 MIN, -2 pts vs 52% break-even
+```
+
+Two properties make it worth reading. **No look-ahead**: the replay hands the
+engine a strict prefix of the series and nothing after it, so every decision is
+made from what was knowable at that bar — a result that peeked would be a lie
+in the most flattering possible direction. And **the same settings you are
+trading**: gates, payout and expiry come from the live configuration, so it
+measures the tool as configured rather than some other version of it.
+
+It is deliberately unglamorous about its own limits. Below twenty settled
+trades it says *too few to read* and stays grey rather than painting a green
+100% over three trades. It is recent, in-sample and single-instrument, so the
+honest use is comparative — **this pair against that one, this expiry against
+another** — and the fastest way to find out that an instrument is untradeable
+before putting money on it. It re-runs when you change chart or expiry, on a
+background thread, and never blocks the panel.
+
 The **Scan** button forces a fresh evaluation. While it runs, the previous
 verdict is deliberately blanked and three dots cycle — the old answer must
 never be readable as the new one — then the new verdict is revealed. The
@@ -486,6 +514,25 @@ own chart — `changeSymbol`, `saveCharts`, a history request — and those trav
 *outbound*, from the browser to the platform. Ticks never choose. Until one
 arrives the panel shows no pair at all, because a stale instrument above a
 live-looking verdict is a report on a market nobody is watching.
+
+### The bar that has not closed yet
+
+A candlestick pattern is a statement about a *closed* bar. Ten seconds into a
+minute the live bar has almost no body and reads as a doji or a pin bar; forty
+seconds later it is full-bodied and pointing the other way. Reading it means
+the answer changes as the bar builds, and the signal fires on whichever instant
+it happened to be looked at rather than on anything the market did.
+
+The whole analysis stack — patterns, Heikin Ashi, market structure, every
+indicator, the level detector — is anchored on **closed candles**. The live
+price is carried separately and used where it belongs: the price on the panel,
+distance to the nearest level, and the expiry arithmetic. *Where price is now*
+and *what the last bar did* are different questions and are answered from
+different data.
+
+This applies to the higher timeframe too. Four closed 1-minute candles do not
+make a 5-minute candle, and the aggregator marks the partial bucket unfinished
+so the same rule drops it.
 
 ### Confirmation has to be real
 

@@ -18,7 +18,7 @@ reports honestly how much it has.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -121,20 +121,22 @@ class CandleBuilder:
 
         start = self._bucket(tick.timestamp)
         if self._open is None:
-            self._open = Candle(start, tick.price, tick.price, tick.price, tick.price)
+            self._open = self._forming(start, tick.price, tick.price, tick.price)
             return
 
         if start > self._open.timestamp:
-            self._closed.append(self._open)
+            # The bucket has rolled over, so the bar that was forming is now a
+            # closed bar and may be marked as one.
+            self._closed.append(replace(self._open, complete=True))
             if len(self._closed) > self.max_candles:
                 del self._closed[: len(self._closed) - self.max_candles]
-            self._open = Candle(start, tick.price, tick.price, tick.price, tick.price)
+            self._open = self._forming(start, tick.price, tick.price, tick.price)
             return
         if start < self._open.timestamp:
             return  # a tick from before the current bucket; the past is settled
 
         current = self._open
-        self._open = Candle(
+        self._open = self._forming(
             current.timestamp,
             current.open,
             max(current.high, tick.price),
@@ -142,16 +144,51 @@ class CandleBuilder:
             tick.price,
         )
 
+    @staticmethod
+    def _forming(start, open_, high, low, close=None) -> Candle:
+        """The in-progress bar, marked as such.
+
+        Calling it complete is a lie the analysis believes: a bar ten seconds
+        into its minute has a tiny body and reads as a doji or a pin bar, and
+        forty seconds later it is a full-bodied candle pointing the other way.
+        """
+        return Candle(
+            start,
+            open_,
+            high,
+            low,
+            close if close is not None else open_,
+            complete=False,
+        )
+
     def extend(self, ticks: Iterable[Tick]) -> None:
         for tick in ticks:
             self.add(tick)
 
     def seed(self, candles: Iterable[Candle]) -> None:
-        """Backfill settled candles from the platform's history message."""
+        """Backfill settled candles from the platform's history message.
+
+        The platform's history usually ends with the bar that is still running,
+        and the tick stream is building that same bar. Taking both would put two
+        candles with one timestamp into the series — a duplicate bar the
+        indicators would happily average over. The forming bar has one owner
+        here, and it is the tick stream.
+        """
         known = {candle.timestamp for candle in self._closed}
+        # The current wall-clock bucket is unfinished whether or not a tick has
+        # opened it yet, so history for it is dropped either way — otherwise a
+        # backfill that lands before the first tick seeds a "closed" bar that
+        # the stream then builds again.
+        cutoff = self._bucket(datetime.now(tz=timezone.utc).timestamp())
+        if self._open is not None:
+            cutoff = min(cutoff, self._open.timestamp)
         for candle in candles:
-            if candle.timestamp not in known:
-                self._closed.append(candle)
+            if candle.timestamp in known:
+                continue
+            if candle.timestamp >= cutoff:
+                continue
+            self._closed.append(replace(candle, complete=True))
+            known.add(candle.timestamp)
         self._closed.sort(key=lambda candle: candle.timestamp)
         del self._closed[: max(0, len(self._closed) - self.max_candles)]
 
@@ -164,8 +201,13 @@ class CandleBuilder:
         return self._open
 
     def series(self, include_forming: bool = True) -> Series:
+        # One timestamp, one candle. Two bars sharing a bucket would be
+        # averaged over silently by every indicator downstream, so the invariant
+        # is enforced here rather than trusted.
         candles = list(self._closed)
         if include_forming and self._open is not None:
+            if candles and self._open.timestamp <= candles[-1].timestamp:
+                candles = [c for c in candles if c.timestamp < self._open.timestamp]
             candles.append(self._open)
         return Series(
             candles=tuple(candles),

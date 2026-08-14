@@ -407,3 +407,75 @@ class TestLoggingWithoutAConsole:
             worker.start()
             worker.join()
         assert any("unhandled exception in thread" in r.message for r in caplog.records)
+
+
+class TestAChartSwitchIsNoticed:
+    """A tracked signal must never outlive the chart it describes.
+
+    Its peak confidence, its invalidation levels and its expiry all belong to
+    one instrument on one timeframe. Carried across a switch they report one
+    market's setup over another market's candles — which is the same class of
+    mistake as naming the wrong pair, one layer deeper.
+    """
+
+    class _NamedSource:
+        """A source that knows its own chart, as the feed does."""
+
+        name = "feed"
+        vision_based = False
+        names_own_chart = True
+
+        def __init__(self):
+            self.asset = "EUR/USD OTC"
+            self.timeframe = 60
+
+        def capture(self):
+            from poa.chart_detection.base import Capture
+            from poa.chart_detection.quality import validate_series
+            from tests.conftest import pullback_trend
+
+            series = pullback_trend(300, direction=1)
+            return Capture(
+                series=series,
+                quality=validate_series(series, source="feed"),
+                asset=self.asset,
+                timeframe_seconds=self.timeframe,
+            )
+
+        def start(self): pass
+        def stop(self): pass
+
+    def _engine(self, tmp_path):
+        from poa.config import load_config
+        from poa.engine import AnalysisEngine
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("alerts.desktop_notifications", False)
+        engine = AnalysisEngine(config)
+        engine.source = self._NamedSource()
+        return engine
+
+    def test_the_same_chart_twice_is_not_a_change(self, tmp_path):
+        engine = self._engine(tmp_path)
+        engine.tick()
+        engine.tick()
+        assert engine.state.capture_meta["chart_changed"] is False
+
+    def test_a_new_instrument_restarts_the_analysis(self, tmp_path):
+        engine = self._engine(tmp_path)
+        engine.tick()
+        engine.tracker.update(engine.state.signal)
+        assert engine.tracker.current is not None
+
+        engine.source.asset = "CAD/JPY OTC"
+        engine.tick()
+        assert engine.state.capture_meta["chart_changed"] is True
+
+    def test_a_new_timeframe_is_a_new_chart_too(self, tmp_path):
+        engine = self._engine(tmp_path)
+        engine.tick()
+        engine.source.timeframe = 300
+        engine.tick()
+        assert engine.state.capture_meta["chart_changed"] is True

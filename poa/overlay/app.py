@@ -39,6 +39,11 @@ RELOCATE_BELOW_CONFIDENCE = 45.0
 # report a market the user was not looking at.
 UNKNOWN_ASSET = "—"
 
+# History needed before replaying the engine over it is worth doing, and how
+# many new bars have to arrive before the answer is re-measured.
+PROOF_MIN_BARS = 150
+PROOF_RERUN_BARS = 60
+
 
 class OverlayApp:
     """The overlay application: engine + panel + the glue between them."""
@@ -89,6 +94,14 @@ class OverlayApp:
         self._pending_signal = None
         self._last_layout = None
         self.panel = None
+
+        # The replay that measures the engine against this chart's own history.
+        # Keyed by what would change the answer, so it re-runs when the chart or
+        # the expiry changes and not on every poll.
+        self._proof_results: queue.Queue[Any] = queue.Queue()
+        self._proof_busy = False
+        self._proof_key: tuple[Any, ...] | None = None
+        self._proof_bars = 0
 
         # Results from the chart-search worker, handed back to the UI thread.
         self._scan_results: queue.Queue[Any] = queue.Queue()
@@ -166,6 +179,76 @@ class OverlayApp:
             self._pending_signal = signal
         else:
             self.vm.signal = signal
+
+    # -- measuring the engine against the chart in front of you --------------
+
+    def _maybe_measure(self) -> None:
+        """Replay this chart's history through the engine, in the background.
+
+        Everything else on the panel is an opinion about what price will do.
+        This is the part that checks: the same engine, the same gates, the same
+        expiry, walked bar by bar over the history the platform already sent,
+        with no visibility of what came next. It answers "are these calls any
+        good on this instrument" with a number instead of a claim.
+
+        Re-run when the answer could have changed — a different chart, a
+        different expiry, or enough new bars to move it — and not otherwise; it
+        is seconds of work, and running it every poll would heat the room to no
+        purpose.
+        """
+        if self._proof_busy:
+            return
+        series = self.engine.latest_series()
+        if series is None or len(series) < PROOF_MIN_BARS:
+            return
+
+        key = (series.symbol, series.timeframe_seconds, self.engine.trade_duration)
+        grown = len(series) - self._proof_bars >= PROOF_RERUN_BARS
+        if key == self._proof_key and not grown:
+            return
+
+        self._proof_key = key
+        self._proof_bars = len(series)
+        self._proof_busy = True
+        threading.Thread(
+            target=self._proof_worker,
+            args=(series, self.engine.trade_duration, self.vm.payout),
+            daemon=True,
+        ).start()
+
+    def _proof_worker(self, series: Any, duration: int, payout: float) -> None:
+        """Off the UI thread. Touches no Tk and no engine state."""
+        from .proof import measure
+
+        try:
+            result = measure(
+                series,
+                trade_duration=duration,
+                payout=payout,
+                settings=self.engine.gate_settings(),
+                higher_multiple=int(
+                    self.config.get("market.higher_timeframe_multiple", 5)
+                ),
+                entry_multiple=int(self.config.get("market.entry_timeframe_multiple", 1)),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("replay failed")
+            self._proof_results.put(exc)
+            return
+        self._proof_results.put(result)
+
+    def _collect_proof(self) -> None:
+        """UI thread: pick up whatever the replay found."""
+        try:
+            result = self._proof_results.get_nowait()
+        except queue.Empty:
+            return
+        self._proof_busy = False
+        if isinstance(result, Exception):
+            log.warning("replay failed: %s", result)
+            return
+        log.info("replay: %s", result.summary())
+        self.vm.proof = result
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""
@@ -758,6 +841,8 @@ class OverlayApp:
         try:
             self._drain()
             self._collect_scan_result()
+            self._collect_proof()
+            self._maybe_measure()
             # The scan state is held open while the search runs, not just for
             # the timer. Letting the timer end it early would drop the panel
             # out of SCANNING and paint the *previous* chart's verdict as if

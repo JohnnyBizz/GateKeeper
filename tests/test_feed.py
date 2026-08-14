@@ -301,6 +301,94 @@ class TestCandleBuilder:
         assert builder.forming.high == 1.15
 
 
+class TestTheFormingBarIsNotTreatedAsClosed:
+    """The bar still building is not a shape yet, and must not be read as one.
+
+    Ten seconds into a minute it is a doji; forty seconds later a full-bodied
+    candle pointing the other way. A pattern layer reading it reports whichever
+    it happened to be looked at, which is noise wearing the name of a signal.
+    """
+
+    def _ticks(self, prices, start=1_786_662_000, step=10):
+        from poa.feed.ticks import Tick
+
+        return [
+            Tick("EURUSD_otc", start + i * step, price)
+            for i, price in enumerate(prices)
+        ]
+
+    def test_the_forming_bar_is_marked_incomplete(self):
+        from poa.feed.ticks import CandleBuilder
+
+        builder = CandleBuilder(period_seconds=30)
+        builder.extend(self._ticks([1.10, 1.15, 1.12, 1.20]))
+        assert builder.forming is not None
+        assert builder.forming.complete is False
+        assert all(candle.complete for candle in builder.settled)
+
+    def test_the_analysis_reads_only_closed_candles(self):
+        """The forming bar reaches the price, and nothing else."""
+        from datetime import datetime, timedelta, timezone
+
+        from poa.analysis.timeframe import analyze_timeframe
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
+        closed = [
+            Candle(start + timedelta(minutes=i), 1.10, 1.11, 1.09, 1.10 + i * 0.001)
+            for i in range(80)
+        ]
+        forming = Candle(
+            start + timedelta(minutes=80), 1.18, 1.30, 1.05, 1.29, complete=False
+        )
+
+        analysis = analyze_timeframe(Series(closed + [forming], 60, "EUR/USD"))
+        # The wild unfinished bar is not in what was analysed …
+        assert len(analysis.series) == 80
+        assert analysis.series.candles[-1] is closed[-1]
+        # … but the price it is trading at is still the current one.
+        assert analysis.price == 1.29
+
+    def test_a_series_of_only_forming_candles_does_not_raise(self):
+        from poa.analysis.timeframe import analyze_timeframe
+        from poa.feed.ticks import CandleBuilder
+
+        builder = CandleBuilder(period_seconds=60)
+        builder.extend(self._ticks([1.10, 1.11]))
+        analyze_timeframe(builder.series())  # must report, not explode
+
+    def test_history_never_duplicates_the_bar_the_stream_is_building(self):
+        """The platform's history ends with the bar that is still running.
+
+        Taking it as well as the one the ticks are building puts two candles
+        on one timestamp, which every indicator downstream silently averages.
+        """
+        from datetime import datetime, timezone
+
+        from poa.feed.ticks import CandleBuilder
+        from poa.models import Candle
+
+        builder = CandleBuilder(period_seconds=60)
+        builder.extend(self._ticks([1.10, 1.15], start=1_786_662_000, step=10))
+        bucket = builder.forming.timestamp
+
+        # History for the same bucket, as the platform would send it.
+        builder.seed(
+            [
+                Candle(
+                    datetime.fromtimestamp(1_786_661_940, tz=timezone.utc),
+                    1.0, 1.1, 0.9, 1.05,
+                ),
+                Candle(bucket, 1.10, 1.99, 1.00, 1.99),
+            ]
+        )
+
+        stamps = [candle.timestamp for candle in builder.series()]
+        assert len(stamps) == len(set(stamps)), stamps
+        # The stream owns the forming bar, so the history version loses.
+        assert builder.forming.high == 1.15
+
+
 class TestProtocol:
     """Message shapes copied verbatim from a live capture."""
 

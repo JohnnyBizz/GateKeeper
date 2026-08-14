@@ -431,6 +431,19 @@ class OverlayPanel:
         )
         self._widgets["session_calls"].pack(anchor="w", padx=2)
 
+        # The measured record of this engine on this chart's own history — the
+        # one line on the panel that is a fact rather than a forecast.
+        tk.Label(
+            wrap, text="MEASURED ON THIS CHART", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+        ).pack(anchor="w", padx=2, pady=(6, 0))
+        self._widgets["proof"] = tk.Label(
+            wrap, text="Measuring this chart…", font=self.f_small,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+            wraplength=PANEL_WIDTH - 32, justify="left",
+        )
+        self._widgets["proof"].pack(anchor="w", padx=2)
+
     def _build_risk(self, parent: tk.Widget) -> None:
         wrap = self._section(parent, pady=(2, 2))
         header = tk.Frame(wrap, bg=COLORS["panel"])
@@ -683,6 +696,9 @@ class OverlayPanel:
                 else "No setups called yet this session"
             )
         )
+
+        proof = data["proof"]
+        w["proof"].configure(text=proof["text"], fg=proof["color"])
 
         risk = data["risk"]
         if risk.get("collapsed"):

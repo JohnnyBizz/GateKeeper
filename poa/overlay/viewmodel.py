@@ -163,6 +163,11 @@ class OverlayViewModel:
     # The risk block folds away. It is the tallest part of the panel and the
     # part that changes least once a stake is set.
     risk_collapsed: bool = False
+    # The measured record of this engine on this chart's own history: the one
+    # number here that is a fact rather than an opinion. None until the replay
+    # has run. Typed loosely to keep the GUI-free layer free of the
+    # backtester too.
+    proof: Any | None = None
 
     # ------------------------------------------------------------------
 
@@ -272,6 +277,7 @@ class OverlayViewModel:
                 "stake_overridden": self.stake_override is not None,
                 "collapsed": self.risk_collapsed,
             },
+            "proof": self._proof(),
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),
@@ -305,6 +311,32 @@ class OverlayViewModel:
         if self.data_confidence is not None and self.data_confidence < 70:
             return COLORS["wait"]
         return COLORS["call"]
+
+    def _proof(self) -> dict[str, Any]:
+        """The measured record, and how much weight the panel should give it.
+
+        Colour is deliberately withheld until the sample is big enough to mean
+        something. A green 100% over three trades is the most misleading thing
+        this panel could paint.
+        """
+        if self.proof is None:
+            return {"text": "Measuring this chart…", "color": COLORS["faint"], "ready": False}
+
+        edge = getattr(self.proof, "edge", None)
+        meaningful = bool(getattr(self.proof, "meaningful", False))
+        if not meaningful or edge is None:
+            color = COLORS["faint"]
+        elif edge >= 0:
+            color = COLORS["call"]
+        else:
+            color = COLORS["put"]
+        return {
+            "text": self.proof.summary(),
+            "color": color,
+            "ready": True,
+            "meaningful": meaningful,
+            "edge": edge,
+        }
 
     def _reason(self) -> str:
         if self.scan.scanning:
