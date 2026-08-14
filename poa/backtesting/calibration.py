@@ -118,6 +118,19 @@ class Calibration:
     payout: float = 0.92
     min_sample: int = MIN_SAMPLE
     total: int = 0
+    # True when this was built from trades that were actually placed rather
+    # than from a replay. Real trades carry the click delay, the broker's own
+    # settlement and the user's own hesitation; replayed ones carry none of it.
+    from_real_trades: bool = False
+    # How many real settled trades exist for this chart, whether or not there
+    # were enough of them to build on.
+    real_available: int = 0
+
+    @property
+    def provenance(self) -> str:
+        if self.from_real_trades:
+            return f"your {self.total} settled trades"
+        return f"{self.total} replayed setups"
 
     @property
     def breakeven(self) -> float:

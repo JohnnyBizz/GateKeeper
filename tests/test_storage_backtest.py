@@ -620,3 +620,148 @@ class TestTheMeasuredEdgeGate:
         signal = self._signal(self._calibration(score, win_every=2, n=6))
         assert signal.direction is Direction.CALL
         assert signal.actionable
+
+
+class TestTheTradeHasToBePlaceable:
+    """A signal exists only after its bar has closed, so nobody can buy at that
+    bar's closing price — it is already history by the time the panel lights up.
+    Settling against it measures a trade that could not be taken.
+    """
+
+    def test_entry_is_the_first_price_available_after_the_signal(self):
+        from poa.backtesting.paper import Backtester
+
+        series = pullback_trend(400, direction=1)
+        result = Backtester(window=120).run(
+            series, trade_duration=180, step=3, realistic_entry=True
+        )
+        assert result.trades
+        for trade in result.trades[:10]:
+            # Entered at the open of the bar *after* the signal, never at the
+            # close of the bar that produced it.
+            assert trade.entry_price == series[trade.index + 1].open
+
+    def test_the_impossible_entry_is_still_available_for_comparison(self):
+        """Knowing how much a measured edge owes to entering in the past."""
+        from poa.backtesting.paper import Backtester
+
+        series = pullback_trend(400, direction=1)
+        optimistic = Backtester(window=120).run(
+            series, trade_duration=180, step=3, realistic_entry=False
+        )
+        assert optimistic.trades
+        for trade in optimistic.trades[:10]:
+            assert trade.entry_price == series[trade.index].close
+
+    def test_expiry_runs_from_entry_not_from_the_signal(self):
+        from poa.backtesting.paper import Backtester
+
+        series = pullback_trend(400, direction=1)
+        result = Backtester(window=120).run(
+            series, trade_duration=180, step=3, realistic_entry=True
+        )
+        bars_ahead = 180 // 60
+        for trade in result.trades[:10]:
+            assert trade.exit_index == trade.index + 1 + bars_ahead
+
+
+class TestTheRecordRemembersRealTrades:
+    """A replay is what the engine would have done; the journal is what it did.
+
+    Real trades carry the delay between the panel lighting up and the button
+    being pressed, the broker's own settlement, and the user's hesitation.
+    None of that is reproducible in a backtest.
+    """
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(tmp_path / "j.db")
+
+    def _record(self, journal, *, score, won, asset="EUR/USD", duration=180):
+        from datetime import timedelta
+
+        from poa.models import Direction, utcnow
+
+        signal = make_signal(pullback_trend(200, direction=1), asset=asset)
+        signal.direction = Direction.CALL
+        signal.direction_confidence = score
+        signal.trade_duration = duration
+        signal.price = 1.10
+        row_id = journal.record(signal, source="feed")
+        journal.resolve_outcomes(
+            1.11 if won else 1.09,
+            utcnow() + timedelta(seconds=duration + 30),
+            source="feed",
+            asset=asset,
+        )
+        return row_id
+
+    def test_settled_trades_become_calibration_records(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            for i in range(6):
+                self._record(journal, score=75.0, won=i % 2 == 0)
+            records = journal.calibration_records(asset="EUR/USD", source="feed")
+            assert len(records) == 6
+            assert {r.won for r in records} == {True, False}
+            assert all(r.score == 75.0 for r in records)
+        finally:
+            journal.close()
+
+    def test_another_chart_is_a_different_experiment(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._record(journal, score=75.0, won=True, asset="EUR/USD")
+            self._record(journal, score=75.0, won=True, asset="GBP/USD")
+            assert len(journal.calibration_records(asset="EUR/USD")) == 1
+            assert len(journal.calibration_records(asset="GBP/USD")) == 1
+            # A different expiry is a different experiment too.
+            assert journal.calibration_records(trade_duration=999) == []
+        finally:
+            journal.close()
+
+    def test_unsettled_trades_are_not_counted(self, tmp_path):
+        """A signal with no outcome yet says nothing about anything."""
+        journal = self._journal(tmp_path)
+        try:
+            from poa.models import Direction
+
+            signal = make_signal(pullback_trend(200, direction=1))
+            signal.direction = Direction.CALL
+            journal.record(signal, source="feed")
+            assert journal.calibration_records() == []
+        finally:
+            journal.close()
+
+    def test_real_trades_replace_the_replay_once_there_are_enough(self):
+        from poa.backtesting.calibration import Record
+        from poa.overlay.proof import measure
+
+        real = [
+            Record(score=75.0, won=(i % 5 != 0), regime="STRONG_UPTREND")
+            for i in range(30)
+        ]
+        result = measure(
+            pullback_trend(500, direction=1),
+            trade_duration=180,
+            payout=0.92,
+            real_records=real,
+        )
+        assert result.calibration.from_real_trades is True
+        assert result.calibration.total == 30  # the replay's trades are not mixed in
+        assert result.calibration.band_for(75).win_rate == 80.0
+
+    def test_too_few_real_trades_falls_back_to_the_replay(self):
+        from poa.backtesting.calibration import Record
+        from poa.overlay.proof import measure
+
+        real = [Record(score=75.0, won=True) for _ in range(3)]
+        result = measure(
+            pullback_trend(500, direction=1),
+            trade_duration=180,
+            payout=0.92,
+            real_records=real,
+        )
+        assert result.calibration.from_real_trades is False
+        assert result.calibration.real_available == 3

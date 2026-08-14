@@ -142,6 +142,7 @@ class Backtester:
         use_recommended_duration: bool = False,
         progress: Callable[[int, int], None] | None = None,
         min_gap_bars: int = 0,
+        realistic_entry: bool = True,
     ) -> BacktestResult:
         """Walk ``series`` forward and collect the signals the engine produced.
 
@@ -151,6 +152,19 @@ class Backtester:
 
         ``min_gap_bars`` enforces a cooldown between recorded signals, mirroring
         the live cooldown so backtest and live behaviour stay comparable.
+
+        ``realistic_entry`` decides *when the trade is taken*, and it is not a
+        detail. A signal is produced by a bar that has closed, so nobody can
+        buy at that bar's closing price — it is already in the past by the time
+        the signal exists. Settling against it measures a trade that could not
+        be placed, and flatters the result by exactly the amount price moved
+        while the user was reading the panel.
+
+        With it on, entry is the next bar's open — the first price actually
+        available after the signal — and expiry counts from there. That is
+        still the best case (an instant click), but it is a price that was
+        really on offer. Off, for comparing the two and seeing how much of a
+        measured edge is an artefact of entering in the past.
         """
         asset = asset or series.symbol
         timeframe = series.timeframe_seconds
@@ -224,14 +238,23 @@ class Backtester:
                 else trade_duration
             )
             bars_ahead = max(1, round(duration_seconds / timeframe))
-            exit_index = index + bars_ahead
+            # The signal exists only once its bar has closed, so the earliest
+            # price anyone could actually trade is the next bar's open. The
+            # expiry then runs from there rather than from a price that was
+            # already history when the panel lit up.
+            entry_index = index + 1 if realistic_entry else index
+            exit_index = entry_index + bars_ahead
             if exit_index >= total:
                 # The data ends before this trade would settle; recording it
                 # unsettled would bias the sample, so it is dropped.
                 continue
 
-            entry_price = float(visible.close[-1])
-            exit_price = float(series[exit_index].close)
+            if realistic_entry:
+                entry_price = float(series[entry_index].open)
+                exit_price = float(series[exit_index].open)
+            else:
+                entry_price = float(visible.close[-1])
+                exit_price = float(series[exit_index].close)
             change = exit_price - entry_price
             if abs(change) < 1e-12:
                 outcome = "flat"

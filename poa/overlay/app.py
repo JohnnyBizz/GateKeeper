@@ -209,14 +209,30 @@ class OverlayApp:
 
         self._proof_key = key
         self._proof_bars = len(series)
+        # Real settled trades for this exact chart and expiry. They outrank the
+        # replay and are read here, on the UI thread, because the journal is
+        # this thread's to talk to.
+        try:
+            real = self.engine.journal.calibration_records(
+                asset=series.symbol,
+                source=getattr(self.engine.source, "name", None),
+                chart_timeframe=series.timeframe_seconds,
+                trade_duration=self.engine.trade_duration,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read the settled record: %s", exc)
+            real = []
+
         self._proof_busy = True
         threading.Thread(
             target=self._proof_worker,
-            args=(series, self.engine.trade_duration, self.vm.payout),
+            args=(series, self.engine.trade_duration, self.vm.payout, real),
             daemon=True,
         ).start()
 
-    def _proof_worker(self, series: Any, duration: int, payout: float) -> None:
+    def _proof_worker(
+        self, series: Any, duration: int, payout: float, real: Any = None
+    ) -> None:
         """Off the UI thread. Touches no Tk and no engine state."""
         from .proof import measure
 
@@ -225,6 +241,7 @@ class OverlayApp:
                 series,
                 trade_duration=duration,
                 payout=payout,
+                real_records=real,
                 settings=self.engine.gate_settings(),
                 higher_multiple=int(
                     self.config.get("market.higher_timeframe_multiple", 5)

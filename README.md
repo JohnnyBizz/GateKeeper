@@ -405,6 +405,16 @@ Below twenty settled trades in the band it says nothing at all, because a 100%
 win rate over three trades is the most confident-looking and least informative
 number this codebase can produce.
 
+**The record prefers your own trades.** A replay is what the engine *would*
+have done on history it can see. Your journal holds what it actually did, and
+how that actually settled — on this account, at this broker, with the delay
+between the panel lighting up and the button being pressed already baked in.
+That last part cannot be reproduced in a backtest, so once there are twenty
+settled real trades for a chart, the record is built from **those instead** —
+not blended with the replayed ones, because a trade that was taken and a trade
+that was merely considered are different experiments. The panel says which it
+is reading. Below twenty, the replay stands in.
+
 It is keyed on the **direction** score rather than the headline one. That is
 what exists when the gates run, and it is the number the structural analysis
 actually produced — how well the expiry fits is a separate question with its
@@ -448,12 +458,18 @@ and reports what the result would have been:
 Replayed 508 bars: 77 setups, 39W/38L — 51% at 3 MIN, -2 pts vs 52% break-even
 ```
 
-Two properties make it worth reading. **No look-ahead**: the replay hands the
+Three properties make it worth reading. **No look-ahead**: the replay hands the
 engine a strict prefix of the series and nothing after it, so every decision is
 made from what was knowable at that bar — a result that peeked would be a lie
-in the most flattering possible direction. And **the same settings you are
+in the most flattering possible direction. **The same settings you are
 trading**: gates, payout and expiry come from the live configuration, so it
-measures the tool as configured rather than some other version of it.
+measures the tool as configured rather than some other version of it. And
+**the trade has to have been placeable**: a signal exists only once its bar has
+closed, so nobody could ever have bought at that bar's closing price — it was
+already history by the time the panel lit up. Entry is the next bar's open, the
+first price actually on offer, and the expiry runs from there. Settling against
+the signal bar's close would measure a trade nobody could take and flatter the
+result by exactly the amount price moved while the user was reading the panel.
 
 It is deliberately unglamorous about its own limits. Below twenty settled
 trades it says *too few to read* and stays grey rather than painting a green

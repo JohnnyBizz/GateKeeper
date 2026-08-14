@@ -150,6 +150,7 @@ def measure(
     step: int = 2,
     min_gap_bars: int = 3,
     min_sample: int = MIN_SAMPLE,
+    real_records: Any | None = None,
 ) -> ProofResult:
     """Replay ``series`` through the engine and score what came out.
 
@@ -226,9 +227,20 @@ def measure(
             "win_rate": round(won / (won + lost) * 100.0, 1) if won + lost else None,
         }
 
-    calibration = build_calibration(
-        records_from_trades(result.trades), payout=payout, min_sample=min_sample
-    )
+    # Real settled trades and replayed ones are different experiments: one was
+    # taken, the other only considered. Pooling them would dilute the record
+    # that matters with the one that does not, so the real record is used
+    # *instead* as soon as there is enough of it to stand on its own.
+    real = list(real_records or [])
+    if len(real) >= min_sample:
+        calibration = build_calibration(real, payout=payout, min_sample=min_sample)
+        calibration.from_real_trades = True
+    else:
+        calibration = build_calibration(
+            records_from_trades(result.trades), payout=payout, min_sample=min_sample
+        )
+        calibration.from_real_trades = False
+    calibration.real_available = len(real)
 
     return ProofResult(
         asset=asset,

@@ -345,10 +345,15 @@ class OverlayViewModel:
 
         breakeven = calibration.breakeven
         beats = band.beats(breakeven)
+        source = (
+            "your settled trades"
+            if getattr(calibration, "from_real_trades", False)
+            else "replayed history"
+        )
         return {
             "text": (
-                f"Direction {band.label} settled at {band.win_rate:.0f}% here "
-                f"over {band.settled} — break-even {breakeven:.0f}%"
+                f"Direction {band.label} settled at {band.win_rate:.0f}% over "
+                f"{band.settled} ({source}) — break-even {breakeven:.0f}%"
             ),
             "color": COLORS["call"] if beats else COLORS["put"],
             "ready": True,

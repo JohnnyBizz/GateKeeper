@@ -386,6 +386,70 @@ class Journal:
             ]
         )
 
+    def calibration_records(
+        self,
+        asset: str | None = None,
+        source: str | None = None,
+        chart_timeframe: int | None = None,
+        trade_duration: int | None = None,
+        limit: int = 2000,
+    ) -> list[Any]:
+        """Settled real trades, reduced to what calibration needs from them.
+
+        These outrank anything a replay produces. A replay is what the engine
+        *would* have done on history it can see; these are what it actually did
+        and how it actually turned out — on this account, at this broker, with
+        the delay between the panel lighting up and the button being pressed
+        already baked in. That last part cannot be reproduced in a backtest, so
+        a hundred of these are worth more than a thousand replayed ones.
+
+        Scoped hard: a record from another instrument, another timeframe,
+        another expiry or a demo feed describes a different experiment, and
+        pooling them yields a number about nothing in particular.
+        """
+        from ..backtesting.calibration import Record
+
+        query = (
+            "SELECT direction, direction_confidence, market_regime, outcome, "
+            "timestamp FROM signals WHERE outcome IN ('win', 'loss') "
+            "AND direction IN ('CALL', 'PUT')"
+        )
+        params: list[Any] = []
+        for column, value in (
+            ("asset", asset),
+            ("source", source),
+            ("chart_timeframe", chart_timeframe),
+            ("trade_duration", trade_duration),
+        ):
+            if value is not None:
+                query += f" AND {column} = ?"
+                params.append(value)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(int(limit))
+
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+
+        records: list[Any] = []
+        for row in rows:
+            hour: int | None = None
+            stamp = row["timestamp"]
+            if isinstance(stamp, str) and stamp:
+                try:
+                    hour = datetime.fromisoformat(stamp.replace("Z", "+00:00")).hour
+                except ValueError:
+                    hour = None
+            records.append(
+                Record(
+                    score=float(row["direction_confidence"] or 0.0),
+                    won=row["outcome"] == "win",
+                    regime=str(row["market_regime"] or ""),
+                    hour=hour,
+                    direction=str(row["direction"] or ""),
+                )
+            )
+        return records
+
     def purge(self) -> None:
         """Drop every row — used by the tests and by an explicit user reset."""
         with self._lock:
