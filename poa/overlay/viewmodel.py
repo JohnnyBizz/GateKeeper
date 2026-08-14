@@ -278,6 +278,7 @@ class OverlayViewModel:
                 "collapsed": self.risk_collapsed,
             },
             "proof": self._proof(),
+            "calibration": self._calibration(),
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),
@@ -311,6 +312,48 @@ class OverlayViewModel:
         if self.data_confidence is not None and self.data_confidence < 70:
             return COLORS["wait"]
         return COLORS["call"]
+
+    def _calibration(self) -> dict[str, Any]:
+        """What setups scoring like the live one have actually settled at.
+
+        This is the difference between the panel saying "78" and the panel
+        saying "setups scoring 70-80 here settled at 56% over 41 trades". The
+        first is a number the engine made up from weights somebody chose; the
+        second is a fact about this instrument. Only the second is worth
+        anything when deciding whether to put money on it.
+        """
+        blank = {"text": "", "color": COLORS["faint"], "ready": False}
+        calibration = getattr(self.proof, "calibration", None)
+        if calibration is None or self.signal is None or self.scan.scanning:
+            return blank
+
+        # The direction score, which is what the record is keyed on.
+        band = calibration.measured_rate(self.signal.direction_confidence)
+        if band is None:
+            recommended = calibration.recommended_threshold()
+            if recommended is None:
+                return blank
+            threshold, bucket = recommended
+            return {
+                "text": (
+                    f"Gate at {threshold}+ measured {bucket.win_rate:.0f}% "
+                    f"over {bucket.settled} here"
+                ),
+                "color": COLORS["dim"],
+                "ready": True,
+            }
+
+        breakeven = calibration.breakeven
+        beats = band.beats(breakeven)
+        return {
+            "text": (
+                f"Direction {band.label} settled at {band.win_rate:.0f}% here "
+                f"over {band.settled} — break-even {breakeven:.0f}%"
+            ),
+            "color": COLORS["call"] if beats else COLORS["put"],
+            "ready": True,
+            "beats": beats,
+        }
 
     def _proof(self) -> dict[str, Any]:
         """The measured record, and how much weight the panel should give it.

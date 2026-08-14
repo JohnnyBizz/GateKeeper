@@ -249,6 +249,12 @@ class OverlayApp:
             return
         log.info("replay: %s", result.summary())
         self.vm.proof = result
+        # Hand the measured record back to the engine, keyed to the chart it
+        # was measured on, so the next evaluation can be checked against what
+        # setups like it actually settled at.
+        if result.calibration is not None and self._proof_key is not None:
+            asset, timeframe, _duration = self._proof_key
+            self.engine.set_calibration(result.calibration, asset, timeframe)
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""

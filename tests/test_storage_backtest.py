@@ -438,3 +438,185 @@ class TestMeasuringTheEngineOnItsOwnChart:
         )
         assert result.settled == 20  # the five flats are not in it
         assert result.win_rate == 60.0
+
+
+class TestCalibration:
+    """The score is an opinion until something checks it against an outcome.
+
+    A setup scoring 78 is not thereby 78% likely to win — the number has no
+    units. Calibration turns it into an index into a measurement, and the
+    measurement is allowed to say the score is worthless.
+    """
+
+    def _records(self, score, win_every, n=40, regime="STRONG_UPTREND"):
+        from poa.backtesting.calibration import Record
+
+        return [
+            Record(score=score, won=(i % win_every != 0), regime=regime, hour=9,
+                   direction="CALL")
+            for i in range(n)
+        ]
+
+    def test_a_band_reports_what_that_score_actually_settled_at(self):
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(self._records(75, win_every=4), payout=0.92)
+        band = cal.band_for(75)
+        assert band.label == "70-80"
+        assert band.settled == 40
+        assert band.win_rate == 75.0
+        assert band.beats(cal.breakeven) is True
+
+    def test_it_refuses_to_have_an_opinion_on_a_small_sample(self):
+        """The most confident-looking number here is also the least useful."""
+        from poa.backtesting.calibration import build_calibration
+
+        # Five trades, every one of them a win: flawless, and worth nothing.
+        cal = build_calibration(
+            [r for r in self._records(75, win_every=2, n=5) if r.won], payout=0.92
+        )
+        band = cal.band_for(75)
+        assert band.win_rate == 100.0
+        assert band.settled < 20
+        assert not band.meaningful
+        assert band.beats(cal.breakeven) is None
+        assert cal.measured_rate(75) is None
+        beats, _why = cal.verdict(75)
+        assert beats is None  # no opinion, which is not the same as "no"
+
+    def test_the_thresholds_answer_where_to_set_the_gate(self):
+        from poa.backtesting.calibration import build_calibration
+
+        # Weak setups below 70, strong ones above.
+        cal = build_calibration(
+            self._records(60, win_every=2, n=40)      # 50%, below break-even
+            + self._records(80, win_every=5, n=40),   # 80%, well above
+            payout=0.92,
+        )
+        rows = dict(cal.thresholds)
+        assert rows[50].settled == 80
+        assert rows[75].settled == 40
+        assert rows[75].win_rate == 80.0
+        # Taking everything is worse than being selective, and it says so.
+        assert rows[50].win_rate < rows[75].win_rate
+
+    def test_the_recommended_gate_is_the_one_worth_the_most(self):
+        """A gate trades signal count for hit rate; rank by what it returned.
+
+        Taking everything here settles at 65%, which clears break-even — but
+        excluding the weak half returns more in total despite half the trades,
+        so that is the gate the record recommends.
+        """
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(
+            self._records(60, win_every=2, n=40) + self._records(80, win_every=5, n=40),
+            payout=0.92,
+        )
+        rows = dict(cal.thresholds)
+        assert rows[50].win_rate == 65.0  # everything clears break-even …
+        recommended = cal.recommended_threshold()
+        assert recommended is not None
+        threshold, bucket = recommended
+        # … but the strong half alone was worth more, and 65 is the loosest
+        # gate that isolates it — no reason to pay for a stricter one.
+        assert threshold == 65
+        assert bucket.settled == 40
+        assert bucket.win_rate == 80.0
+
+    def test_no_threshold_clears_when_nothing_does(self):
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(self._records(80, win_every=2), payout=0.92)
+        assert cal.recommended_threshold() is None
+
+    def test_a_losing_regime_overrides_a_band_that_looks_fine(self):
+        from poa.backtesting.calibration import build_calibration
+
+        cal = build_calibration(
+            self._records(80, win_every=5, n=40, regime="STRONG_UPTREND")
+            + self._records(80, win_every=2, n=40, regime="CHOPPY"),
+            payout=0.92,
+        )
+        good, _ = cal.verdict(80, "STRONG_UPTREND")
+        bad, why = cal.verdict(80, "CHOPPY")
+        assert good is True
+        assert bad is False
+        assert "choppy" in why.lower()
+
+    def test_flat_expiries_are_left_out_of_the_record(self):
+        from poa.backtesting.calibration import records_from_trades
+
+        class Trade:
+            def __init__(self, outcome):
+                self.outcome = outcome
+                self.direction_confidence = 70.0
+                self.regime = "STRONG_UPTREND"
+                self.timestamp = "2026-08-14T09:00:00+00:00"
+                self.direction = "CALL"
+
+        records = records_from_trades(
+            [Trade("win"), Trade("loss"), Trade("flat"), Trade(None)]
+        )
+        assert len(records) == 2
+        assert records[0].hour == 9
+
+
+class TestTheMeasuredEdgeGate:
+    """A setup whose own record says it loses is not a setup."""
+
+    def _signal(self, calibration=None):
+        from poa.models import DataQuality
+        from poa.signals.engine import SignalEngine, SignalRequest
+
+        series = pullback_trend(400, direction=1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="test"
+        )
+        return SignalEngine().evaluate(
+            SignalRequest(
+                series=series,
+                asset="EUR/USD",
+                chart_timeframe=60,
+                trade_duration=180,
+                quality=quality,
+                calibration=calibration,
+            )
+        )
+
+    def _calibration(self, score, win_every, n=40):
+        from poa.backtesting.calibration import Record, build_calibration
+
+        return build_calibration(
+            [
+                Record(score=score, won=(i % win_every != 0), regime="STRONG_UPTREND")
+                for i in range(n)
+            ],
+            payout=0.92,
+        )
+
+    def test_without_a_record_nothing_changes(self):
+        """A gate that blocked until a record existed would prevent one forming."""
+        signal = self._signal()
+        assert signal.direction is Direction.CALL
+        assert signal.actionable
+
+    def test_a_losing_record_turns_the_setup_into_a_wait(self):
+        score = self._signal().direction_confidence
+        signal = self._signal(self._calibration(score, win_every=2))  # 50%
+        assert signal.direction is Direction.WAIT
+        assert not signal.actionable
+        assert "settled at 50%" in signal.reason
+
+    def test_a_winning_record_leaves_it_alone(self):
+        score = self._signal().direction_confidence
+        signal = self._signal(self._calibration(score, win_every=5))  # 80%
+        assert signal.direction is Direction.CALL
+        assert signal.actionable
+
+    def test_a_tiny_losing_record_is_not_acted_on(self):
+        """Six trades cannot condemn a setup any more than they can bless one."""
+        score = self._signal().direction_confidence
+        signal = self._signal(self._calibration(score, win_every=2, n=6))
+        assert signal.direction is Direction.CALL
+        assert signal.actionable

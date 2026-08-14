@@ -53,6 +53,10 @@ class SignalRequest:
     higher_multiple: int = 5
     entry_multiple: int = 1
     settings: GateSettings = field(default_factory=GateSettings)
+    # What setups like this one have actually settled at, from replaying this
+    # chart's own history. Absent during the replay itself — the record cannot
+    # be an input to the trades that build it — and absent until one has run.
+    calibration: Any | None = None
 
 
 @dataclass
@@ -217,7 +221,14 @@ class SignalEngine:
         candidate = best_score.direction
 
         # --- 4. Gates ------------------------------------------------------
-        gates = evaluate_gates(mtf, candidate, best_score, quality, request.settings)
+        gates = evaluate_gates(
+            mtf,
+            candidate,
+            best_score,
+            quality,
+            request.settings,
+            calibration=request.calibration,
+        )
 
         # --- 5. Duration ---------------------------------------------------
         duration = analyze_duration(

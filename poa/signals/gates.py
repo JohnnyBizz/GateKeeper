@@ -76,6 +76,10 @@ class GateSettings:
     resistance_proximity_atr: float = 0.75
     require_multi_timeframe_agreement: bool = True
     require_heikin_ashi_confirmation: bool = True
+    # Refuse a setup when the measured record says setups like it lose more
+    # often than this payout can carry. Only ever acts on a sample big enough
+    # to mean something, so it is silent until one exists.
+    require_measured_edge: bool = True
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "GateSettings":
@@ -111,6 +115,9 @@ class GateSettings:
                     defaults.require_heikin_ashi_confirmation,
                 )
             ),
+            require_measured_edge=bool(
+                section.get("require_measured_edge", defaults.require_measured_edge)
+            ),
         )
 
 
@@ -120,6 +127,7 @@ def evaluate_gates(
     score: ScoreResult,
     quality: DataQuality,
     settings: GateSettings,
+    calibration: Any | None = None,
 ) -> GateReport:
     """Run every confirmation requirement for ``direction``."""
     wanted = direction_to_bias(direction)
@@ -322,5 +330,32 @@ def evaluate_gates(
             blocking=False,
         )
     )
+
+    # The measured record, last, because it is the only check that asks what
+    # setups like this one have *actually* settled at rather than what they
+    # look like. It overrules the rest when it has the sample to: a setup that
+    # satisfies every structural requirement and has still lost more often than
+    # this payout can carry is a setup whose requirements are not the point.
+    if settings.require_measured_edge and calibration is not None:
+        # Keyed on the *direction* score, which is what exists at gate time and
+        # what the structural analysis actually produced. How well the expiry
+        # fits is scored separately and gated separately; folding the two
+        # together here would calibrate against a number that does not yet
+        # exist and blur two different questions into one bucket.
+        beats, detail = calibration.verdict(score.total, current.regime.regime.name)
+        if beats is False:
+            results.append(GateResult("measured_edge", False, detail))
+        else:
+            # No opinion is not a failure. Early in a session, on a new pair,
+            # or after a settings change there is no record yet, and refusing
+            # to signal until one exists would mean never building one.
+            results.append(
+                GateResult(
+                    "measured_edge",
+                    True,
+                    detail,
+                    blocking=False if beats is None else True,
+                )
+            )
 
     return GateReport(results=results)

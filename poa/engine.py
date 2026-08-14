@@ -106,6 +106,10 @@ class AnalysisEngine:
         self._last_series: Series | None = None
         # (asset, timeframe) last seen from a source that names its own chart.
         self._last_chart_key: tuple[Any, ...] | None = None
+        # What setups have measured on the chart currently open, and which
+        # chart that was, so it is never applied to a different one.
+        self._calibration: Any | None = None
+        self._calibration_key: tuple[Any, ...] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -277,6 +281,7 @@ class AnalysisEngine:
             higher_multiple=int(self.config.get("market.higher_timeframe_multiple", 5)),
             entry_multiple=int(self.config.get("market.entry_timeframe_multiple", 1)),
             settings=self.gate_settings(),
+            calibration=self._calibration_for(asset, chart_timeframe),
         )
 
         try:
@@ -351,6 +356,26 @@ class AnalysisEngine:
         """The candles behind the current signal, or None before the first read."""
         with self._lock:
             return self._last_series
+
+    def set_calibration(
+        self, calibration: Any | None, asset: str, timeframe: int
+    ) -> None:
+        """Record what setups have measured on one chart.
+
+        Keyed by the chart it was measured on. A record built on EUR/USD at M1
+        says nothing about CAD/JPY at M5, and applying it there would be the
+        same mistake as carrying a signal across a chart switch — with the
+        added indignity of looking like evidence.
+        """
+        with self._lock:
+            self._calibration = calibration
+            self._calibration_key = (asset, int(timeframe))
+
+    def _calibration_for(self, asset: str, timeframe: int) -> Any | None:
+        with self._lock:
+            if self._calibration_key != (asset, int(timeframe)):
+                return None
+            return self._calibration
 
     def _detect_chart_change(
         self, series: Series, asset: str | None = None, timeframe: int | None = None

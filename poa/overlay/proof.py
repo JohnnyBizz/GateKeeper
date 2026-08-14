@@ -26,6 +26,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..backtesting.calibration import (
+    MIN_SAMPLE,
+    build_calibration,
+    records_from_trades,
+)
 from ..backtesting.paper import Backtester
 from ..backtesting.stats import breakeven_rate
 from ..logging_setup import get_logger
@@ -63,6 +68,9 @@ class ProofResult:
     payout: float
     error: str | None = None
     by_direction: dict[str, Any] = field(default_factory=dict)
+    # What the score was actually worth, by band, by threshold, by regime and
+    # by hour. None when the replay produced nothing to calibrate against.
+    calibration: Any | None = None
 
     @property
     def settled(self) -> int:
@@ -141,6 +149,7 @@ def measure(
     entry_multiple: int = 1,
     step: int = 2,
     min_gap_bars: int = 3,
+    min_sample: int = MIN_SAMPLE,
 ) -> ProofResult:
     """Replay ``series`` through the engine and score what came out.
 
@@ -217,6 +226,10 @@ def measure(
             "win_rate": round(won / (won + lost) * 100.0, 1) if won + lost else None,
         }
 
+    calibration = build_calibration(
+        records_from_trades(result.trades), payout=payout, min_sample=min_sample
+    )
+
     return ProofResult(
         asset=asset,
         timeframe_seconds=timeframe,
@@ -228,4 +241,5 @@ def measure(
         losses=losses,
         payout=payout,
         by_direction=by_direction,
+        calibration=calibration,
     )

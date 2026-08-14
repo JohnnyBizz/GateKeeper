@@ -387,6 +387,54 @@ The **RISK header folds the block away** — click it, and the panel remembers
 across restarts. It is the tallest section and the one that changes least once
 a stake is set.
 
+### Calibration — what the score is actually worth
+
+The 0–100 score is an opinion. Its weights were chosen by judgement, and a
+setup scoring 78 is not thereby 78% likely to win — the number has no units,
+and until something checks it against an outcome, nothing has.
+
+Under the score the panel now prints what setups in that neighbourhood
+**actually settled at** on this chart:
+
+```
+Direction 80-90 settled at 50% here over 40 — break-even 52%
+```
+
+Green when the band clears the rate the payout needs, red when it does not.
+Below twenty settled trades in the band it says nothing at all, because a 100%
+win rate over three trades is the most confident-looking and least informative
+number this codebase can produce.
+
+It is keyed on the **direction** score rather than the headline one. That is
+what exists when the gates run, and it is the number the structural analysis
+actually produced — how well the expiry fits is a separate question with its
+own score and its own gate, and folding the two together would blur them.
+
+**And it acts.** `signals.require_measured_edge` (on by default) refuses a
+setup whose own record says setups like it lose more often than the payout can
+carry — a WAIT with the measurement as the reason. Two guards keep it honest:
+it needs a real sample before it will block anything, and *no opinion is not a
+failure*. Early in a session, on a new pair, or after a settings change there
+is no record yet; a gate that blocked until one existed would prevent one ever
+forming.
+
+Three more views come out of the same replay, and answer the question of
+*where* the edge lives rather than whether it exists:
+
+* **by score threshold** — "a gate at 75+ would have taken 40 trades at 80%".
+  This is what sets `signals.min_confidence`, and it is far better powered than
+  the bands because every trade at or above the gate counts toward it. The
+  recommendation ranks gates by what the whole sample would have *returned* —
+  trades times expected value — rather than by win rate alone, because the
+  strictest gate can leave money on the table by refusing forty profitable
+  trades to avoid ten bad ones.
+* **by regime** — trending markets and chop are different games, and a losing
+  regime overrides a score band that looks fine, since the band is averaged
+  across every regime.
+* **by hour and by direction** — the London open and 3am are not the same
+  market, and a tool that only gets calls right on a rising chart has found the
+  trend rather than an edge.
+
 ### MEASURED ON THIS CHART
 
 Everything else on the panel is an opinion about what price will do. This line

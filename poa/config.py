@@ -181,6 +181,11 @@ DEFAULTS: dict[str, Any] = {
         # emitted; failing any of them yields WAIT.
         "require_multi_timeframe_agreement": True,
         "require_heikin_ashi_confirmation": True,
+        # Refuse a setup when the measured record for this chart says setups
+        # like it have lost more often than the payout can carry. Silent until
+        # there is a sample big enough to mean something, so it never stops a
+        # record being built in the first place.
+        "require_measured_edge": True,
         "min_component_agreement": 0.55,
         "max_atr_percentile": 92,
         "resistance_proximity_atr": 0.75,

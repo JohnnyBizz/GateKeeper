@@ -327,6 +327,15 @@ class OverlayPanel:
         )
         self._widgets["pattern"].pack(anchor="w", padx=2, pady=(2, 0))
 
+        # What the score above was actually worth here. Sits directly under it
+        # on purpose: the score is a number the engine made up, and this is the
+        # measurement that says whether that number means anything.
+        self._widgets["calibration"] = tk.Label(
+            wrap, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"],
+            wraplength=PANEL_WIDTH - 32, justify="left",
+        )
+        self._widgets["calibration"].pack(anchor="w", padx=2)
+
         # Duration is reported on its own line with its own score, because a
         # right direction on a wrong expiration is not a tradeable setup.
         duration_row = tk.Frame(wrap, bg=COLORS["panel"])
@@ -695,6 +704,11 @@ class OverlayPanel:
                 if calls
                 else "No setups called yet this session"
             )
+        )
+
+        calibration = data["calibration"]
+        w["calibration"].configure(
+            text=calibration["text"], fg=calibration["color"]
         )
 
         proof = data["proof"]
