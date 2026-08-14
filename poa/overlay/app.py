@@ -69,8 +69,14 @@ class OverlayApp:
             chart_timeframe=self.engine.chart_timeframe,
             trade_duration=self.engine.trade_duration,
             source=str(self.config.get("capture.source", "screen")),
+            session_manual=bool(self.config.get("overlay.session_manual", True)),
+            risk_collapsed=bool(self.config.get("overlay.risk_collapsed", False)),
         )
         self.vm.scan.duration = float(self.config.get("overlay.scan_seconds", 2.4))
+
+        # The id of the last setup counted, so one signal held across many
+        # polls is one call rather than one per poll.
+        self._counted_signal: str | None = None
 
         # Where this session's tally starts. The journal outlives the app, so
         # without a boundary the "session" win rate would be every trade ever
@@ -148,6 +154,12 @@ class OverlayApp:
         quality = meta.get("quality") or {}
         self.vm.data_confidence = quality.get("confidence")
 
+        # Count a setup once, when it first qualifies — not once per poll for
+        # as long as it stands, which would turn one call into dozens.
+        if signal is not None and signal.actionable and signal.id != self._counted_signal:
+            self._counted_signal = signal.id
+            self.vm.calls_this_session += 1
+
         if self.vm.scan.scanning:
             # Hold the incoming signal back until the scan window completes, so
             # the reveal is the result of the scan rather than a mid-scan flip.
@@ -155,7 +167,23 @@ class OverlayApp:
         else:
             self.vm.signal = signal
 
+    def _toggle_risk(self) -> None:
+        """Fold the risk block away, and remember that across restarts."""
+        self.vm.risk_collapsed = not self.vm.risk_collapsed
+        self.config.set("overlay.risk_collapsed", self.vm.risk_collapsed)
+        try:
+            self.config.save()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not save the risk fold state: %s", exc)
+
     def _refresh_session(self) -> None:
+        # The tally is the user's record of their own trading, and only they
+        # know which trades they actually placed. Filling it from journalled
+        # outcomes meant the app was writing into a column the user was also
+        # keeping, and neither number ended up meaning anything.
+        if self.vm.session_manual:
+            return
+
         # Scoped to the pair *and* the data source currently in use. A tally
         # that mixes a synthetic-feed session into a live one is not a record
         # of anything, and the user reads it as their real win rate.
@@ -497,6 +525,8 @@ class OverlayApp:
         """
         self._session_since = utcnow()
         self.vm.session.reset()
+        self.vm.calls_this_session = 0
+        self._counted_signal = None
         self.engine.tracker.reset()
         self.vm.scan.reset()
 
@@ -756,6 +786,7 @@ class OverlayApp:
             on_balance=self._set_balance,
             on_settings=self._open_settings,
             on_close=self.shutdown,
+            on_toggle_risk=self._toggle_risk,
             position=(
                 int(self.config.get("overlay.x", 40)),
                 int(self.config.get("overlay.y", 80)),

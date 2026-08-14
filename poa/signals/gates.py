@@ -237,7 +237,20 @@ def evaluate_gates(
 
     # 7. Higher-timeframe alignment, unless a reversal is properly confirmed.
     if settings.require_multi_timeframe_agreement:
-        if mtf.conflicts_with_higher(wanted):
+        if not mtf.higher_is_distinct:
+            # There is no higher timeframe — only the current one standing in
+            # for it, for want of history to aggregate. It cannot oppose the
+            # direction, and it cannot confirm it either. A requirement met by
+            # a view agreeing with itself is not a requirement.
+            results.append(
+                GateResult(
+                    "higher_timeframe",
+                    False,
+                    "No higher timeframe yet — not enough history to build one, "
+                    "so there is nothing to confirm against",
+                )
+            )
+        elif mtf.conflicts_with_higher(wanted):
             reversal_ok = mtf.reversal_confirmed(wanted)
             detail = (
                 f"Higher timeframe ({mtf.higher.label}) is "

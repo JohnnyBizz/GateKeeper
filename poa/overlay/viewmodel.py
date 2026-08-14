@@ -153,6 +153,16 @@ class OverlayViewModel:
     # could do — every score and every pattern below it would be about a market
     # that does not exist.
     source: str = "screen"
+    # How many setups have passed every gate since the session began. The
+    # headline answers "what now"; this answers "how often", which is what
+    # tells you whether the panel is quiet because the market is.
+    calls_this_session: int = 0
+    # When true the win/loss tally belongs to the user alone, and settled
+    # journal outcomes never touch it.
+    session_manual: bool = True
+    # The risk block folds away. It is the tallest part of the panel and the
+    # part that changes least once a stake is set.
+    risk_collapsed: bool = False
 
     # ------------------------------------------------------------------
 
@@ -191,6 +201,8 @@ class OverlayViewModel:
                 "state": "SCANNING" if scanning else "IDLE",
                 "actionable": False,
                 "blanked": True,
+                "take_now": 0,
+                "take_label": "--" if scanning else "0 trades",
             }
         else:
             score = signal.direction_confidence
@@ -221,6 +233,12 @@ class OverlayViewModel:
                 "state": signal.state.value,
                 "actionable": signal.actionable,
                 "blanked": False,
+                # One chart, one setup: the count is 0 or 1, and it is spelled
+                # out because "NO TRADE" and "WAIT" both mean zero while
+                # looking nothing alike, and because a number is what you can
+                # glance at without reading a word.
+                "take_now": 1 if signal.actionable else 0,
+                "take_label": "1 trade" if signal.actionable else "0 trades",
             }
 
         risk = self.risk
@@ -244,8 +262,16 @@ class OverlayViewModel:
                 "progress": round(self.scan.progress(), 3),
                 "scanning": scanning,
             },
-            "session": self.session.to_dict(self.payout),
-            "risk": {**risk.to_dict(), "stake_overridden": self.stake_override is not None},
+            "session": {
+                **self.session.to_dict(self.payout),
+                "calls": self.calls_this_session,
+                "manual": self.session_manual,
+            },
+            "risk": {
+                **risk.to_dict(),
+                "stake_overridden": self.stake_override is not None,
+                "collapsed": self.risk_collapsed,
+            },
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),

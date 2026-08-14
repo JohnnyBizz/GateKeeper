@@ -166,6 +166,12 @@ DEFAULTS: dict[str, Any] = {
         "opacity": 0.96,
         # How long the scanning state is held before the verdict is revealed.
         "scan_seconds": 2.4,
+        # The win/loss tally is the user's own record. Set false to have it
+        # filled from settled journal outcomes instead — but then two things
+        # are writing to one column, and neither number means much.
+        "session_manual": True,
+        # Whether the risk block starts folded away. The panel remembers.
+        "risk_collapsed": False,
     },
     "signals": {
         "min_confidence": 75,

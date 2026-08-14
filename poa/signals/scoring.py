@@ -334,6 +334,17 @@ def _score_volatility(current: TimeframeAnalysis) -> ScoreComponent:
 def _score_mtf(mtf: MultiTimeframeAnalysis, wanted: Bias) -> ScoreComponent:
     agreement = mtf.agreement
     consensus = mtf.consensus
+    # Without enough history to aggregate one, the "higher timeframe" is the
+    # current view over again. It agrees by construction, so awarding this
+    # component for that agreement scores a tautology. The honest answer is
+    # that there is no multi-timeframe read here at all.
+    if not mtf.higher_is_distinct:
+        return ScoreComponent(
+            "multi_timeframe",
+            WEIGHTS["multi_timeframe"],
+            0.35,
+            "not enough history for a higher timeframe — single-view read",
+        )
     if consensus is wanted:
         score = min(1.0, 0.5 + agreement * 0.5)
         detail = f"all timeframes lean {wanted.value.lower()} (agreement {agreement:.0%})"

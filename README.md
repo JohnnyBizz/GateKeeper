@@ -285,6 +285,15 @@ downgraded to WAIT and says so explicitly — the direction is still shown, with
 its own confidence, so you can decide to switch expiration rather than lose the
 setup.
 
+**DURATION FIT on the panel is that score for the expiration you currently have
+selected**, and **SUGGESTED** is the one that scored highest. They answer a
+different question from the headline score. The headline asks *which way is
+price going*; duration fit asks *will it get there before this particular
+expiry*. A setup can be 88/100 on direction and 40/100 on duration — a real
+move, on a clock too short to contain it — and that combination is a WAIT, not
+a trade. When the two disagree, the usual fix is to change the expiry to the
+suggested one rather than to abandon the setup.
+
 ---
 
 ## 6. Installation
@@ -355,10 +364,28 @@ POA_SERVER__PORT=9000 python run.py   # override any setting via env
 
 A frameless, draggable window that stays above the chart. Top to bottom:
 **PAIR / PAYOUT / TIME** tiles (with the chart timeframe shown separately —
-the two are never conflated), the big **SIGNAL** box, the 0–100 score with a
-HIGH/MEDIUM/LOW badge and the named candle pattern, **duration fit** and the
-engine's suggested expiration, **Scan / Reset**, a session WIN/LOSS tally, and
-a risk block.
+the two are never conflated), the big **SIGNAL** box, **TAKE NOW**, the 0–100
+score with a HIGH/MEDIUM/LOW badge and the named candle pattern, **duration
+fit** and the engine's suggested expiration, **Scan / Reset**, a session
+WIN/LOSS tally, and a risk block.
+
+**TAKE NOW** is the count of setups that pass every gate at this moment — `0
+trades` or `1 trade`, because one chart yields at most one setup. It exists
+because WAIT and NO TRADE both mean zero while looking nothing alike, and a
+number is readable at a glance from across the desk. Under the session tally,
+**how many setups have been called since the session started** answers the
+other half: a quiet panel is either a quiet market or a broken app, and the
+count is what tells the two apart.
+
+The **session WIN/LOSS tally is yours alone.** Only you know which trades you
+actually placed, so the +/− buttons are the only thing that moves it; settled
+journal outcomes never write into it. (`overlay.session_manual: false` hands
+it back to the journal, but then two things are writing one column and neither
+number means much.)
+
+The **RISK header folds the block away** — click it, and the panel remembers
+across restarts. It is the tallest section and the one that changes least once
+a stake is set.
 
 The **Scan** button forces a fresh evaluation. While it runs, the previous
 verdict is deliberately blanked and three dots cycle — the old answer must
@@ -459,6 +486,21 @@ own chart — `changeSymbol`, `saveCharts`, a history request — and those trav
 *outbound*, from the browser to the platform. Ticks never choose. Until one
 arrives the panel shows no pair at all, because a stale instrument above a
 live-looking verdict is a report on a market nobody is watching.
+
+### Confirmation has to be real
+
+The higher timeframe is aggregated from the chart's own candles, so a short
+history cannot produce one — five 1-minute candles make one 5-minute candle,
+and thirty of those need 150. When that fails the analysis used to fall back to
+the base series, which meant the "higher timeframe" was the chart itself:
+it agreed with the current view by construction, the multi-timeframe
+requirement passed on a tautology, and a read of forty candles scored like a
+read of five hundred.
+
+It now knows the difference. A stand-in higher view scores neutral rather than
+confirming, and the confirmation gate fails with *no higher timeframe yet*
+instead of quietly passing. The practical effect: fewer calls early in a
+session, and the ones that come have actually been confirmed against something.
 
 Claims are ranked: the page naming its own chart outranks history, which
 outranks a per-instrument tick feed, and a weaker claim never unseats a

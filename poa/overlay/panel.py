@@ -35,6 +35,7 @@ class OverlayPanel:
         on_balance: Callable[[float], None] | None = None,
         on_settings: Callable[[], None] | None = None,
         on_close: Callable[[], None] | None = None,
+        on_toggle_risk: Callable[[], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
     ) -> None:
@@ -47,6 +48,7 @@ class OverlayPanel:
         self.on_balance = on_balance or (lambda b: None)
         self.on_settings = on_settings or (lambda: None)
         self.on_close = on_close or (lambda: None)
+        self.on_toggle_risk = on_toggle_risk or (lambda: None)
 
         self.root = tk.Tk()
         self.root.title("GateKeeper")
@@ -290,6 +292,21 @@ class OverlayPanel:
         )
         self._widgets["score_bar"].pack(fill="x", padx=2, pady=(2, 4))
 
+        # How many trades this is calling for, spelled out as a number. WAIT
+        # and NO TRADE both mean zero while looking nothing alike, and a count
+        # is what you can read at a glance without parsing a word.
+        take = tk.Frame(wrap, bg=COLORS["panel"])
+        take.pack(fill="x", pady=(0, 3))
+        tk.Label(
+            take, text="TAKE NOW", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+        ).pack(side="left", padx=2)
+        self._widgets["take_now"] = tk.Label(
+            take, text="--", font=self.f_mono,
+            bg=COLORS["panel"], fg=COLORS["neutral"],
+        )
+        self._widgets["take_now"].pack(side="right", padx=2)
+
         row = tk.Frame(wrap, bg=COLORS["panel"])
         row.pack(fill="x")
 
@@ -405,19 +422,45 @@ class OverlayPanel:
         )
         self._widgets["session_edge"].pack(anchor="w", padx=2)
 
+        # How many setups have passed the gates since the session began. A
+        # quiet panel is either a quiet market or a broken app, and the count
+        # is what tells the two apart.
+        self._widgets["session_calls"] = tk.Label(
+            wrap, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+        )
+        self._widgets["session_calls"].pack(anchor="w", padx=2)
+
     def _build_risk(self, parent: tk.Widget) -> None:
         wrap = self._section(parent, pady=(2, 2))
         header = tk.Frame(wrap, bg=COLORS["panel"])
         header.pack(fill="x")
-        tk.Label(
+
+        # The whole header toggles, not just the caret — a 7pt triangle is a
+        # miserable click target on a panel this size.
+        self._widgets["risk_caret"] = tk.Label(
+            header, text="▾", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
+        )
+        self._widgets["risk_caret"].pack(side="left")
+        title = tk.Label(
             header, text="RISK", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(side="left", padx=2)
+            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
+        )
+        title.pack(side="left", padx=2)
         self._widgets["risk_percent"] = tk.Label(
             header, text="", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["faint"],
         )
         self._widgets["risk_percent"].pack(side="right", padx=2)
+        for widget in (self._widgets["risk_caret"], title, header):
+            widget.bind("<Button-1>", lambda _e: self.on_toggle_risk())
+
+        # Everything below the header folds away together, so the stake stays
+        # one click from view rather than gone.
+        body = tk.Frame(wrap, bg=COLORS["panel"])
+        body.pack(fill="x")
+        self._widgets["risk_body"] = body
 
         # Balance and stake are typed in directly. The stake defaults to the
         # configured percentage of the balance; typing any number overrides it
@@ -426,7 +469,7 @@ class OverlayPanel:
             ("balance", "Balance", self._commit_balance),
             ("stake", "Stake", self._commit_stake),
         ):
-            row = tk.Frame(wrap, bg=COLORS["panel"])
+            row = tk.Frame(body, bg=COLORS["panel"])
             row.pack(fill="x", pady=1)
             tk.Label(
                 row, text=caption, font=self.f_small,
@@ -440,7 +483,7 @@ class OverlayPanel:
             ("profit", "Win returns"),
             ("breakeven", "Break-even rate"),
         ):
-            row = tk.Frame(wrap, bg=COLORS["panel"])
+            row = tk.Frame(body, bg=COLORS["panel"])
             row.pack(fill="x", pady=1)
             tk.Label(
                 row, text=caption, font=self.f_small,
@@ -595,6 +638,10 @@ class OverlayPanel:
             text=verdict["duration_display"], fg=verdict["score_color"]
         )
         w["recommended"].configure(text=verdict["recommended"])
+        w["take_now"].configure(
+            text=verdict["take_label"],
+            fg=verdict["color"] if verdict["take_now"] else COLORS["dim"],
+        )
         self._draw_score_bar(verdict["score"], verdict["score_color"])
 
         w["scan"].configure(
@@ -628,7 +675,22 @@ class OverlayPanel:
                     fg=COLORS["call"] if edge >= 0 else COLORS["put"],
                 )
 
+        calls = session.get("calls", 0)
+        w["session_calls"].configure(
+            text=(
+                f"{calls} setup{'' if calls == 1 else 's'} called this session"
+                if calls
+                else "No setups called yet this session"
+            )
+        )
+
         risk = data["risk"]
+        if risk.get("collapsed"):
+            w["risk_body"].pack_forget()
+            w["risk_caret"].configure(text="▸")
+        else:
+            w["risk_body"].pack(fill="x")
+            w["risk_caret"].configure(text="▾")
         self._set_entry(w["risk_balance"], f"{risk['balance']:.2f}")
         self._set_entry(w["risk_stake"], f"{risk['stake']:.2f}")
         w["risk_profit"].configure(text=f"+{risk['potential_profit']:.2f}", fg=COLORS["call"])

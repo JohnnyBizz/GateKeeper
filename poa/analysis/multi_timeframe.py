@@ -27,27 +27,40 @@ class MultiTimeframeAnalysis:
     higher: TimeframeAnalysis
     current: TimeframeAnalysis
     entry: TimeframeAnalysis
+    # False when there was not enough history to aggregate a genuinely higher
+    # view, so ``higher`` is the base series over again. Agreement with a copy
+    # of the chart you are already looking at is not agreement, and counting it
+    # as such is how a thin read scores like a thorough one.
+    higher_is_distinct: bool = True
+    entry_is_distinct: bool = True
 
     @property
     def views(self) -> tuple[TimeframeAnalysis, TimeframeAnalysis, TimeframeAnalysis]:
         return (self.higher, self.current, self.entry)
 
-    @property
-    def agreement(self) -> float:
-        """0..1 — how much the three views agree on a single direction."""
+    def _lean(self) -> tuple[float, float]:
         biases = [view.trend_bias for view in self.views]
         weights = [0.4, 0.35, 0.25]
         bull = sum(w for b, w in zip(biases, weights) if b is Bias.BULLISH)
         bear = sum(w for b, w in zip(biases, weights) if b is Bias.BEARISH)
+        return bull, bear
+
+    @property
+    def agreement(self) -> float:
+        """0..1 — how much the three views agree on a single direction.
+
+        A duplicated view contributes its weight to whatever it duplicates, so
+        this reads high when the stack is really one view. ``higher_is_distinct``
+        is what tells the difference; anything reading agreement as evidence
+        has to check it.
+        """
+        bull, bear = self._lean()
         return round(max(bull, bear), 3)
 
     @property
     def consensus(self) -> Bias:
         """The direction the stack leans, or NEUTRAL when it is split."""
-        biases = [view.trend_bias for view in self.views]
-        weights = [0.4, 0.35, 0.25]
-        bull = sum(w for b, w in zip(biases, weights) if b is Bias.BULLISH)
-        bear = sum(w for b, w in zip(biases, weights) if b is Bias.BEARISH)
+        bull, bear = self._lean()
         if abs(bull - bear) < 0.15:
             return Bias.NEUTRAL
         return Bias.BULLISH if bull > bear else Bias.BEARISH
@@ -126,13 +139,22 @@ def build_multi_timeframe(
                 break
         else:
             higher_series = series
-    higher = current if higher_series is series else analyze_timeframe(higher_series)
+    higher_distinct = higher_series is not series
+    higher = analyze_timeframe(higher_series) if higher_distinct else current
 
     entry_multiple = max(1, int(entry_multiple))
+    entry_distinct = False
     if entry_multiple > 1:
         entry_series = resample(series, base_tf * entry_multiple)
-        entry = analyze_timeframe(entry_series) if len(entry_series) >= 30 else current
+        entry_distinct = len(entry_series) >= 30
+        entry = analyze_timeframe(entry_series) if entry_distinct else current
     else:
         entry = current
 
-    return MultiTimeframeAnalysis(higher=higher, current=current, entry=entry)
+    return MultiTimeframeAnalysis(
+        higher=higher,
+        current=current,
+        entry=entry,
+        higher_is_distinct=higher_distinct,
+        entry_is_distinct=entry_distinct,
+    )

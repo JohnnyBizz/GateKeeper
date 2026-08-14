@@ -207,6 +207,37 @@ class TestDataQualityGate:
         assert note in signal.warnings
 
 
+class TestConfirmationMustBeReal:
+    """A requirement met by a view agreeing with itself is no requirement."""
+
+    def test_a_thin_read_cannot_claim_multi_timeframe_confirmation(self):
+        """The higher view falls back to the base series when history is short.
+
+        It then agrees with the current view by construction. Counting that as
+        the multi-timeframe confirmation the settings demand is how a read of
+        forty candles scores like a read of five hundred.
+        """
+        series = pullback_trend(45, direction=1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="test"
+        )
+        signal = evaluate(series, quality=quality)
+
+        assert signal.direction is Direction.WAIT
+        assert not signal.actionable
+        text = " ".join(signal.warnings + [signal.reason]).lower()
+        assert "higher timeframe" in text
+
+    def test_a_deep_read_is_not_penalised_for_it(self):
+        series = pullback_trend(400, direction=1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="test"
+        )
+        signal = evaluate(series, quality=quality)
+        gates = {r["name"]: r for r in signal.gates.to_dict()["results"]}
+        assert gates["higher_timeframe"]["passed"]
+
+
 class TestTimeframeAndDurationAreSeparate:
     def test_the_same_chart_supports_different_durations(self):
         series = pullback_trend(400, direction=1)

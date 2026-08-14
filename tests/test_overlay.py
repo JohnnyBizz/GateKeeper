@@ -120,6 +120,32 @@ class TestViewModel:
         vm.connected = True
         return vm
 
+    def test_how_many_trades_to_take_is_a_number(self):
+        """WAIT and NO TRADE both mean zero while looking nothing alike."""
+        signal = make_signal(pullback_trend(400, direction=1))
+        verdict = self._vm(signal).render()["verdict"]
+        assert verdict["take_now"] == (1 if signal.actionable else 0)
+        assert verdict["take_label"] == (
+            "1 trade" if signal.actionable else "0 trades"
+        )
+
+        # Nothing read yet is nothing to take, and it says so rather than "--".
+        idle = self._vm().render()["verdict"]
+        assert idle["take_now"] == 0
+        assert idle["take_label"] == "0 trades"
+
+    def test_the_session_reports_how_many_setups_were_called(self):
+        vm = self._vm()
+        assert vm.render()["session"]["calls"] == 0
+        vm.calls_this_session = 3
+        assert vm.render()["session"]["calls"] == 3
+
+    def test_the_risk_block_can_be_folded_away(self):
+        vm = self._vm()
+        assert vm.render()["risk"]["collapsed"] is False
+        vm.risk_collapsed = True
+        assert vm.render()["risk"]["collapsed"] is True
+
     def test_a_call_signal_renders_as_buy(self):
         signal = make_signal(pullback_trend(400, direction=1))
         assert signal.direction is Direction.CALL
@@ -326,6 +352,25 @@ class TestOverlayAppLogic:
         finally:
             app.shutdown()
 
+    def test_the_tally_is_the_users_alone_by_default(self, tmp_path):
+        """Two writers, one column, and neither number means anything.
+
+        The user keeps this tally by hand; settled journal outcomes must not
+        also be adding to it behind them.
+        """
+        app = self._app(tmp_path)
+        try:
+            assert app.vm.session_manual
+            app.vm.session.set_auto(3, 2)  # as a journal refresh would
+            app.vm.session.reset()
+
+            app._adjust(1, 0)
+            app._refresh_session()
+            assert app.vm.session.wins == 1
+            assert app.vm.session.auto_wins == 0
+        finally:
+            app.shutdown()
+
     def test_reset_survives_the_next_journal_refresh(self, tmp_path):
         """Reset has to mean something after the journal is read again."""
         from datetime import timedelta
@@ -333,6 +378,7 @@ class TestOverlayAppLogic:
         from poa.models import Direction, utcnow
 
         app = self._app(tmp_path)
+        app.vm.session_manual = False  # the opt-in automatic tally
         try:
             app.engine.tick()
             signal = app.engine.state.signal

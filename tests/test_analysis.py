@@ -348,3 +348,18 @@ class TestMultiTimeframe:
         # 80 base candles aggregated 5:1 leaves 16, below the usable minimum.
         mtf = build_multi_timeframe(trending_series(80, step=0.0002), 5, 1)
         assert len(mtf.higher.series) >= 30 or mtf.higher is mtf.current
+
+    def test_a_stand_in_higher_timeframe_says_so(self):
+        """Agreement with a copy of the current view is not agreement.
+
+        40 candles cannot aggregate into any usable higher view, so ``higher``
+        becomes the base series again — and anything reading that as
+        independent confirmation is reading one chart twice.
+        """
+        thin = build_multi_timeframe(trending_series(40, step=0.0002), 5, 1)
+        assert thin.higher is thin.current
+        assert thin.higher_is_distinct is False
+
+        deep = build_multi_timeframe(trending_series(500, step=0.0003), 5, 1)
+        assert deep.higher is not deep.current
+        assert deep.higher_is_distinct is True
