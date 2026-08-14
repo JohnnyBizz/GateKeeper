@@ -819,3 +819,98 @@ class TestTheRecordRemembersRealTrades:
         )
         assert result.calibration.from_real_trades is False
         assert result.calibration.real_available == 3
+
+
+class TestTheSurveyBreaksTheDeadlock:
+    """Strict gates cannot measure whether they should be strict.
+
+    Running the replay at the live gates measures only what already passes, so
+    it can never answer the question the threshold table exists for. Worse, it
+    closes a loop: strict gates yield few setups, few setups cannot carry a
+    recommendation, so the gates never move off whatever they were set to.
+    """
+
+    def _mixed(self, bars=200):
+        """Trending and choppy stretches, as a real session contains."""
+        from poa.models import Candle, Series
+
+        parts = [
+            pullback_trend(bars, direction=1),
+            choppy_series(bars),
+            pullback_trend(bars, direction=-1),
+        ]
+        candles, stamp, step = [], None, None
+        for part in parts:
+            step = step or (part[1].timestamp - part[0].timestamp)
+            for candle in part:
+                stamp = candle.timestamp if stamp is None else stamp
+                candles.append(
+                    Candle(stamp, candle.open, candle.high, candle.low,
+                           candle.close, candle.volume)
+                )
+                stamp = stamp + step
+        return Series(candles, 60, "GBP/USD OTC")
+
+    def test_the_survey_runs_looser_than_the_live_gates(self):
+        from poa.overlay.proof import SURVEY_CONFIDENCE, measure
+        from poa.signals.gates import GateSettings
+
+        strict = GateSettings(min_confidence=95, min_duration_compatibility=95)
+        result = measure(
+            self._mixed(), trade_duration=180, payout=0.92, settings=strict
+        )
+        # Almost nothing passes gates that strict …
+        assert result.signals < result.surveyed
+        # … but the survey still found a population to calibrate against.
+        assert result.surveyed >= 20
+        assert result.calibration.total == result.surveyed
+        assert SURVEY_CONFIDENCE < strict.min_confidence
+
+    def test_the_headline_still_reports_the_users_own_gates(self):
+        """A number describing a looser tool answers a question nobody asked."""
+        from poa.overlay.proof import measure
+        from poa.signals.gates import GateSettings
+
+        strict = GateSettings(min_confidence=95, min_duration_compatibility=95)
+        loose = GateSettings(min_confidence=50, min_duration_compatibility=30)
+        series = self._mixed()
+        tight = measure(series, trade_duration=180, payout=0.92, settings=strict)
+        wide = measure(series, trade_duration=180, payout=0.92, settings=loose)
+
+        assert tight.signals < wide.signals
+        # Both surveyed the same population; only the taking differs.
+        assert tight.surveyed == wide.surveyed
+
+    def test_a_chart_with_no_workable_gate_says_so(self):
+        """The answer is a different chart, not a looser gate.
+
+        Loosening until something fires would manufacture calls the record
+        says lose money, which is the worst thing this tool could do.
+        """
+        from poa.backtesting.calibration import Record, build_calibration
+        from poa.overlay.viewmodel import COLORS, OverlayViewModel
+        from poa.risk import SessionStats
+
+        # Forty setups, none of them profitable at any threshold.
+        cal = build_calibration(
+            [Record(score=80, won=i < 12, duration_score=70) for i in range(40)],
+            payout=0.92,
+        )
+        assert cal.recommended_threshold() is None
+
+        vm = OverlayViewModel(session=SessionStats())
+        vm.connected = True
+        vm.signal = make_signal(pullback_trend(400, direction=1))
+        vm.signal.direction_confidence = 45.0  # outside any measured band
+
+        from poa.overlay.proof import ProofResult
+
+        vm.proof = ProofResult(
+            asset="GBP/USD OTC", timeframe_seconds=60, trade_duration=180,
+            bars=600, evaluated=240, signals=0, wins=12, losses=28,
+            payout=0.92, calibration=cal,
+        )
+        line = vm.render()["calibration"]
+        assert "no gate setting measured above break-even" in line["text"].lower()
+        assert "try another pair" in line["text"].lower()
+        assert line["color"] == COLORS["put"]

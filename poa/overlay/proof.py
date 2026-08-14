@@ -23,7 +23,7 @@ against another.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..backtesting.calibration import (
@@ -56,6 +56,13 @@ MIN_BARS = 150
 WINDOW = 120
 MIN_WINDOW = 70
 
+# The gates the *survey* runs at, well below anything worth trading. Their
+# job is to produce a population of setups across the whole score range so
+# the threshold table has something to rank; the live gates then decide
+# which of them the user would actually have taken.
+SURVEY_CONFIDENCE = 40.0
+SURVEY_DURATION = 25.0
+
 
 def _window_for(bars: int) -> int:
     """Warm-up that leaves a usable number of decisions behind it."""
@@ -76,6 +83,10 @@ class ProofResult:
     losses: int
     payout: float
     error: str | None = None
+    # Setups the looser survey turned up, of which ``signals`` are the ones the
+    # live gates would have taken. The gap between the two is what the
+    # threshold table is ranking.
+    surveyed: int = 0
     by_direction: dict[str, Any] = field(default_factory=dict)
     # What the score was actually worth, by band, by threshold, by regime and
     # by hour. None when the replay produced nothing to calibrate against.
@@ -125,7 +136,15 @@ class ProofResult:
                     f"{line} Only {self.evaluated} decisions could be tested on "
                     "this much history — scroll the chart back to load more."
                 )
-            return f"{line} Either a quiet stretch, or the gates are too tight here."
+            if self.surveyed:
+                # The survey found setups; the live gates rejected all of them.
+                # That is a gate problem, not a market problem, and the tuner
+                # has the evidence to act on it.
+                return (
+                    f"{line} {self.surveyed} were found at looser settings — "
+                    "the gates are tightening or loosening toward them."
+                )
+            return f"{line} Either a quiet stretch, or nothing here to trade."
         rate = self.win_rate or 0.0
         line = (
             f"Replayed {self.bars} bars: {self.settled} setups, "
@@ -198,8 +217,26 @@ def measure(
             ),
         )
 
+    # The replay runs *looser* than the live gates, deliberately. Running it at
+    # the live gates measures only what already passes, which can never answer
+    # the question the threshold table exists for — would a different gate have
+    # been better? It also closes a loop: strict gates yield few setups, few
+    # setups cannot carry a recommendation, so the gates never move off
+    # whatever they happened to be set to.
+    #
+    # Only the two selectivity dials are relaxed. Regime, structure,
+    # multi-timeframe and volatility are the strategy itself rather than a
+    # measure of how picky to be, and loosening those would measure a different
+    # tool. The user's own gates are still what the headline reports.
+    live = settings or GateSettings()
+    loose = replace(
+        live,
+        min_confidence=SURVEY_CONFIDENCE,
+        min_duration_compatibility=SURVEY_DURATION,
+        require_measured_edge=False,
+    )
     backtester = Backtester(
-        settings=settings or GateSettings(),
+        settings=loose,
         window=_window_for(bars),
         higher_multiple=higher_multiple,
         entry_multiple=entry_multiple,
@@ -228,16 +265,25 @@ def measure(
             error=f"Could not replay this chart: {exc}",
         )
 
+    # The headline is what *your* gates would have taken, not what the survey
+    # turned up: a number describing a looser tool than the one running would
+    # be quietly answering a question nobody asked.
+    taken = [
+        trade
+        for trade in result.trades
+        if trade.direction_confidence >= live.min_confidence
+        and trade.duration_confidence >= live.min_duration_compatibility
+    ]
     # "flat" is neither — a binary that expires exactly where it opened is a
     # refund, and counting it either way moves the rate for no reason.
-    wins = sum(1 for trade in result.trades if trade.outcome == "win")
-    losses = sum(1 for trade in result.trades if trade.outcome == "loss")
+    wins = sum(1 for trade in taken if trade.outcome == "win")
+    losses = sum(1 for trade in taken if trade.outcome == "loss")
 
     # Split by direction, because a tool that only gets calls right on a rising
     # chart has found the trend, not an edge.
     by_direction: dict[str, Any] = {}
     for name in ("CALL", "PUT"):
-        picked = [t for t in result.trades if t.direction == name]
+        picked = [t for t in taken if t.direction == name]
         won = sum(1 for t in picked if t.outcome == "win")
         lost = sum(1 for t in picked if t.outcome == "loss")
         by_direction[name] = {
@@ -267,7 +313,8 @@ def measure(
         trade_duration=trade_duration,
         bars=bars,
         evaluated=result.evaluated_bars,
-        signals=len(result.trades),
+        signals=len(taken),
+        surveyed=len(result.trades),
         wins=wins,
         losses=losses,
         payout=payout,

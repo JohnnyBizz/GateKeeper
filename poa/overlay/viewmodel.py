@@ -339,6 +339,22 @@ class OverlayViewModel:
         if band is None:
             recommended = calibration.recommended_threshold()
             if recommended is None:
+                # A record big enough to judge, and no gate setting in it that
+                # cleared the rate this payout needs. That is a finding, and
+                # the useful thing to say — the answer is a different chart,
+                # not a looser gate. Loosening until something fires would be
+                # manufacturing calls the record says lose money.
+                if getattr(calibration, "total", 0) >= calibration.min_sample:
+                    return {
+                        "text": (
+                            f"No gate setting measured above break-even here "
+                            f"across {calibration.total} setups — try another "
+                            "pair or expiry."
+                        ),
+                        "color": COLORS["put"],
+                        "ready": True,
+                        "beats": False,
+                    }
                 return blank
             threshold, bucket = recommended
             return {

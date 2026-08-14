@@ -490,6 +490,22 @@ and reports what the result would have been:
 Replayed 508 bars: 77 setups, 39W/38L — 51% at 3 MIN, -2 pts vs 52% break-even
 ```
 
+The replay runs at *looser* gates than the live ones, on purpose. Measuring
+at the live gates measures only what already passes, which can never answer the
+question the threshold table exists for — would a different gate have been
+better? It also closes a loop: strict gates yield few setups, few setups cannot
+carry a recommendation, so the gates never move off whatever they were set to.
+Only the two selectivity dials are relaxed; regime, structure, multi-timeframe
+and volatility are the strategy itself, and loosening those would measure a
+different tool. The headline still reports what **your** gates would have
+taken.
+
+When a record is big enough to judge and *no* gate setting in it cleared
+break-even, the panel says so and names the remedy: a different pair or expiry.
+The answer is never a looser gate — loosening until something fires would
+manufacture calls the record says lose money, which is the worst thing this
+tool could do.
+
 Three properties make it worth reading. **No look-ahead**: the replay hands the
 engine a strict prefix of the series and nothing after it, so every decision is
 made from what was knowable at that bar — a result that peeked would be a lie
