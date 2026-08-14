@@ -272,6 +272,44 @@ class OverlayApp:
         if result.calibration is not None and self._proof_key is not None:
             asset, timeframe, _duration = self._proof_key
             self.engine.set_calibration(result.calibration, asset, timeframe)
+            self._auto_tune(result.calibration)
+
+    def _auto_tune(self, calibration: Any) -> None:
+        """Let the measured record set the gates, rather than a typed number.
+
+        How selective to be is not a matter of taste — it is whatever the
+        record says was worth the most, and the record can work that out. The
+        guards live in the tuner; all that happens here is applying what it
+        proposes and remembering it, so the next session starts where this one
+        finished rather than back at a default nobody chose.
+        """
+        if not bool(self.config.get("signals.auto_tune", True)):
+            return
+        from ..signals.autotune import tune
+
+        try:
+            adjustments = tune(
+                calibration,
+                float(self.config.get("signals.min_confidence", 75)),
+                float(self.config.get("signals.min_duration_compatibility", 65)),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("auto-tune failed")
+            self.vm.last_error = f"Could not tune the gates: {exc}"
+            return
+        if not adjustments:
+            return
+
+        for adjustment in adjustments:
+            self.config.set(f"signals.{adjustment.key}", adjustment.now)
+        try:
+            self.config.save()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not save tuned gates: %s", exc)
+
+        self.vm.tuning = adjustments
+        # The next evaluation should use them rather than waiting for a restart.
+        self._run_engine_cycle()
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""

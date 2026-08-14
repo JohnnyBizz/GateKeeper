@@ -445,6 +445,38 @@ Three more views come out of the same replay, and answer the question of
   market, and a tool that only gets calls right on a rising chart has found the
   trend rather than an edge.
 
+### The gates set themselves
+
+`min_confidence` and `min_duration_compatibility` decide how selective the
+assistant is, and both shipped as numbers somebody chose. That is the wrong way
+round. How selective to be is not a matter of taste — it is whatever the
+measured record says was worth the most, and the record can work that out.
+
+After each replay the threshold tables answer *"a gate here would have taken N
+trades at X%"*, the best is picked by expected value, and the live gates walk
+toward it. The panel says what moved and why:
+
+```
+Signal gate 75 → 70 · 65+ measured 85% over 40 in your 80 settled trades
+Expiry gate 65 → 60 · 50+ measured 85% over 40 in your 80 settled trades
+```
+
+Four guards, because a gate that chases noise is worse than one that is merely
+wrong:
+
+* **Evidence.** Nothing moves without a recommendation the sample can carry.
+* **Distance.** Five points at a time. A gate that jumped to wherever the last
+  replay pointed would swing on every fresh candle, and you would watch the
+  tool change its mind rather than settle.
+* **Bounds.** Confidence stays within 55–90, expiry fit within 35–85. Never so
+  loose the score stops discriminating, never so tight nothing can pass —
+  auto-tuning that can reach zero is a tool that eventually takes every trade.
+* **Reasons.** Every move states its evidence. A setting that changes silently
+  is indistinguishable from a bug.
+
+The values remain editable under ⚙ — changing one sets a new starting point,
+and tuning walks on from there. `signals.auto_tune: false` freezes them.
+
 ### MEASURED ON THIS CHART
 
 Everything else on the panel is an opinion about what price will do. This line

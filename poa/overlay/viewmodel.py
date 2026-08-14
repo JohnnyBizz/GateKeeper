@@ -168,6 +168,10 @@ class OverlayViewModel:
     # has run. Typed loosely to keep the GUI-free layer free of the
     # backtester too.
     proof: Any | None = None
+    # Gate changes the measured record made for itself, most recent last.
+    # Shown because a setting that changes silently is indistinguishable from
+    # a bug, and the user is entitled to see the tool adjusting itself.
+    tuning: list[Any] = field(default_factory=list)
 
     # ------------------------------------------------------------------
 
@@ -279,6 +283,9 @@ class OverlayViewModel:
             },
             "proof": self._proof(),
             "calibration": self._calibration(),
+            "tuning": [
+                adjustment.describe() for adjustment in self.tuning[-2:]
+            ],
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),

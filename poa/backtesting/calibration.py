@@ -129,6 +129,9 @@ class Record:
     regime: str = ""
     hour: int | None = None
     direction: str = ""
+    # How well the expiry fitted, scored separately from the direction. Gated
+    # separately too, so it needs its own threshold table.
+    duration_score: float = 0.0
 
 
 @dataclass
@@ -137,6 +140,7 @@ class Calibration:
 
     bands: list[Bucket] = field(default_factory=list)
     thresholds: list[tuple[int, Bucket]] = field(default_factory=list)
+    duration_thresholds: list[tuple[int, Bucket]] = field(default_factory=list)
     by_regime: dict[str, Bucket] = field(default_factory=dict)
     by_hour: dict[int, Bucket] = field(default_factory=dict)
     by_direction: dict[str, Bucket] = field(default_factory=dict)
@@ -215,6 +219,10 @@ class Calibration:
             return False, detail
         return True, detail
 
+    def recommended_duration_threshold(self) -> tuple[int, Bucket] | None:
+        """The expiry-fit gate the record says was worth the most."""
+        return self._best_of(self.duration_thresholds)
+
     def recommended_threshold(self) -> tuple[int, Bucket] | None:
         """The score gate the record says was worth the most.
 
@@ -229,9 +237,14 @@ class Calibration:
         gates that clear break-even on a sample big enough to mean anything.
         Ties go to the looser gate, which keeps more setups for the same money.
         """
+        return self._best_of(self.thresholds)
+
+    def _best_of(
+        self, table: list[tuple[int, Bucket]]
+    ) -> tuple[int, Bucket] | None:
         breakeven = self.breakeven
         best: tuple[float, int, Bucket] | None = None
-        for threshold, bucket in self.thresholds:
+        for threshold, bucket in table:
             if not bucket.beats(breakeven):
                 continue
             rate = (bucket.win_rate or 0.0) / 100.0
@@ -339,6 +352,15 @@ def build_calibration(
                 _add(bucket, row.won)
         calibration.thresholds.append((threshold, bucket))
 
+    # The same question for the expiry gate, which is scored and gated apart
+    # from the direction and therefore needs its own answer.
+    for threshold in THRESHOLDS:
+        bucket = Bucket(f"{threshold}+", min_sample=min_sample)
+        for row in rows:
+            if row.duration_score >= threshold:
+                _add(bucket, row.won)
+        calibration.duration_thresholds.append((threshold, bucket))
+
     return calibration
 
 
@@ -367,6 +389,7 @@ def records_from_trades(trades: Sequence[Any]) -> list[Record]:
                 # it consults this record. The duration fit is a separate
                 # question with a separate gate.
                 score=float(getattr(trade, "direction_confidence", 0.0)),
+                duration_score=float(getattr(trade, "duration_confidence", 0.0)),
                 won=outcome == "win",
                 regime=str(getattr(trade, "regime", "") or ""),
                 hour=_hour_of(getattr(trade, "timestamp", None)),

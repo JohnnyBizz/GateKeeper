@@ -186,6 +186,12 @@ DEFAULTS: dict[str, Any] = {
         # there is a sample big enough to mean something, so it never stops a
         # record being built in the first place.
         "require_measured_edge": True,
+        # Let the measured record set min_confidence and
+        # min_duration_compatibility for itself, rather than leaving them at
+        # numbers somebody typed. Moves a few points at a time, within bounds,
+        # and only on evidence the sample can carry. Set false to keep the
+        # values above fixed.
+        "auto_tune": True,
         "min_component_agreement": 0.55,
         "max_atr_percentile": 92,
         "resistance_proximity_atr": 0.75,

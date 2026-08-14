@@ -77,6 +77,19 @@ class SettingsDialog:
         )
 
         self._section(body, "SIGNALS")
+        if bool(config.get("signals.auto_tune", True)):
+            # These two move themselves. Showing them as ordinary settings
+            # without saying so invites the user to tune a number that will be
+            # overwritten, and then to conclude the app ignores them.
+            tk.Label(
+                body,
+                text=(
+                    "Set automatically from what this chart has measured. "
+                    "Change them here to start from a different point."
+                ),
+                bg=COLORS["panel"], fg=COLORS["faint"], font=("TkDefaultFont", 7),
+                wraplength=330, justify="left", anchor="w",
+            ).pack(fill="x", pady=(0, 2))
         self._scale_row(
             body, "min_confidence", "Minimum confidence",
             float(config.get("signals.min_confidence", 75)),

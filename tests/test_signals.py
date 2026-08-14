@@ -397,3 +397,100 @@ class TestSerialisation:
         data = evaluate(pullback_trend(400, direction=1)).to_dict()
         names = {c["name"] for c in data["score"]["components"]}
         assert names == set(WEIGHTS)
+
+
+class TestTheRecordSetsTheGates:
+    """How selective to be is not a matter of taste.
+
+    ``min_confidence`` and ``min_duration_compatibility`` shipped as numbers
+    somebody chose. The right values are whatever the measured record says were
+    worth the most, and the record can work that out — carefully.
+    """
+
+    def _calibration(self, real=True):
+        from poa.backtesting.calibration import Record, build_calibration
+
+        cal = build_calibration(
+            [Record(score=60, won=i < 20, duration_score=45) for i in range(40)]
+            + [Record(score=85, won=i < 34, duration_score=80) for i in range(40)],
+            payout=0.92,
+        )
+        cal.from_real_trades = real
+        return cal
+
+    def test_a_gate_moves_toward_what_the_record_recommends(self):
+        from poa.signals.autotune import tune
+
+        adjustments = {a.key: a for a in tune(self._calibration(), 75.0, 65.0)}
+        assert adjustments["min_confidence"].now < 75.0
+        assert adjustments["min_confidence"].looser
+
+    def test_it_moves_a_few_points_at_a_time(self):
+        """A gate that jumps wherever the last replay pointed never settles."""
+        from poa.signals.autotune import MAX_STEP, tune
+
+        for adjustment in tune(self._calibration(), 90.0, 85.0):
+            assert abs(adjustment.now - adjustment.was) <= MAX_STEP
+
+    def test_it_settles_instead_of_oscillating(self):
+        from poa.signals.autotune import tune
+
+        cal = self._calibration()
+        confidence, duration = 75.0, 65.0
+        for _ in range(20):
+            adjustments = tune(cal, confidence, duration)
+            if not adjustments:
+                break
+            for adjustment in adjustments:
+                if adjustment.key == "min_confidence":
+                    confidence = adjustment.now
+                else:
+                    duration = adjustment.now
+        else:
+            raise AssertionError("the gates never settled")
+        assert tune(cal, confidence, duration) == []
+
+    def test_it_never_loosens_past_the_floor(self):
+        """Auto-tuning that can reach zero eventually takes every trade."""
+        from poa.signals.autotune import FLOOR_CONFIDENCE, FLOOR_DURATION, tune
+
+        confidence, duration = 20.0, 20.0
+        for _ in range(30):
+            adjustments = tune(self._calibration(), confidence, duration)
+            if not adjustments:
+                break
+            for adjustment in adjustments:
+                if adjustment.key == "min_confidence":
+                    confidence = adjustment.now
+                else:
+                    duration = adjustment.now
+        assert confidence >= FLOOR_CONFIDENCE
+        assert duration >= FLOOR_DURATION
+
+    def test_it_never_tightens_past_the_ceiling(self):
+        from poa.signals.autotune import CEILING_CONFIDENCE, CEILING_DURATION, tune
+
+        for adjustment in tune(self._calibration(), 99.0, 99.0):
+            ceiling = (
+                CEILING_CONFIDENCE
+                if adjustment.key == "min_confidence"
+                else CEILING_DURATION
+            )
+            assert adjustment.now <= ceiling
+
+    def test_no_evidence_means_no_movement(self):
+        from poa.backtesting.calibration import Record, build_calibration
+        from poa.signals.autotune import tune
+
+        thin = build_calibration([Record(score=80, won=True) for _ in range(4)])
+        assert tune(thin, 75.0, 65.0) == []
+        assert tune(None, 75.0, 65.0) == []
+
+    def test_every_move_carries_its_evidence(self):
+        """A setting that changes silently is indistinguishable from a bug."""
+        from poa.signals.autotune import tune
+
+        for adjustment in tune(self._calibration(), 80.0, 75.0):
+            assert "measured" in adjustment.reason
+            assert "%" in adjustment.reason
+            assert "→" in adjustment.describe()

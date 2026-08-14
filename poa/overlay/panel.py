@@ -453,6 +453,15 @@ class OverlayPanel:
         )
         self._widgets["proof"].pack(anchor="w", padx=2)
 
+        # What the record changed about the gates. A setting that moves
+        # silently is indistinguishable from a bug.
+        self._widgets["tuning"] = tk.Label(
+            wrap, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["accent"],
+            wraplength=PANEL_WIDTH - 32, justify="left",
+        )
+        self._widgets["tuning"].pack(anchor="w", padx=2)
+
     def _build_risk(self, parent: tk.Widget) -> None:
         wrap = self._section(parent, pady=(2, 2))
         header = tk.Frame(wrap, bg=COLORS["panel"])
@@ -713,6 +722,7 @@ class OverlayPanel:
 
         proof = data["proof"]
         w["proof"].configure(text=proof["text"], fg=proof["color"])
+        w["tuning"].configure(text="\n".join(data["tuning"]))
 
         risk = data["risk"]
         if risk.get("collapsed"):
