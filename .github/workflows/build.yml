@@ -43,16 +43,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-      # Tesseract does the reading: without it the pair name, the timeframe
-      # badge and the price axis are all unreadable and the app can only see
-      # candle shapes. Bundling it means the .exe works on a machine with
-      # nothing installed, which is the whole point of shipping an .exe.
+      # Tesseract does the reading for the *screen fallback*: the pair name,
+      # the timeframe badge, the price axis. The default source reads the
+      # platform's socket and needs no OCR at all, so this is a bundled
+      # convenience rather than a requirement — and a third-party package feed
+      # having a bad afternoon must not be the reason nobody can download the
+      # app. Retried, then skipped with a warning: the spec omits the vendor
+      # directory when it is absent, and the app reports OCR as unavailable
+      # rather than misbehaving without it.
       - name: Vendor Tesseract into the bundle
         shell: pwsh
         run: |
-          choco install tesseract --no-progress -y
           $root = "C:\Program Files\Tesseract-OCR"
-          if (-not (Test-Path $root)) { throw "Tesseract not found at $root" }
+          foreach ($delay in 0, 15, 45) {
+            if ($delay -gt 0) {
+              Write-Host "Retrying the Tesseract install in $delay seconds..."
+              Start-Sleep -Seconds $delay
+            }
+            choco install tesseract --no-progress -y
+            if (Test-Path $root) { break }
+          }
+          if (-not (Test-Path $root)) {
+            Write-Warning "Tesseract could not be installed, so the build carries no bundled OCR. The feed source is unaffected; the screen fallback will not read labels."
+            exit 0
+          }
           New-Item -ItemType Directory -Force -Path vendor\tesseract\tessdata | Out-Null
           Copy-Item "$root\tesseract.exe" vendor\tesseract\
           Copy-Item "$root\*.dll" vendor\tesseract\
