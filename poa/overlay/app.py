@@ -49,6 +49,11 @@ PROOF_RERUN_BARS = 60
 # correct a wrong rule rather than to dismantle the strategy.
 MAX_ADVISORY_GATES = 2
 
+# How much better the recommended expiry has to score before the tool
+# switches to it. Small preferences would have the panel changing expiry
+# every poll, which is its own kind of unusable.
+EXPIRY_SWITCH_MARGIN = 10.0
+
 
 class OverlayApp:
     """The overlay application: engine + panel + the glue between them."""
@@ -181,6 +186,8 @@ class OverlayApp:
         if actionable and not self._was_actionable:
             self.vm.calls_this_session += 1
         self._was_actionable = actionable
+
+        self._follow_recommended_expiry(signal)
 
         if self.vm.scan.scanning:
             # Hold the incoming signal back until the scan window completes, so
@@ -383,6 +390,42 @@ class OverlayApp:
         self.vm.tuning = adjustments
         # The next evaluation should use them rather than waiting for a restart.
         self._run_engine_cycle()
+
+    def _follow_recommended_expiry(self, signal: Any) -> None:
+        """Evaluate at the expiry the analysis wants, not the one left in a box.
+
+        The duration gate was rejecting sound setups for a reason that had
+        nothing to do with the market: the expiry in the settings did not match
+        the one the move needed. That is not a market saying no, it is a
+        stale number saying no, and it is a class of mistake the user should
+        not be able to make. The tool follows its own recommendation and states
+        the expiry to set, so the instruction is complete rather than
+        conditional on the reader noticing a mismatch.
+
+        Only when the recommendation is clearly better, so a two-point
+        preference cannot set the panel oscillating between expiries.
+        """
+        if not bool(self.config.get("signals.follow_recommended_expiry", True)):
+            return
+        duration = getattr(signal, "duration", None)
+        if duration is None:
+            return
+        wanted = int(getattr(duration, "recommended_seconds", 0) or 0)
+        if wanted <= 0 or wanted == self.engine.trade_duration:
+            return
+        gain = float(getattr(duration, "recommended_score", 0.0)) - float(
+            getattr(duration, "selected_score", 0.0)
+        )
+        if gain < EXPIRY_SWITCH_MARGIN:
+            return
+        try:
+            self.engine.update_settings({"trade_duration": wanted})
+            self.config.save()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not follow the recommended expiry: %s", exc)
+            return
+        self.vm.trade_duration = wanted
+        log.info("expiry follows the analysis: %ss", wanted)
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""

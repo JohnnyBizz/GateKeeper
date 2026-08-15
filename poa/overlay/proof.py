@@ -31,6 +31,7 @@ from ..backtesting.calibration import (
     build_calibration,
     records_from_trades,
 )
+from ..backtesting.attribution import attribute
 from ..backtesting.gatecheck import check_gates
 from ..backtesting.paper import Backtester
 from ..backtesting.stats import breakeven_rate
@@ -91,6 +92,8 @@ class ProofResult:
     # Which gates are earning their keep on this chart, and which are
     # refusing setups that would have paid.
     gate_report: Any | None = None
+    # What the losing calls had in common that the winning ones did not.
+    attribution: Any | None = None
     by_direction: dict[str, Any] = field(default_factory=dict)
     # What the score was actually worth, by band, by threshold, by regime and
     # by hour. None when the replay produced nothing to calibrate against.
@@ -340,4 +343,5 @@ def measure(
         by_direction=by_direction,
         calibration=calibration,
         gate_report=gates,
+        attribution=attribute(result.trades),
     )

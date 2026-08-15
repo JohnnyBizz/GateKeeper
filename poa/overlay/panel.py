@@ -453,6 +453,16 @@ class OverlayPanel:
         )
         self._widgets["proof"].pack(anchor="w", padx=2)
 
+        # What the losing calls had in common. The panel's only backward-
+        # looking line, and the only one that explains a loss rather than
+        # reporting it.
+        self._widgets["lesson"] = tk.Label(
+            wrap, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["wait"],
+            wraplength=PANEL_WIDTH - 32, justify="left",
+        )
+        self._widgets["lesson"].pack(anchor="w", padx=2)
+
         # What the record changed about the gates. A setting that moves
         # silently is indistinguishable from a bug.
         self._widgets["tuning"] = tk.Label(
@@ -722,6 +732,7 @@ class OverlayPanel:
 
         proof = data["proof"]
         w["proof"].configure(text=proof["text"], fg=proof["color"])
+        w["lesson"].configure(text=data["lesson"])
         w["tuning"].configure(text="\n".join(data["tuning"]))
 
         risk = data["risk"]

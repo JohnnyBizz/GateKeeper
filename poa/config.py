@@ -192,6 +192,11 @@ DEFAULTS: dict[str, Any] = {
         # and only on evidence the sample can carry. Set false to keep the
         # values above fixed.
         "auto_tune": True,
+        # Evaluate at the expiry the analysis prefers rather than the one
+        # left in a settings box. The duration gate was rejecting sound
+        # setups for a reason that had nothing to do with the market — a
+        # stale number, not a market, saying no.
+        "follow_recommended_expiry": True,
         "min_component_agreement": 0.55,
         "max_atr_percentile": 92,
         "resistance_proximity_atr": 0.75,

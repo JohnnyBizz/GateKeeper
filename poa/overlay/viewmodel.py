@@ -283,6 +283,7 @@ class OverlayViewModel:
                 "stake_overridden": self.stake_override is not None,
                 "collapsed": self.risk_collapsed,
             },
+            "lesson": self._lesson(),
             "proof": self._proof(),
             "calibration": self._calibration(),
             "tuning": [
@@ -385,6 +386,20 @@ class OverlayViewModel:
             "ready": True,
             "beats": beats,
         }
+
+    def _lesson(self) -> str:
+        """What the losing calls on this chart had in common.
+
+        "The setup failed" is useless. Which of the ten scored components
+        argued for the losing side is answerable, and is the only form of
+        learning from a loss that survives contact with the next one.
+        """
+        attribution = getattr(self.proof, "attribution", None)
+        if attribution is None or self.scan.scanning:
+            return ""
+        if attribution.winners + attribution.losers < 10:
+            return ""
+        return attribution.headline()
 
     def _proof(self) -> dict[str, Any]:
         """The measured record, and how much weight the panel should give it.

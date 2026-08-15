@@ -48,6 +48,10 @@ class PaperTrade:
     regime: str
     reason: str
     exit_index: int
+    # What each part of the analysis scored, so a loss can be traced to
+    # the component that argued for it rather than left as "it failed".
+    components: dict[str, float] = field(default_factory=dict)
+    pattern: str = ""
     exit_price: float | None = None
     outcome: str | None = None
     price_change: float | None = None
@@ -69,6 +73,8 @@ class PaperTrade:
             "duration_confidence": round(self.duration_confidence, 1),
             "setup_quality": self.setup_quality,
             "regime": self.regime,
+            "pattern": self.pattern,
+            "components": self.components,
             "outcome": self.outcome,
             "price_change": self.price_change,
             "reason": self.reason,
@@ -282,6 +288,13 @@ class Backtester:
                     direction_confidence=signal.direction_confidence,
                     duration_confidence=signal.duration_confidence,
                     setup_quality=signal.setup_quality.value,
+                    components={
+                        c.name: float(c.score)
+                        for c in (signal.score.components if signal.score else [])
+                    },
+                    pattern=(
+                        signal.mtf.current.pattern.name if signal.mtf else ""
+                    ),
                     regime=(
                         signal.mtf.current.regime.regime.value if signal.mtf else ""
                     ),

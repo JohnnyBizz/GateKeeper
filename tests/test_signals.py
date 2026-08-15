@@ -587,3 +587,83 @@ class TestARuleTheChartDisproves:
         thin = GateVerdict("momentum", blocked_wins=5, blocked_losses=0)
         assert thin.blocked_rate == 100.0
         assert not thin.costly(52.1)
+
+
+class TestLearningFromLosses:
+    """"The setup failed" teaches nothing. Which component argued for it does."""
+
+    def _trade(self, outcome, components, regime="STRONG_UPTREND"):
+        class T:
+            pass
+
+        t = T()
+        t.outcome = outcome
+        t.components = components
+        t.regime = regime
+        t.pattern = ""
+        return t
+
+    def test_a_component_scoring_higher_on_losers_is_named(self):
+        from poa.backtesting.attribution import attribute
+
+        trades = (
+            [self._trade("win", {"macd": 0.1, "structure": 0.9}) for _ in range(12)]
+            + [self._trade("loss", {"macd": 0.9, "structure": 0.9}) for _ in range(12)]
+        )
+        report = attribute(trades)
+        macd = next(c for c in report.components if c.name == "macd")
+        assert macd.verdict == "inverted"
+        assert "wrong side" in macd.describe()
+        assert "macd" in report.headline().lower()
+
+    def test_a_component_scoring_the_same_either_way_is_called_silent(self):
+        from poa.backtesting.attribution import attribute
+
+        trades = (
+            [self._trade("win", {"structure": 0.9}) for _ in range(12)]
+            + [self._trade("loss", {"structure": 0.9}) for _ in range(12)]
+        )
+        report = attribute(trades)
+        structure = next(c for c in report.components if c.name == "structure")
+        assert structure.verdict == "silent"
+        assert "without carrying information" in structure.describe()
+
+    def test_a_component_that_discriminates_is_left_alone(self):
+        from poa.backtesting.attribution import attribute
+
+        trades = (
+            [self._trade("win", {"trend": 0.9}) for _ in range(12)]
+            + [self._trade("loss", {"trend": 0.3}) for _ in range(12)]
+        )
+        report = attribute(trades)
+        trend = next(c for c in report.components if c.name == "trend")
+        assert trend.verdict == "discriminating"
+
+    def test_a_handful_of_trades_teaches_nothing(self):
+        """Two means over four trades is noise wearing a sign."""
+        from poa.backtesting.attribution import attribute
+
+        trades = (
+            [self._trade("win", {"macd": 0.1}) for _ in range(2)]
+            + [self._trade("loss", {"macd": 0.9}) for _ in range(2)]
+        )
+        report = attribute(trades)
+        assert report.components[0].verdict == "unread"
+        assert "No settled calls" in report.headline() or report.headline()
+
+    def test_losses_clustering_in_one_regime_are_reported(self):
+        from poa.backtesting.attribution import attribute
+
+        trades = (
+            [self._trade("loss", {}, regime="CHOPPY") for _ in range(8)]
+            + [self._trade("win", {}, regime="STRONG_UPTREND") for _ in range(4)]
+        )
+        report = attribute(trades)
+        assert report.worst_condition() == ("CHOPPY", 8)
+        assert "choppy" in report.headline().lower()
+
+    def test_flat_expiries_teach_nothing_either_way(self):
+        from poa.backtesting.attribution import attribute
+
+        report = attribute([self._trade("flat", {"macd": 0.9}) for _ in range(20)])
+        assert report.winners == 0 and report.losers == 0
