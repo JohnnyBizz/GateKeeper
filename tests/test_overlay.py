@@ -1507,3 +1507,112 @@ class TestSwappingBetweenWatchedCharts:
             assert app.vm.watchlist == []
         finally:
             app.shutdown()
+
+
+class TestTheTrendReadout:
+    """Which way the market is going, told separately from whether to act.
+
+    The verdict is WAIT most of the time, and WAIT on its own says nothing
+    about direction — the one thing that is obvious on the chart and was only
+    ever available here by reading a paragraph of risk prose.
+    """
+
+    def _mtf(self, higher, current, entry, *, higher_distinct=True,
+             entry_distinct=True):
+        from poa.models import Bias
+
+        class _View:
+            def __init__(self, bias):
+                self.trend_bias = bias
+                self.trend_strength = 70.0
+
+        class _MTF:
+            pass
+
+        mtf = _MTF()
+        mtf.higher = _View(higher)
+        mtf.current = _View(current)
+        mtf.entry = _View(entry)
+        mtf.higher_is_distinct = higher_distinct
+        mtf.entry_is_distinct = entry_distinct
+        return mtf
+
+    def _vm(self, mtf):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        from types import SimpleNamespace
+
+        signal = SimpleNamespace(mtf=mtf)
+        vm.signal = signal
+        return vm
+
+    def test_all_three_falling_reads_falling(self):
+        from poa.models import Bias
+
+        vm = self._vm(self._mtf(Bias.BEARISH, Bias.BEARISH, Bias.BEARISH))
+        trend = vm._trend(scanning=False)
+        assert trend["label"] == "FALLING"
+        assert trend["arrow"] == "▼"
+        assert trend["agreement"] == 100
+
+    def test_a_split_stack_reads_sideways(self):
+        from poa.models import Bias
+
+        vm = self._vm(self._mtf(Bias.BULLISH, Bias.BEARISH, Bias.BEARISH,
+                                entry_distinct=False))
+        trend = vm._trend(scanning=False)
+        assert trend["label"] == "SIDEWAYS"
+        assert trend["detail"] == "the timeframes disagree"
+
+    def test_a_duplicated_view_does_not_vote_twice(self):
+        """The word has to match the arrows printed beside it.
+
+        With no entry timeframe of its own, the entry view *is* the current
+        one. Counting it again turned one bearish read into two and printed
+        FALLING next to an arrow pair that plainly disagreed.
+        """
+        from poa.models import Bias
+
+        mtf = self._mtf(Bias.BULLISH, Bias.BEARISH, Bias.BEARISH,
+                        entry_distinct=False)
+        trend = self._vm(mtf)._trend(scanning=False)
+
+        shown = [view["arrow"] for view in trend["views"]]
+        assert shown == ["▲", "▼"]  # the duplicate is not drawn
+        assert trend["label"] == "SIDEWAYS"  # and does not vote
+
+    def test_a_view_that_is_not_distinct_is_not_shown(self):
+        from poa.models import Bias
+
+        mtf = self._mtf(Bias.BEARISH, Bias.BEARISH, Bias.BEARISH,
+                        higher_distinct=False, entry_distinct=False)
+        trend = self._vm(mtf)._trend(scanning=False)
+        assert [v["name"] for v in trend["views"]] == ["NOW"]
+
+    def test_nothing_is_claimed_while_scanning(self):
+        from poa.models import Bias
+
+        vm = self._vm(self._mtf(Bias.BEARISH, Bias.BEARISH, Bias.BEARISH))
+        assert vm._trend(scanning=True)["blanked"] is True
+
+    def test_no_signal_is_blank_rather_than_flat(self):
+        """SIDEWAYS is a reading. Having no reading is not the same thing."""
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        trend = OverlayViewModel()._trend(scanning=False)
+        assert trend["blanked"] is True
+        assert trend["label"] == "--"
+
+    def test_rising_reads_rising(self):
+        from poa.models import Bias
+
+        vm = self._vm(self._mtf(Bias.BULLISH, Bias.BULLISH, Bias.BULLISH))
+        trend = vm._trend(scanning=False)
+        assert (trend["label"], trend["arrow"]) == ("RISING", "▲")
+
+    def test_the_panel_is_given_a_trend_to_draw(self):
+        """It has to reach the render payload, or none of the above shows."""
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        assert "trend" in OverlayViewModel().render()

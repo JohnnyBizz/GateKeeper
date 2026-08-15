@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from ..models import Direction, SignalState, format_duration, format_price
+from ..models import Bias, Direction, SignalState, format_duration, format_price
 from ..risk import RiskAssessment, SessionStats, assess_risk
 from ..signals.engine import Signal
 
@@ -274,6 +274,7 @@ class OverlayViewModel:
                 "chart": format_duration(self.chart_timeframe),
             },
             "verdict": verdict,
+            "trend": self._trend(scanning),
             "scan": {
                 "state": self.scan.state.value,
                 "progress": round(self.scan.progress(), 3),
@@ -394,6 +395,84 @@ class OverlayViewModel:
             "beats": beats,
         }
 
+    def _trend(self, scanning: bool) -> dict[str, Any]:
+        """Which way the market is going — separately from whether to trade it.
+
+        The verdict box answers "act or not", and most of the time the answer
+        is not, which leaves the other question unanswered: which way is this
+        thing moving? It was in the analysis all along — three timeframes each
+        with a lean — and only ever surfaced as prose in the risk block, where
+        you had to read a paragraph to find out the tool was leaning bearish.
+
+        Three arrows, one per view, and a word for where they come out. When
+        they point the same way that is a trend; when they do not, that is
+        worth seeing too, and is usually why the verdict is WAIT.
+        """
+        blank = {
+            "label": "--",
+            "arrow": "",
+            "color": COLORS["neutral"],
+            "views": [],
+            "strength": None,
+            "agreement": None,
+            "detail": "",
+            "blanked": True,
+        }
+        signal = self.signal
+        if scanning or signal is None or signal.mtf is None:
+            return blank
+
+        mtf = signal.mtf
+        # Only the views that are really distinct. When there is not enough
+        # history to aggregate a higher timeframe, or the entry timeframe is
+        # the chart itself, the stack is one chart counted twice — and a copy
+        # of a view agreeing with the view it copies is not agreement. Showing
+        # it as separate arrows, or letting it vote twice for the word beside
+        # them, is the same double-count the confirmation gate already refuses.
+        views = [
+            ("HIGH", mtf.higher, 0.40, mtf.higher_is_distinct),
+            ("NOW", mtf.current, 0.35, True),
+            ("ENTRY", mtf.entry, 0.25, mtf.entry_is_distinct),
+        ]
+        distinct = [(name, view, weight) for name, view, weight, ok in views if ok]
+        rendered = [
+            {
+                "name": name,
+                "arrow": _bias_arrow(view.trend_bias),
+                "color": _bias_color(view.trend_bias),
+                "bias": view.trend_bias.value,
+            }
+            for name, view, _weight in distinct
+        ]
+
+        # The word is computed from the same views the arrows show, so the two
+        # can never contradict each other on screen.
+        total = sum(weight for _n, _v, weight in distinct) or 1.0
+        bull = sum(w for _n, v, w in distinct if v.trend_bias is Bias.BULLISH) / total
+        bear = sum(w for _n, v, w in distinct if v.trend_bias is Bias.BEARISH) / total
+        if abs(bull - bear) < 0.15:
+            consensus = Bias.NEUTRAL
+        else:
+            consensus = Bias.BULLISH if bull > bear else Bias.BEARISH
+
+        strength = round(mtf.current.trend_strength, 0)
+        agreement = round(max(bull, bear) * 100, 0)
+        if consensus is Bias.NEUTRAL:
+            detail = "the timeframes disagree" if agreement < 60 else "no clear direction"
+        else:
+            detail = f"{agreement:.0f}% of the timeframes agree"
+
+        return {
+            "label": _bias_label(consensus),
+            "arrow": _bias_arrow(consensus),
+            "color": _bias_color(consensus),
+            "views": rendered,
+            "strength": strength,
+            "agreement": agreement,
+            "detail": detail,
+            "blanked": False,
+        }
+
     def _watchlist(self) -> list[dict[str, Any]]:
         """Every watched chart, ready to be shown as tabs.
 
@@ -502,3 +581,28 @@ def _arrow(direction: Direction) -> str:
         Direction.WAIT: "●",
         Direction.NO_TRADE: "✕",
     }[direction]
+
+
+def _bias_arrow(bias: Bias) -> str:
+    """Which way, at a glance. A flat bar for sideways, not a blank."""
+    return {Bias.BULLISH: "▲", Bias.BEARISH: "▼"}.get(bias, "▬")
+
+
+def _bias_label(bias: Bias) -> str:
+    """What the market is doing, not what to do about it.
+
+    Deliberately not BUY/SELL — those belong to the verdict box, and a trend
+    word that reads like an instruction is how "the market is rising" turns
+    into "buy", which is the whole thing this tool is built not to do.
+    """
+    return {
+        Bias.BULLISH: "RISING",
+        Bias.BEARISH: "FALLING",
+    }.get(bias, "SIDEWAYS")
+
+
+def _bias_color(bias: Bias) -> str:
+    return {
+        Bias.BULLISH: COLORS["call"],
+        Bias.BEARISH: COLORS["put"],
+    }.get(bias, COLORS["wait"])

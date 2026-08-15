@@ -47,6 +47,10 @@ BAND_WIDTH = 10
 # above 90 no realistic history has the sample to say anything.
 THRESHOLDS = (50, 55, 60, 65, 70, 75, 80, 85, 90)
 
+# A binary that settles below this is worse than guessing. No gate that reads
+# a chart this badly is worth walking toward, whatever the payout is paying.
+COIN_FLIP = 50.0
+
 
 @dataclass
 class Bucket:
@@ -251,9 +255,60 @@ class Calibration:
             expected = bucket.settled * (rate * self.payout - (1.0 - rate))
             if best is None or expected > best[0]:
                 best = (expected, threshold, bucket)
-        if best is None:
+        if best is not None:
+            return best[1], best[2]
+        return self._best_discriminator(table)
+
+    def _best_discriminator(
+        self, table: list[tuple[int, Bucket]]
+    ) -> tuple[int, Bucket] | None:
+        """The gate that reads this chart best, whatever the payout pays.
+
+        When nothing clears break-even the expected-value ranking has nothing
+        to return, and returning nothing froze the gate whenever a chart was
+        marginal — which is most of them. But "no gate clears this payout" is a
+        fact about the payout, not about which score threshold separates the
+        winners from the losers on this chart, and those are two questions.
+
+        This answers the second one. Whether the answer is worth trading at the
+        payout on offer is the first one, it belongs to whoever is taking the
+        trade, and the panel prints the break-even rate beside every number so
+        that it can be answered.
+
+        Two things it will not do, because both would be loosening until
+        something fires — which is the worst thing this tool could do.
+
+        It will not point at a gate that is no better than taking everything.
+        A chart where every band settles at the same rate has nothing to find:
+        the score is not separating anything, and moving the gate along it only
+        changes how many of the same trades get taken. The improvement over the
+        loosest gate has to clear that gate's own noise before it counts.
+
+        And it will not point at a gate that loses to a coin. Below 50% the
+        reading is worse than no reading, and walking the gate toward it would
+        take more of exactly the trades that are not working. On a chart like
+        that the answer is a different chart, and the honest output is silence.
+        """
+        usable = [
+            (threshold, bucket)
+            for threshold, bucket in table
+            if bucket.meaningful and bucket.win_rate is not None
+        ]
+        if not usable:
             return None
-        return best[1], best[2]
+
+        # The loosest gate is "take everything this survey found". Anything
+        # stricter has to beat it to be worth having.
+        base = usable[0][1]
+        best_threshold, best_bucket = max(usable, key=lambda row: row[1].win_rate or 0.0)
+        rate = best_bucket.win_rate or 0.0
+
+        if rate < COIN_FLIP:
+            return None
+        margin = base.standard_error or 0.0
+        if rate - (base.win_rate or 0.0) <= margin:
+            return None
+        return best_threshold, best_bucket
 
     def best_hours(self, limit: int = 3) -> list[tuple[int, Bucket]]:
         ranked = [

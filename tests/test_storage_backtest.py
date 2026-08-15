@@ -914,3 +914,95 @@ class TestTheSurveyBreaksTheDeadlock:
         assert "no gate setting measured above break-even" in line["text"].lower()
         assert "try another pair" in line["text"].lower()
         assert line["color"] == COLORS["put"]
+
+
+class TestTheGateStillMovesOnAMarginalChart:
+    """Ranking gates only by what clears break-even froze them on most charts.
+
+    A chart where no score threshold beats the payout's bar returned no
+    recommendation at all, so min_confidence stayed wherever it started — for
+    the whole session, on every pair that was not already profitable. But "no
+    gate clears this payout" is a fact about the payout, not about which gate
+    reads the chart best, and those are two separate questions.
+
+    The window this opens is widest exactly where it matters. At a 92% payout
+    break-even is 52.1% and there is barely any gap; at 72% it is 58.1%, and a
+    gate reading 55% — clearly better than guessing, clearly separating — was
+    invisible. Pocket Option pays 47% on some pairs, where break-even is 68%
+    and nearly every honest gate fell in the gap.
+    """
+
+    def _calibration(self, rates, payout=0.72):
+        """One calibration where score band -> win rate is under my control."""
+        from poa.backtesting.calibration import Record, build_calibration
+
+        records = []
+        for score, (wins, losses) in rates.items():
+            for _ in range(wins):
+                records.append(Record(score=score, won=True, duration_score=score))
+            for _ in range(losses):
+                records.append(Record(score=score, won=False, duration_score=score))
+        return build_calibration(records, payout=payout)
+
+    def test_a_gate_below_breakeven_that_still_separates_is_recommended(self):
+        # Break-even at 72% is 58.1%. Nothing here reaches it, but the strict
+        # end reads the chart far better than taking everything does.
+        calibration = self._calibration(
+            {55.0: (18, 42), 65.0: (24, 36), 75.0: (33, 27), 85.0: (22, 18)}
+        )
+        recommended = calibration.recommended_threshold()
+        assert recommended is not None
+        threshold, bucket = recommended
+        assert threshold >= 70
+        assert bucket.win_rate is not None and bucket.win_rate > 50.0
+        assert bucket.win_rate < calibration.breakeven  # still under the bar
+
+    def test_a_profitable_gate_still_wins_on_expected_value(self):
+        """The break-even ranking is not replaced, only backed up."""
+        calibration = self._calibration(
+            {55.0: (45, 15), 65.0: (30, 10), 75.0: (12, 8), 85.0: (11, 9)}
+        )
+        threshold, bucket = calibration.recommended_threshold()
+        assert bucket.win_rate is not None
+        assert bucket.win_rate > calibration.breakeven
+        assert threshold <= 65
+
+    def test_a_chart_that_loses_to_a_coin_recommends_nothing(self):
+        """Loosening toward the best of a bad lot is manufacturing calls.
+
+        Every band here is worse than guessing. Walking the gate toward the
+        least-bad one would take *more* of exactly the trades that are not
+        working, which is the one thing this must never do.
+        """
+        calibration = self._calibration(
+            {55.0: (10, 50), 65.0: (14, 46), 75.0: (16, 44), 85.0: (9, 21)}
+        )
+        assert calibration.recommended_threshold() is None
+
+    def test_a_gate_no_better_than_taking_everything_recommends_nothing(self):
+        """A flat chart has nothing to find.
+
+        When every band settles at the same rate the score is not separating
+        anything, and moving the gate along it only changes how many of the
+        same trades get taken.
+        """
+        calibration = self._calibration(
+            {55.0: (33, 27), 65.0: (33, 27), 75.0: (33, 27), 85.0: (33, 27)}
+        )
+        assert calibration.recommended_threshold() is None
+
+    def test_an_improvement_inside_the_noise_recommends_nothing(self):
+        """Four points on eighty trades is not a finding."""
+        calibration = self._calibration({55.0: (40, 40), 75.0: (42, 38)})
+        assert calibration.recommended_threshold() is None
+
+    def test_too_little_data_still_recommends_nothing(self):
+        """The fallback ranks what exists; it does not invent a sample."""
+        calibration = self._calibration({55.0: (2, 3), 75.0: (1, 2)})
+        assert calibration.recommended_threshold() is None
+
+    def test_the_duration_gate_moves_the_same_way(self):
+        calibration = self._calibration(
+            {55.0: (18, 42), 65.0: (24, 36), 75.0: (33, 27), 85.0: (22, 18)}
+        )
+        assert calibration.recommended_duration_threshold() is not None

@@ -270,3 +270,70 @@ class TestTheWatchlistTabs:
         panel._render_watchlist([_row("EUR/USD OTC", 90.0, actionable=True)])
         assert panel._watch_tabs[0] is before
         assert panel._watch_tabs[0].cget("text") == "EUR/USD 90"
+
+
+def _trend(label, arrow, color, views, detail=""):
+    return {
+        "label": label, "arrow": arrow, "color": color, "views": views,
+        "strength": 70.0, "agreement": 100.0, "detail": detail, "blanked": False,
+    }
+
+
+def _view(name, arrow, color):
+    return {"name": name, "arrow": arrow, "color": color, "bias": "X"}
+
+
+class TestTheMarketDirectionIsVisible:
+    """WAIT is most of what the panel says, and on its own it says nothing
+    about which way the market is going — which is the thing you can see
+    plainly on the chart and had to read a paragraph of risk prose to find."""
+
+    def test_it_sits_inside_the_signal_box(self, panel_module):
+        panel = _panel(panel_module)
+        assert panel._widgets["trend_strip"].parent is panel._widgets["verdict_box"]
+
+    def test_falling_reads_falling_and_is_red(self, panel_module):
+        panel = _panel(panel_module)
+        panel._render_trend(
+            _trend("FALLING", "▼", "#ef4444",
+                   [_view("HIGH", "▼", "#ef4444"), _view("NOW", "▼", "#ef4444")],
+                   "100% of the timeframes agree")
+        )
+        w = panel._widgets
+        assert w["trend_label"].cget("text") == "FALLING"
+        assert w["trend_arrow"].cget("text") == "▼"
+        assert w["trend_label"].cget("fg") == "#ef4444"
+        assert [v.cget("text") for v in panel._trend_views] == ["HIGH ▼", "NOW ▼"]
+
+    def test_it_never_says_buy_or_sell(self, panel_module):
+        """Those words belong to the verdict box.
+
+        A trend word that reads like an instruction is how "the market is
+        rising" becomes "buy" — the one thing this tool is built not to say.
+        """
+        from poa.models import Bias
+        from poa.overlay.viewmodel import _bias_label
+
+        words = {_bias_label(b) for b in Bias}
+        assert words == {"RISING", "FALLING", "SIDEWAYS"}
+
+    def test_the_arrows_change_without_rebuilding_the_labels(self, panel_module):
+        panel = _panel(panel_module)
+        two = [_view("HIGH", "▼", "#ef4444"), _view("NOW", "▼", "#ef4444")]
+        panel._render_trend(_trend("FALLING", "▼", "#ef4444", two))
+        first = panel._trend_views[0]
+        flipped = [_view("HIGH", "▲", "#22c55e"), _view("NOW", "▼", "#ef4444")]
+        panel._render_trend(_trend("SIDEWAYS", "▬", "#eab308", flipped))
+        assert panel._trend_views[0] is first
+        assert panel._trend_views[0].cget("text") == "HIGH ▲"
+
+    def test_a_blank_trend_renders(self, panel_module):
+        """Before the first read there is nothing to say, and saying nothing
+        must not crash the repaint."""
+        panel = _panel(panel_module)
+        panel._render_trend(
+            {"label": "--", "arrow": "", "color": "#64748b", "views": [],
+             "strength": None, "agreement": None, "detail": "", "blanked": True}
+        )
+        assert panel._widgets["trend_label"].cget("text") == "--"
+        assert panel._trend_views == []

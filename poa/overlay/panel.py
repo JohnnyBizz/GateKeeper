@@ -359,7 +359,76 @@ class OverlayPanel:
         self._widgets["state"] = tk.Label(
             box, text="", font=self.f_label, bg=COLORS["bg"], fg=COLORS["faint"]
         )
-        self._widgets["state"].pack(pady=(0, 8))
+        self._widgets["state"].pack(pady=(0, 6))
+
+        self._build_trend(box)
+
+    def _build_trend(self, parent: tk.Widget) -> None:
+        """Which way the market is going, inside the signal box.
+
+        The verdict answers "act or not", and most of the time the answer is
+        not — which leaves the panel silent on the thing you can see plainly on
+        the chart. The lean was always in the analysis; it only ever came out
+        as prose in the risk block, where you had to read a paragraph to learn
+        the tool was reading the market as falling.
+        """
+        strip = tk.Frame(parent, bg=COLORS["raised"])
+        strip.pack(fill="x", padx=1, pady=(0, 1))
+        self._widgets["trend_strip"] = strip
+
+        tk.Label(
+            strip, text="MARKET", font=self.f_label,
+            bg=COLORS["raised"], fg=COLORS["faint"],
+        ).pack(side="left", padx=(8, 0))
+
+        self._widgets["trend_arrow"] = tk.Label(
+            strip, text="", font=self.f_body,
+            bg=COLORS["raised"], fg=COLORS["neutral"],
+        )
+        self._widgets["trend_arrow"].pack(side="left", padx=(6, 2))
+
+        self._widgets["trend_label"] = tk.Label(
+            strip, text="--", font=self.f_badge,
+            bg=COLORS["raised"], fg=COLORS["neutral"],
+        )
+        self._widgets["trend_label"].pack(side="left")
+
+        # One arrow per timeframe, so a trend that only exists on one of them
+        # looks different from one they all agree on.
+        views = tk.Frame(strip, bg=COLORS["raised"])
+        views.pack(side="right", padx=(0, 8))
+        self._widgets["trend_views"] = views
+        self._trend_views: list[tk.Label] = []
+
+        self._widgets["trend_detail"] = tk.Label(
+            parent, text="", font=self.f_label,
+            bg=COLORS["bg"], fg=COLORS["faint"],
+        )
+        self._widgets["trend_detail"].pack(pady=(0, 8))
+
+    def _render_trend(self, trend: dict[str, Any]) -> None:
+        w = self._widgets
+        w["trend_arrow"].configure(text=trend["arrow"], fg=trend["color"])
+        w["trend_label"].configure(text=trend["label"], fg=trend["color"])
+        w["trend_detail"].configure(text=trend["detail"])
+
+        views = trend["views"]
+        if len(views) != len(self._trend_views):
+            for label in self._trend_views:
+                label.destroy()
+            self._trend_views = []
+            for _ in views:
+                label = tk.Label(
+                    w["trend_views"], text="", font=self.f_label,
+                    bg=COLORS["raised"], fg=COLORS["faint"],
+                )
+                label.pack(side="left", padx=2)
+                self._trend_views.append(label)
+
+        for label, view in zip(self._trend_views, views):
+            label.configure(
+                text=f"{view['name']} {view['arrow']}", fg=view["color"]
+            )
 
     def _build_score(self, parent: tk.Widget) -> None:
         wrap = self._section(parent, pady=(2, 2))
@@ -818,6 +887,7 @@ class OverlayPanel:
 
         proof = data["proof"]
         w["proof"].configure(text=proof["text"], fg=proof["color"])
+        self._render_trend(data["trend"])
         self._render_watchlist(data["watchlist"])
         w["lesson"].configure(text=data["lesson"])
         w["tuning"].configure(text="\n".join(data["tuning"]))

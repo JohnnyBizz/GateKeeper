@@ -387,6 +387,35 @@ The **RISK header folds the block away** — click it, and the panel remembers
 across restarts. It is the tallest section and the one that changes least once
 a stake is set.
 
+### MARKET — which way it is going
+
+Inside the signal box, under the verdict:
+
+```
+        S I G N A L
+             ●
+           WAIT
+  MARKET  ▼ FALLING       HIGH ▼   NOW ▼
+      100% of the timeframes agree
+```
+
+The verdict answers *act or not*, and most of the time the answer is not —
+which leaves the panel silent about the thing you can see plainly on the
+chart. One word — **RISING**, **FALLING** or **SIDEWAYS** — coloured green,
+red or amber, with an arrow per timeframe beside it so a trend that exists on
+one view looks different from one they all agree on. When they disagree, that
+is usually the reason the verdict is WAIT, and now you can see it rather than
+read for it.
+
+It never says BUY or SELL. Those words belong to the verdict box; a trend
+word that reads like an instruction is how *"the market is rising"* quietly
+becomes *"buy"*.
+
+A view that is not genuinely distinct is not drawn and does not vote. With too
+little history to aggregate a higher timeframe, or an entry timeframe equal to
+the chart itself, the stack is one view counted twice — and a copy of a view
+agreeing with the view it copies is not agreement.
+
 ### Eight charts at once
 
 The platform's socket carries **every instrument you have open, all the time** —
@@ -525,6 +554,27 @@ wrong:
 
 The values remain editable under ⚙ — changing one sets a new starting point,
 and tuning walks on from there. `signals.auto_tune: false` freezes them.
+
+**Two questions, kept apart.** *Which gate reads this chart best?* and *is the
+result worth trading at this payout?* are not the same question, and folding
+them together froze the tool on any chart that was merely marginal. The
+expected-value ranking above only considers gates that clear break-even, so a
+chart where **none** of them does returned no recommendation at all — and the
+gate then sat wherever it started, for the whole session, on every pair that
+was not already profitable.
+
+So when nothing clears the bar, the gate falls back to whichever threshold
+*separates winners from losers best* on a sample big enough to carry it, and
+walks toward that instead. That is the first question, and it always has an
+answer. The second one is printed beside every number on the panel — the
+break-even rate for your payout, in green or red — because it belongs to
+whoever is placing the trade, not to the software deciding whether to mention
+the setup at all.
+
+One veto survives that split: a **measured edge on real settled trades**. Not
+a replay's opinion — twenty or more trades you actually placed, losing by more
+than the sample's own noise. That is not a payout technicality, it is evidence
+the thing is losing money, and it still blocks.
 
 ### MEASURED ON THIS CHART
 
