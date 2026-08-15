@@ -112,6 +112,8 @@ class OverlayApp:
         self._proof_busy = False
         self._proof_key: tuple[Any, ...] | None = None
         self._proof_bars = 0
+        # Timestamp of the newest candle at the last measurement.
+        self._proof_at: Any | None = None
 
         # Results from the chart-search worker, handed back to the UI thread.
         self._scan_results: queue.Queue[Any] = queue.Queue()
@@ -229,17 +231,32 @@ class OverlayApp:
                 self.vm.retired = []
                 self._proof_key = None
                 self._proof_bars = 0
+                self._proof_at = None
 
         if series is None or len(series) < PROOF_MIN_BARS:
             return
 
         key = (series.symbol, series.timeframe_seconds, self.engine.trade_duration)
-        grown = len(series) - self._proof_bars >= PROOF_RERUN_BARS
-        if key == self._proof_key and not grown:
+        # Re-measure when the chart has moved on, judged by the newest candle's
+        # timestamp rather than by how many are held. The buffer is a rolling
+        # window: once it is full the count stops rising, and a count-based
+        # test then reads "nothing new has happened" forever — freezing the
+        # measurement at whatever the first full buffer happened to contain,
+        # for the rest of the session.
+        newest = series.candles[-1].timestamp if len(series) else None
+        advanced = False
+        if newest is not None and self._proof_at is not None:
+            elapsed = (newest - self._proof_at).total_seconds()
+            advanced = elapsed >= PROOF_RERUN_BARS * max(series.timeframe_seconds, 1)
+        elif newest is not None:
+            advanced = True
+
+        if key == self._proof_key and not advanced:
             return
 
         self._proof_key = key
         self._proof_bars = len(series)
+        self._proof_at = newest
         # Real settled trades for this exact chart and expiry. They outrank the
         # replay and are read here, on the UI thread, because the journal is
         # this thread's to talk to.

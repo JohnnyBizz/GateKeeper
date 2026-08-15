@@ -1244,3 +1244,73 @@ class TestAMeasurementBelongsToItsChart:
             assert app.vm.proof is marker
         finally:
             app.shutdown()
+
+
+class TestTheMeasurementKeepsUp:
+    """A rolling buffer stops growing once it is full.
+
+    Re-measuring when the candle *count* rises therefore reads "nothing new
+    has happened" forever after the first full buffer — freezing the record at
+    whatever that buffer happened to contain, for the rest of the session.
+    What has moved on is the clock, not the count.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def _series(self, bars, start_minute=0):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 16, 12, tzinfo=timezone.utc) + timedelta(
+            minutes=start_minute
+        )
+        return Series(
+            [
+                Candle(start + timedelta(minutes=i), 1.1, 1.11, 1.09, 1.10)
+                for i in range(bars)
+            ],
+            60,
+            "EUR/USD OTC",
+        )
+
+    def test_a_full_buffer_still_re_measures_as_time_passes(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            # A saturated buffer: the same number of candles, an hour later.
+            app.engine._last_series = self._series(400)
+            app._maybe_measure()
+            first = app._proof_at
+            assert first is not None
+            app._proof_busy = False  # the worker would have finished
+
+            app.engine._last_series = self._series(400, start_minute=90)
+            app._maybe_measure()
+            assert app._proof_at is not None and app._proof_at > first
+        finally:
+            app.shutdown()
+
+    def test_a_chart_that_has_barely_moved_is_not_re_measured(self, tmp_path):
+        """Fourteen seconds of replay on every poll is its own kind of broken."""
+        app = self._app(tmp_path)
+        try:
+            app.engine._last_series = self._series(400)
+            app._maybe_measure()
+            app._proof_busy = False
+            at = app._proof_at
+
+            app.engine._last_series = self._series(400, start_minute=5)
+            app._maybe_measure()
+            assert app._proof_at == at  # too little has happened
+        finally:
+            app.shutdown()
