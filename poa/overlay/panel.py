@@ -36,6 +36,7 @@ class OverlayPanel:
         on_settings: Callable[[], None] | None = None,
         on_close: Callable[[], None] | None = None,
         on_toggle_risk: Callable[[], None] | None = None,
+        on_payout: Callable[[float], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
     ) -> None:
@@ -49,6 +50,7 @@ class OverlayPanel:
         self.on_settings = on_settings or (lambda: None)
         self.on_close = on_close or (lambda: None)
         self.on_toggle_risk = on_toggle_risk or (lambda: None)
+        self.on_payout = on_payout or (lambda p: None)
 
         self.root = tk.Tk()
         self.root.title("GateKeeper")
@@ -226,6 +228,13 @@ class OverlayPanel:
                 # screen, so when the user switches charts on the platform
                 # they rename it here and the analysis restarts.
                 value = self._entry(tile, width=9, on_commit=self.on_asset)
+                value.pack(anchor="w", padx=4, pady=(0, 5))
+            elif key == "payout":
+                # Editable, and it matters more than it looks. Break-even is
+                # 52.1% at a 92% payout and 55.6% at 80%, so a stale number
+                # here moves the bar that every measurement in this panel is
+                # judged against — quietly, and in the flattering direction.
+                value = self._entry(tile, width=9, on_commit=self._commit_payout)
                 value.pack(anchor="w", padx=4, pady=(0, 5))
             else:
                 value = tk.Label(
@@ -536,6 +545,15 @@ class OverlayPanel:
             )
             self._widgets[f"risk_{key}"].pack(side="right", padx=2)
 
+    def _commit_payout(self, text: str) -> None:
+        cleaned = text.strip().rstrip("%+").replace(",", "")
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return
+        if value > 0:
+            self.on_payout(value)
+
     def _commit_stake(self, text: str) -> None:
         """Empty text returns to percent-derived sizing; a number overrides it."""
         cleaned = text.strip().replace(",", "")
@@ -640,7 +658,7 @@ class OverlayPanel:
 
         tiles = data["tiles"]
         self._set_entry(w["tile_pair"], tiles["pair"])
-        w["tile_payout"].configure(text=tiles["payout"], fg=COLORS["call"])
+        self._set_entry(w["tile_payout"], tiles["payout"])
         w["tile_time"].configure(text=tiles["time"])
         w["tile_chart"].configure(text=f"chart {tiles['chart']}")
         w["price"].configure(text=data["price"])

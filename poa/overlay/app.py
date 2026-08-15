@@ -49,6 +49,9 @@ PROOF_RERUN_BARS = 60
 # correct a wrong rule rather than to dismantle the strategy.
 MAX_ADVISORY_GATES = 2
 
+# How many charts keep their measurement while another is being looked at.
+MAX_REMEMBERED_CHARTS = 8
+
 # How much better the recommended expiry has to score before the tool
 # switches to it. Small preferences would have the panel changing expiry
 # every poll, which is its own kind of unusable.
@@ -92,6 +95,8 @@ class OverlayApp:
         # Whether the last evaluation was actionable, so a setup that stands
         # for many polls is counted once rather than once per poll.
         self._was_actionable = False
+        # Which chart's payout is currently loaded.
+        self._payout_asset: str | None = None
 
         # Where this session's tally starts. The journal outlives the app, so
         # without a boundary the "session" win rate would be every trade ever
@@ -114,6 +119,8 @@ class OverlayApp:
         self._proof_bars = 0
         # Timestamp of the newest candle at the last measurement.
         self._proof_at: Any | None = None
+        # What each chart last measured, so switching away and back is free.
+        self._measured: dict[tuple[Any, ...], tuple[Any, int, Any]] = {}
 
         # Results from the chart-search worker, handed back to the UI thread.
         self._scan_results: queue.Queue[Any] = queue.Queue()
@@ -179,6 +186,11 @@ class OverlayApp:
         quality = meta.get("quality") or {}
         self.vm.data_confidence = quality.get("confidence")
 
+        # The payout is per-asset and the platform changes it through the
+        # session. Carrying one pair's number onto another silently moves the
+        # break-even bar that every measurement here is judged against.
+        self._load_payout_for(self.vm.asset)
+
         # Count a setup once, when it first qualifies. Every evaluation mints
         # a fresh signal id, so keying on that counted the same standing setup
         # again on every poll — one call became eighty-eight. What makes a call
@@ -226,12 +238,31 @@ class OverlayApp:
         if series is not None and self._proof_key is not None:
             key = (series.symbol, series.timeframe_seconds, self.engine.trade_duration)
             if key != self._proof_key:
-                self.vm.proof = None
+                # Remember what this chart measured, so coming back to it is
+                # free. Looking at another pair should cost nothing, or the
+                # cost becomes a reason not to look.
+                if self._proof_key is not None and self.vm.proof is not None:
+                    self._measured[self._proof_key] = (
+                        self.vm.proof, self._proof_bars, self._proof_at
+                    )
+                    while len(self._measured) > MAX_REMEMBERED_CHARTS:
+                        self._measured.pop(next(iter(self._measured)), None)
+
+                remembered = self._measured.get(key)
                 self.vm.tuning = []
                 self.vm.retired = []
-                self._proof_key = None
-                self._proof_bars = 0
-                self._proof_at = None
+                if remembered is not None:
+                    self.vm.proof, self._proof_bars, self._proof_at = remembered
+                    self._proof_key = key
+                    if getattr(self.vm.proof, "calibration", None) is not None:
+                        self.engine.set_calibration(
+                            self.vm.proof.calibration, key[0], key[1]
+                        )
+                else:
+                    self.vm.proof = None
+                    self._proof_key = None
+                    self._proof_bars = 0
+                    self._proof_at = None
 
         if series is None or len(series) < PROOF_MIN_BARS:
             return
@@ -443,6 +474,39 @@ class OverlayApp:
             return
         self.vm.trade_duration = wanted
         log.info("expiry follows the analysis: %ss", wanted)
+
+    def _load_payout_for(self, asset: str) -> None:
+        """Use the payout remembered for this chart, if one was set."""
+        if not asset or asset == UNKNOWN_ASSET:
+            return
+        if asset == self._payout_asset:
+            return
+        self._payout_asset = asset
+        remembered = (self.config.get("market.payouts") or {}).get(asset)
+        if remembered:
+            self.vm.payout = float(remembered)
+            self.config.set("market.payout", float(remembered))
+
+    def set_payout(self, percent: float) -> None:
+        """The user read the payout off the platform. Remember it per chart."""
+        value = float(percent) / 100.0 if percent > 1.5 else float(percent)
+        if not 0.1 <= value <= 1.5:
+            return
+        self.vm.payout = value
+        self.config.set("market.payout", value)
+        asset = self.vm.asset
+        if asset and asset != UNKNOWN_ASSET:
+            payouts = dict(self.config.get("market.payouts") or {})
+            payouts[asset] = value
+            self.config.set("market.payouts", payouts)
+        try:
+            self.config.save()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not save the payout: %s", exc)
+        # Break-even moved, so every measured verdict has to be re-derived.
+        self._proof_key = None
+        self._proof_at = None
+        self.vm.proof = None
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""
@@ -1066,6 +1130,7 @@ class OverlayApp:
             on_settings=self._open_settings,
             on_close=self.shutdown,
             on_toggle_risk=self._toggle_risk,
+            on_payout=self.set_payout,
             position=(
                 int(self.config.get("overlay.x", 40)),
                 int(self.config.get("overlay.y", 80)),

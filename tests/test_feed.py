@@ -890,3 +890,70 @@ class TestFeedSource:
             with pytest.raises(module.BrowserError):
                 asyncio.run(feed._listen())
         assert len(launches) == 1
+
+
+class TestLookingAroundIsFree:
+    """Switching charts to check something must not cost the history gathered.
+
+    An hour of candles thrown away for a glance at another pair is a reason
+    not to glance, and a tool that punishes looking is one that gets looked at
+    less than it should be.
+    """
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        return FeedChartSource(port=59999)
+
+    def _fill(self, source, symbol, prices, start=1_786_662_000):
+        from poa.feed.ticks import Tick
+
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": symbol, "period": 60}]
+        )
+        for i, price in enumerate(prices):
+            source._builder.add(Tick(symbol, start + i * 30, price))
+
+    def test_a_chart_keeps_its_candles_while_another_is_watched(self):
+        source = self._source()
+        self._fill(source, "EURUSD_otc", [1.10 + i * 0.001 for i in range(20)])
+        held = len(source._builder.settled)
+        assert held > 3
+
+        # Go and look at something else …
+        self._fill(source, "GBPJPY_otc", [190.0 + i * 0.01 for i in range(6)])
+        assert source._asset == "GBPJPY_otc"
+        assert len(source._builder.settled) < held
+
+        # … and come back to find the work still there.
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        assert source._asset == "EURUSD_otc"
+        assert len(source._builder.settled) == held
+
+    def test_the_two_charts_never_mix(self):
+        source = self._source()
+        self._fill(source, "EURUSD_otc", [1.10 + i * 0.001 for i in range(20)])
+        self._fill(source, "GBPJPY_otc", [190.0 + i * 0.01 for i in range(20)])
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for candle in source._builder.settled:
+            assert candle.close < 10  # never a JPY price
+
+    def test_the_same_pair_on_a_different_timeframe_is_a_different_chart(self):
+        source = self._source()
+        self._fill(source, "EURUSD_otc", [1.10 + i * 0.001 for i in range(20)])
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 300}]
+        )
+        assert source._builder.settled == []
+
+    def test_remembering_is_bounded(self):
+        from poa.feed.source import MAX_REMEMBERED_CHARTS
+
+        source = self._source()
+        for i in range(MAX_REMEMBERED_CHARTS + 5):
+            self._fill(source, f"PAIR{i:02d}_otc", [1.1, 1.2, 1.3, 1.4])
+        assert len(source._charts) <= MAX_REMEMBERED_CHARTS + 1

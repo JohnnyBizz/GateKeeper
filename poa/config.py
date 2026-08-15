@@ -167,6 +167,11 @@ DEFAULTS: dict[str, Any] = {
         # Broker payout on a win, as a fraction. This sets the break-even win
         # rate, so it is not cosmetic: 0.92 means 52.1% wins is break-even.
         "payout": 0.92,
+        # Per-asset payouts, because the platform pays differently for
+        # each and changes them through the session. This is not cosmetic:
+        # break-even is 52.1% at 92% and 55.6% at 80%, so a stale payout
+        # moves the bar every measurement here is judged against.
+        "payouts": {},
     },
     "risk": {
         "balance": 1000.0,

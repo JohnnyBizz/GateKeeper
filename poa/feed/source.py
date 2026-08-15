@@ -43,6 +43,11 @@ except ImportError:  # pragma: no cover
 # has dropped, the tab has closed, or the platform has stopped streaming.
 STALE_AFTER_SECONDS = 20.0
 
+# How many charts keep their candles while another is being looked at.
+# Enough to glance around a watchlist and come back; not so many that the
+# buffers become a slow leak dressed as a feature.
+MAX_REMEMBERED_CHARTS = 8
+
 # How long the instrument we are following may go without a message before a
 # lesser-ranked claim from another instrument is believed. This is the escape
 # hatch for the case where the platform changed chart without saying so in a
@@ -102,6 +107,11 @@ class FeedChartSource(ChartSource):
         self._stop = threading.Event()
 
         self._builder = CandleBuilder(period_seconds=60, max_candles=max_candles)
+        # One builder per chart, kept so that looking at another pair and
+        # coming back does not cost the history already gathered. Switching
+        # charts to check something should be free; throwing away an hour
+        # of candles for it is a reason not to look.
+        self._charts: dict[tuple[str, int], CandleBuilder] = {}
         self._asset: str | None = None
         self._period: int | None = None
         self._asset_rank = RANK_NONE
@@ -113,6 +123,7 @@ class FeedChartSource(ChartSource):
         # Instruments seen ticking while no chart has been identified. Only
         # used to explain the wait — never to pick one.
         self._streaming: set[str] = set()
+        self._history_by_chart: dict[tuple[str, int], bool] = {}
         self._refresh_requested = False
         self._refreshed_at: float | None = None
         self._auto_refreshes = 0
@@ -375,19 +386,47 @@ class FeedChartSource(ChartSource):
     def _rekey(self, asset: str, period: int, rank: int) -> None:
         """Follow a different chart from here. Lock held.
 
-        A different instrument *or* a different timeframe is a different chart.
-        Carrying candles across would splice two of them into one series.
+        A different instrument *or* a different timeframe is a different chart,
+        so the candles never mix. But the one being left is remembered rather
+        than discarded: glancing at another pair should not cost the history
+        already gathered, or the cost becomes a reason not to look.
         """
         log.info("chart is %s at %ss", asset, period)
+        key = (asset, int(period))
+        if self._asset is not None and self._period is not None:
+            self._charts[(self._asset, int(self._period))] = self._builder
+            self._history_by_chart[(self._asset, int(self._period))] = self._history_seen
+
         self._asset = asset
         self._period = int(period)
         self._asset_rank = rank
         self._asset_seen = time.monotonic()
         self._streaming.clear()
+
+        existing = self._charts.get(key)
+        if existing is not None:
+            self._builder = existing
+            self._history_seen = self._history_by_chart.get(key, False)
+            log.info("resuming %s at %ss with %d candles held",
+                     asset, period, len(existing.settled))
+            return
+
         self._history_seen = False
         self._builder = CandleBuilder(
             period_seconds=int(period), max_candles=self.max_candles, symbol=asset
         )
+        self._forget_oldest_charts()
+
+    def _forget_oldest_charts(self) -> None:
+        """Bound what is remembered. Lock held.
+
+        Remembering every chart ever opened is a slow leak dressed as a
+        feature; a handful covers looking around and coming back.
+        """
+        while len(self._charts) > MAX_REMEMBERED_CHARTS:
+            oldest = next(iter(self._charts))
+            self._charts.pop(oldest, None)
+            self._history_by_chart.pop(oldest, None)
 
     def resync(self) -> str:
         """Forget the chart and ask the page to announce it again.
