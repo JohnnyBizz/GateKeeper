@@ -392,8 +392,17 @@ a stake is set.
 The platform's socket carries **every instrument you have open, all the time** —
 not just the chart in front of you. Reading one and discarding the rest was
 throwing away a watchlist that costs nothing to keep, so it no longer does:
-each instrument on the stream gets its own candle builder, up to eight behind
-the one on screen.
+each of your charts gets its own candle builder, up to eight behind the one on
+screen.
+
+*Your* charts specifically. The stream carries far more instruments than
+anyone trades, so the platform's own record of the tabs along its top — the
+`saveCharts` message it sends to remember your workspace — decides what gets
+built. Without that filter the eight slots filled with whatever ticked first,
+which meant pairs you had never opened while the ones actually on your screen
+never got in. If that message never arrives, everything on the stream is kept
+instead; a noisy list beats an empty one. Closing a tab on the platform does
+not throw away the candles already gathered for it.
 
 Each of those is read on its own every 15 seconds and appears as a **tab**,
 two to a row under the tiles. A tab shows the pair and its score, and it is

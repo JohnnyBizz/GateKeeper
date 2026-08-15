@@ -1164,3 +1164,129 @@ class TestPickingAWatchedChart:
         source._charts.clear()
         assert source.capture().asset == "EUR/USD OTC"
         assert source._focus is None
+
+
+class TestTheWatchlistIsTheUsersOwnCharts:
+    """The stream carries far more instruments than anyone trades.
+
+    Left to itself the watchlist filled with whichever dozen ticked first —
+    pairs the user has never looked at — while the tabs actually open on the
+    platform never got in. The page's own ``saveCharts`` says which charts it
+    keeps; that is the list that was being asked for.
+    """
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        return FeedChartSource(port=59999)
+
+    def _workspace(self, *symbols):
+        """A saveCharts payload shaped the way the platform nests them."""
+        return [
+            "saveCharts",
+            {"charts": [{"symbol": s, "chartPeriod": 60} for s in symbols]},
+        ]
+
+    def test_only_the_charts_the_page_keeps_are_built(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        source._handle(
+            "saveCharts",
+            self._workspace("GBPUSD_otc", "EURUSD_otc", "USDJPY_otc", "LBPUSD_otc"),
+        )
+        for i in range(20):
+            t = 1_786_662_000 + i * 30
+            for symbol in ("GBPUSD_otc", "EURUSD_otc", "USDJPY_otc", "LBPUSD_otc"):
+                source._handle("updateStream", [[symbol, t, 1.2]])
+            # Instruments the user has never opened, ticking just as loudly.
+            for symbol in ("GBPJPY_otc", "USDBRL_otc", "AUDCAD_otc"):
+                source._handle("updateStream", [[symbol, t, 1.2]])
+
+        watched = {asset for asset, _tf, _s in source.watched()}
+        assert watched == {
+            "GBP/USD OTC", "EUR/USD OTC", "USD/JPY OTC", "LBP/USD OTC"
+        }
+
+    def test_without_a_workspace_everything_on_the_stream_is_kept(self):
+        """No saveCharts, no filter — better a noisy list than an empty one."""
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        source._handle("updateStream", [["GBPJPY_otc", 1_786_662_000, 1.2]])
+        assert ("GBPJPY_otc", 60) in source._charts
+
+    def test_a_nest_that_does_not_name_the_open_chart_is_not_trusted(self):
+        """The guard against having parsed something else entirely.
+
+        Whatever that nest was, it was not the list of charts the user has
+        open — the one they are looking at would be on it. Filtering on it
+        would leave the watchlist empty for a reason nobody could see.
+        """
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        source._handle("saveCharts", self._workspace("XAUUSD", "BTCUSD"))
+        source._handle("updateStream", [["GBPJPY_otc", 1_786_662_000, 1.2]])
+        assert ("GBPJPY_otc", 60) in source._charts
+
+    def test_closing_a_tab_does_not_throw_away_its_candles(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        source._handle("saveCharts", self._workspace("GBPUSD_otc", "EURUSD_otc"))
+        for i in range(10):
+            source._handle(
+                "updateStream", [["EURUSD_otc", 1_786_662_000 + i * 30, 1.1]]
+            )
+        held = len(source._charts[("EURUSD_otc", 60)].settled)
+
+        # The user closes the EUR/USD tab on the platform.
+        source._handle("saveCharts", self._workspace("GBPUSD_otc"))
+        for i in range(10):
+            source._handle(
+                "updateStream", [["EURUSD_otc", 1_786_662_600 + i * 30, 1.1]]
+            )
+        assert len(source._charts[("EURUSD_otc", 60)].settled) >= held
+
+    def test_a_kept_chart_outlives_a_noisy_one(self):
+        from poa.feed.source import MAX_REMEMBERED_CHARTS
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        # Noise first, so it is oldest and would go first anyway...
+        for i in range(MAX_REMEMBERED_CHARTS):
+            source._handle("updateStream", [[f"NOISE{i:02d}_otc", 1_786_662_000, 1.1]])
+        # ...then the page says what it actually keeps.
+        source._handle("saveCharts", self._workspace("GBPUSD_otc", "NOISE00_otc"))
+        for _ in range(MAX_REMEMBERED_CHARTS):
+            source._handle(
+                "changeSymbol",
+                ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}],
+            )
+        assert ("NOISE00_otc", 60) in source._charts
+
+    def test_the_nest_is_walked_deep_enough_to_find_it(self):
+        """Nobody designed saveCharts to be read; it is a settings blob.
+
+        Stopping the walk short costs a workspace that is simply further down,
+        and the only cost of going further is the walk itself.
+        """
+        from poa.feed.protocol import parse_workspace_charts
+
+        nest = {"state": {"workspace": {"panes": {"left": {"tabs": [
+            {"view": {"chart": {"symbol": "GBPUSD_otc", "chartPeriod": 60}}},
+            {"view": {"chart": {"symbol": "EURUSD_otc", "chartPeriod": 60}}},
+        ]}}}}}
+        assert parse_workspace_charts(nest) == {"GBPUSD_otc", "EURUSD_otc"}
+
+    def test_a_blob_with_no_instruments_in_it_filters_nothing(self):
+        from poa.feed.protocol import parse_workspace_charts
+
+        assert parse_workspace_charts({"layout": "grid", "theme": "dark"}) == set()

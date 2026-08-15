@@ -1480,3 +1480,30 @@ class TestSwappingBetweenWatchedCharts:
             assert seen["EUR/USD OTC"] is None
         finally:
             app.shutdown()
+
+    def test_the_tabs_survive_the_feed_blinking(self, tmp_path):
+        """watched() reports nothing while the feed is between charts.
+
+        A reload, a re-read, a moment before the platform says which chart is
+        open — the watchlist has no opinion about any of those, and throwing
+        the tabs away for them made the row come and go for reasons the user
+        could not see.
+        """
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "score": 60.0, "actionable": False,
+                 "direction": "WAIT"},
+            ]
+            app.engine.source.watched = lambda: []
+            app._watch_at = None
+            app._sweep_watchlist()
+            assert app.vm.watchlist  # kept
+
+            # One chart and nothing else really is an empty watchlist.
+            app.engine.source.watched = lambda: [("EUR/USD OTC", 60, None)]
+            app._watch_at = None
+            app._sweep_watchlist()
+            assert app.vm.watchlist == []
+        finally:
+            app.shutdown()

@@ -86,6 +86,9 @@ def parse_symbol_change(payload: Any) -> SymbolChange | None:
 # timeframe, and a wrong period silently rebuckets every candle.
 _SUB_MINUTE_PERIODS = {1, 5, 10, 15, 30}
 
+# How far into the platform's settings nest to look for instrument names.
+MAX_NEST_DEPTH = 10
+
 
 def _plausible_period(value: Any) -> int | None:
     period = _number(value)
@@ -133,8 +136,26 @@ def parse_displayed_chart(payload: Any) -> tuple[str | None, int | None]:
     return asset, period
 
 
+def parse_workspace_charts(payload: Any) -> set[str]:
+    """Every instrument named by ``saveCharts`` — the user's own chart tabs.
+
+    The same nest :func:`parse_displayed_chart` walks, read for the other
+    question. That one asks "which chart is open" and gives up when the answer
+    is several; this asks "which charts does the user keep", where several is
+    the whole point. The platform's stream carries far more instruments than
+    anyone trades, so without this the watchlist fills with whatever ticked
+    first rather than with the pairs actually on screen.
+    """
+    found: dict[str, int | None] = {}
+    _collect_symbols(payload, found)
+    return {symbol for symbol in found if symbol}
+
+
 def _collect_symbols(value: Any, out: dict[str, int | None], depth: int = 0) -> None:
-    if depth > 6:
+    # Deep enough for a settings nest nobody designed to be read, shallow
+    # enough to stay a bounded walk. Stopping short costs a workspace that is
+    # simply further down, and the only cost of going further is the walk.
+    if depth > MAX_NEST_DEPTH:
         return
     if isinstance(value, dict):
         symbol = value.get("symbol")

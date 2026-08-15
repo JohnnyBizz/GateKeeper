@@ -544,7 +544,12 @@ class OverlayApp:
             log.debug("could not list the watched charts: %s", exc)
             return
         if len(charts) < 2:
-            self.vm.watchlist = []
+            # Only when the feed genuinely has one chart — not while it is
+            # between charts. watched() reports nothing at all during a reload
+            # or a re-read, and wiping the row on that blink threw the tabs
+            # away for a moment that had nothing to do with the watchlist.
+            if charts:
+                self.vm.watchlist = []
             return
 
         # A chart that has been measured is judged by its own record, here as

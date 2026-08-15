@@ -271,21 +271,27 @@ class OverlayPanel:
         Two to a row: eight of these side by side would run off a 320px panel.
         """
         self._widgets["watchlist"] = tk.Frame(parent, bg=COLORS["panel"])
-        self._widgets["watchlist"].pack(fill="x", padx=8, pady=(2, 0))
+        self._widgets["watchlist"].pack(fill="x", padx=8, pady=0)
         self._widgets["watchlist"].columnconfigure(0, weight=1, uniform="watch")
         self._widgets["watchlist"].columnconfigure(1, weight=1, uniform="watch")
         self._watch_tabs: list[tk.Label] = []
 
     def _render_watchlist(self, rows: list[dict[str, Any]]) -> None:
         frame = self._widgets["watchlist"]
+        # Hidden by emptying it, never by pack_forget. Packing a widget again
+        # puts it at the *end* of its parent's order, so a row that was hidden
+        # once — which it always is, before the first sweep has run — would
+        # come back at the bottom of the panel instead of under the tiles.
+        # pack_configure keeps the place it was built in.
         if not rows:
             for tab in self._watch_tabs:
                 tab.destroy()
             self._watch_tabs = []
-            frame.pack_forget()
+            self._watch_signature = None
+            frame.pack_configure(pady=0)
             return
 
-        frame.pack(fill="x", padx=8, pady=(2, 0))
+        frame.pack_configure(pady=(2, 0))
         # Rebuild only when the set of charts changes; re-creating widgets on
         # every repaint makes the row flicker and eats the click.
         signature = [row["label"] for row in rows]

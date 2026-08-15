@@ -29,6 +29,7 @@ from .protocol import (
     parse_history_candles,
     parse_symbol_change,
     parse_tick_history,
+    parse_workspace_charts,
 )
 from .ticks import CandleBuilder, display_symbol, parse_ticks
 
@@ -135,6 +136,9 @@ class FeedChartSource(ChartSource):
         # ticked past. Kept because the two are not worth the same when the
         # watchlist is full and something has to be dropped.
         self._visited: set[tuple[str, int]] = set()
+        # The instruments the page says it keeps charts for — the tabs along
+        # the top of the platform. Empty until it says so.
+        self._workspace: set[str] = set()
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -302,6 +306,12 @@ class FeedChartSource(ChartSource):
                 return
 
             if event == "saveCharts":
+                # The page's own record of the charts it keeps — the tabs
+                # along the top of the platform. That is the watchlist the
+                # user meant; the stream carries dozens of other instruments.
+                workspace = parse_workspace_charts(payload)
+                if workspace:
+                    self._workspace = workspace
                 asset, period = parse_displayed_chart(payload)
                 if asset:
                     self._claim(asset, period, RANK_DECLARED)
@@ -351,10 +361,13 @@ class FeedChartSource(ChartSource):
                     # regardless; reading one and dropping the rest threw away
                     # a watchlist that costs nothing to keep.
                     period = int(self._period or 60)
+                    keep = self._watchable()
                     for tick in ticks:
                         if tick.symbol == self._asset:
                             self._asset_seen = time.monotonic()
                             self._builder.add(tick)
+                            continue
+                        if keep is not None and tick.symbol not in keep:
                             continue
                         key = (tick.symbol, period)
                         builder = self._charts.get(key)
@@ -380,6 +393,26 @@ class FeedChartSource(ChartSource):
                 asset, period = parse_chart_request(payload)
                 if asset and period:
                     self._claim(asset, period, RANK_TICK_HISTORY)
+
+    def _watchable(self) -> set[str] | None:
+        """The instruments worth building candles for. Lock held.
+
+        None means "anything on the stream" — the answer before the page has
+        said what it keeps. Once it has, the watchlist is the user's own chart
+        tabs rather than whichever dozen instruments tick loudest, which is
+        what they were asking for.
+
+        The open chart must be among them, or the nest was not what it looked
+        like and the safe reading is to stop filtering.
+        """
+        if not self._workspace:
+            return None
+        if self._asset is not None and self._asset not in self._workspace:
+            return None
+        # Charts already being kept stay kept, so a pair that was on the list
+        # when it was built does not lose its candles the moment the user
+        # closes that tab on the platform.
+        return self._workspace | {asset for asset, _period in self._charts}
 
     def _claim(self, asset: str, period: int | None, rank: int) -> bool:
         """Record what a message says the open chart is. Lock held.
@@ -463,8 +496,14 @@ class FeedChartSource(ChartSource):
         works on. Charts they have been on are given up last.
         """
         while len(self._charts) > MAX_REMEMBERED_CHARTS:
-            unvisited = [key for key in self._charts if key not in self._visited]
-            oldest = unvisited[0] if unvisited else next(iter(self._charts))
+            spare = [
+                key
+                for key in self._charts
+                if key not in self._visited and key[0] not in self._workspace
+            ]
+            if not spare:
+                spare = [key for key in self._charts if key not in self._visited]
+            oldest = spare[0] if spare else next(iter(self._charts))
             self._charts.pop(oldest, None)
             self._history_by_chart.pop(oldest, None)
             self._visited.discard(oldest)
