@@ -84,9 +84,9 @@ class OverlayApp:
         )
         self.vm.scan.duration = float(self.config.get("overlay.scan_seconds", 2.4))
 
-        # The id of the last setup counted, so one signal held across many
-        # polls is one call rather than one per poll.
-        self._counted_signal: str | None = None
+        # Whether the last evaluation was actionable, so a setup that stands
+        # for many polls is counted once rather than once per poll.
+        self._was_actionable = False
 
         # Where this session's tally starts. The journal outlives the app, so
         # without a boundary the "session" win rate would be every trade ever
@@ -172,11 +172,15 @@ class OverlayApp:
         quality = meta.get("quality") or {}
         self.vm.data_confidence = quality.get("confidence")
 
-        # Count a setup once, when it first qualifies — not once per poll for
-        # as long as it stands, which would turn one call into dozens.
-        if signal is not None and signal.actionable and signal.id != self._counted_signal:
-            self._counted_signal = signal.id
+        # Count a setup once, when it first qualifies. Every evaluation mints
+        # a fresh signal id, so keying on that counted the same standing setup
+        # again on every poll — one call became eighty-eight. What makes a call
+        # distinct is the *transition* into being actionable, not the identity
+        # of the object reporting it.
+        actionable = bool(signal is not None and signal.actionable)
+        if actionable and not self._was_actionable:
             self.vm.calls_this_session += 1
+        self._was_actionable = actionable
 
         if self.vm.scan.scanning:
             # Hold the incoming signal back until the scan window completes, so
@@ -204,6 +208,21 @@ class OverlayApp:
         if self._proof_busy:
             return
         series = self.engine.latest_series()
+
+        # A measurement belongs to the chart it was measured on. After a switch
+        # the new chart has too little history to replay for a while, and
+        # leaving the old numbers up means the panel reports one instrument's
+        # record over another's candles — the same lie as showing the wrong
+        # pair, one line further down.
+        if series is not None and self._proof_key is not None:
+            key = (series.symbol, series.timeframe_seconds, self.engine.trade_duration)
+            if key != self._proof_key:
+                self.vm.proof = None
+                self.vm.tuning = []
+                self.vm.retired = []
+                self._proof_key = None
+                self._proof_bars = 0
+
         if series is None or len(series) < PROOF_MIN_BARS:
             return
 
@@ -724,7 +743,7 @@ class OverlayApp:
         self._session_since = utcnow()
         self.vm.session.reset()
         self.vm.calls_this_session = 0
-        self._counted_signal = None
+        self._was_actionable = False
         self.engine.tracker.reset()
         self.vm.scan.reset()
 

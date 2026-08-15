@@ -1123,3 +1123,124 @@ class TestTheFeedIsTheDefault:
             assert app.vm.render()["tiles"]["pair"] == "—"
         finally:
             app.shutdown()
+
+
+class TestOneSetupIsOneCall:
+    """A setup that stands for ten minutes is one call, not six hundred.
+
+    Every evaluation mints a fresh signal id, so keying the counter on that
+    counted the same standing setup again on every poll — the panel reported
+    88 calls in a session where one had been made.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    class _Signal:
+        def __init__(self, actionable):
+            import uuid
+
+            self.actionable = actionable
+            self.id = uuid.uuid4().hex[:12]  # fresh every evaluation, as in life
+
+    def _poll(self, app, actionable):
+        app.engine.state.signal = self._Signal(actionable)
+        app.engine.state.capture_meta = {"asset": "EUR/USD"}
+        app._apply_state()
+
+    def test_a_standing_setup_counts_once(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            for _ in range(60):
+                self._poll(app, actionable=True)
+            assert app.vm.calls_this_session == 1
+        finally:
+            app.shutdown()
+
+    def test_a_second_setup_after_a_wait_counts_again(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            for _ in range(20):
+                self._poll(app, actionable=True)
+            for _ in range(20):
+                self._poll(app, actionable=False)
+            for _ in range(20):
+                self._poll(app, actionable=True)
+            assert app.vm.calls_this_session == 2
+        finally:
+            app.shutdown()
+
+    def test_waiting_alone_never_counts(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            for _ in range(30):
+                self._poll(app, actionable=False)
+            assert app.vm.calls_this_session == 0
+        finally:
+            app.shutdown()
+
+
+class TestAMeasurementBelongsToItsChart:
+    """The same lie as showing the wrong pair, one line further down.
+
+    After a switch the new chart has too little history to replay for a while.
+    Leaving the previous numbers on screen reports one instrument's record
+    over another's candles.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def test_switching_charts_clears_the_previous_measurement(self, tmp_path):
+        from poa.models import Series
+
+        app = self._app(tmp_path)
+        try:
+            app.vm.proof = object()
+            app.vm.tuning = ["Signal gate 75 → 70"]
+            app.vm.retired = ["momentum no longer blocks"]
+            app._proof_key = ("EUR/USD OTC", 60, 180)
+            app._proof_bars = 500
+
+            # A fresh chart, still rebuilding its candles.
+            app.engine._last_series = Series((), 60, "GBP/USD OTC")
+            app._maybe_measure()
+
+            assert app.vm.proof is None
+            assert app.vm.tuning == []
+            assert app.vm.retired == []
+        finally:
+            app.shutdown()
+
+    def test_the_same_chart_keeps_its_measurement(self, tmp_path):
+        from poa.models import Series
+
+        app = self._app(tmp_path)
+        try:
+            marker = object()
+            app.vm.proof = marker
+            app._proof_key = ("EUR/USD OTC", 60, app.engine.trade_duration)
+            app._proof_bars = 500
+            app.engine._last_series = Series((), 60, "EUR/USD OTC")
+            app._maybe_measure()
+            assert app.vm.proof is marker
+        finally:
+            app.shutdown()
