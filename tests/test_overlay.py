@@ -1314,3 +1314,169 @@ class TestTheMeasurementKeepsUp:
             assert app._proof_at == at  # too little has happened
         finally:
             app.shutdown()
+
+
+class TestSwappingBetweenWatchedCharts:
+    """Clicking a tab has to read that chart, not just rename the one on screen.
+
+    Renaming is the failure that started all of this: a panel that says GBP/USD
+    over EUR/USD's candles. Where the source names its own chart, picking a pair
+    tells the source which of the charts it already holds to read.
+    """
+
+    def _app(self, tmp_path, source="synthetic"):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", source)
+        return OverlayApp(config)
+
+    def test_picking_a_pair_reads_it_rather_than_relabelling(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            picked = []
+            app.engine.source.focus = lambda name: (picked.append(name) or True)
+            app.vm.asset = "EUR/USD OTC"
+            app.vm.signal = object()
+
+            app._set_asset("GBP/USD OTC")
+
+            assert picked == ["GBP/USD OTC"]
+            # The source names the chart on the next poll; until then the old
+            # verdict is cleared rather than shown under a new name.
+            assert app.vm.signal is None
+            assert app.vm.asset == "EUR/USD OTC"
+        finally:
+            app.shutdown()
+
+    def test_a_name_the_source_does_not_know_changes_nothing(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            marker = object()
+            app.engine.source.focus = lambda name: False
+            app.vm.signal = marker
+            app._set_asset("CAD/CHF OTC")
+            assert app.vm.signal is marker
+        finally:
+            app.shutdown()
+
+    def test_a_source_that_cannot_pick_still_takes_a_typed_label(self, tmp_path):
+        """Screen reading has no watchlist; there the name is a label."""
+        app = self._app(tmp_path)
+        try:
+            assert not hasattr(app.engine.source, "focus")
+            app._set_asset("gbp/usd otc")
+            assert app.vm.asset == "GBP/USD OTC"
+        finally:
+            app.shutdown()
+
+    def test_the_tabs_hold_their_places(self, tmp_path):
+        """A tab that moves between the reach and the press is a misclick."""
+        app = self._app(tmp_path)
+        try:
+            app._watch_results.put(
+                [
+                    {"asset": "USD/JPY OTC", "score": 40.0, "actionable": False,
+                     "direction": "WAIT", "timeframe": 60, "candles": 300},
+                    {"asset": "EUR/USD OTC", "score": 82.0, "actionable": True,
+                     "direction": "CALL", "timeframe": 60, "candles": 300},
+                    {"asset": "GBP/USD OTC", "score": 61.0, "actionable": False,
+                     "direction": "WAIT", "timeframe": 60, "candles": 300},
+                ]
+            )
+            app._collect_watchlist()
+            first = [row["asset"] for row in app.vm.watchlist]
+
+            # The same charts, every score different.
+            app._watch_results.put(
+                [
+                    {"asset": "GBP/USD OTC", "score": 91.0, "actionable": True,
+                     "direction": "PUT", "timeframe": 60, "candles": 320},
+                    {"asset": "EUR/USD OTC", "score": 44.0, "actionable": False,
+                     "direction": "WAIT", "timeframe": 60, "candles": 320},
+                    {"asset": "USD/JPY OTC", "score": 70.0, "actionable": False,
+                     "direction": "WAIT", "timeframe": 60, "candles": 320},
+                ]
+            )
+            app._collect_watchlist()
+            assert [row["asset"] for row in app.vm.watchlist] == first
+        finally:
+            app.shutdown()
+
+    def test_the_open_chart_is_the_one_marked_active(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.asset = "GBP/USD OTC"
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "score": 50.0, "actionable": False,
+                 "direction": "WAIT"},
+                {"asset": "GBP/USD OTC", "score": 80.0, "actionable": True,
+                 "direction": "CALL"},
+            ]
+            rows = app.vm.render()["watchlist"]
+            assert [row["active"] for row in rows] == [False, True]
+            assert [row["label"] for row in rows] == ["EUR/USD", "GBP/USD"]
+        finally:
+            app.shutdown()
+
+    def test_a_failed_sweep_does_not_freeze_the_watchlist(self, tmp_path):
+        """The busy flag is cleared by the reply, so there must always be one."""
+        app = self._app(tmp_path)
+        try:
+            app._watch_busy = True
+            app._watch_worker(object())  # not iterable — the worker blows up
+            app._collect_watchlist()
+            assert app._watch_busy is False
+        finally:
+            app.shutdown()
+
+    def test_a_measured_chart_is_judged_by_its_own_record(self, tmp_path):
+        """Otherwise a tab would change its mind the moment you opened it.
+
+        The active chart is read against what it has measured. A watched one
+        read against the defaults would show one verdict as a tab and another
+        as soon as it became the chart on screen.
+        """
+        from poa.models import Candle, Series
+        from datetime import datetime, timedelta, timezone
+
+        app = self._app(tmp_path)
+        try:
+            start = datetime(2026, 8, 15, tzinfo=timezone.utc)
+            series = Series(
+                [
+                    Candle(start + timedelta(minutes=i), 1.1, 1.11, 1.09, 1.10)
+                    for i in range(200)
+                ],
+                60,
+                "GBP/USD OTC",
+            )
+            record = type("Proof", (), {"calibration": "the record"})()
+            app._measured[("GBP/USD OTC", 60, app.engine.trade_duration)] = (
+                record, 200, None
+            )
+            app.engine.source.watched = lambda: [
+                ("EUR/USD OTC", 60, series),
+                ("GBP/USD OTC", 60, series),
+            ]
+
+            seen = {}
+            app.engine.evaluate_series = (
+                lambda s, a, tf, cal=None: seen.__setitem__(a, cal)
+            )
+            app._sweep_watchlist()
+            import time as _t
+            for _ in range(100):
+                if len(seen) == 2:
+                    break
+                _t.sleep(0.02)
+
+            assert seen["GBP/USD OTC"] == "the record"
+            assert seen["EUR/USD OTC"] is None
+        finally:
+            app.shutdown()

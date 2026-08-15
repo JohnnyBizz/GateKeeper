@@ -130,6 +130,7 @@ class OverlayPanel:
         self._body.pack(fill="both", expand=True)
 
         self._build_tiles(self._body)
+        self._build_watchlist(self._body)
         self._build_verdict(self._body)
         self._build_score(self._body)
         self._build_buttons(self._body)
@@ -257,6 +258,67 @@ class OverlayPanel:
             bg=COLORS["panel"], fg=COLORS["dim"],
         )
         self._widgets["price"].pack(side="right", padx=2)
+
+    def _build_watchlist(self, parent: tk.Widget) -> None:
+        """Tabs for every chart the feed is carrying.
+
+        The socket delivers every instrument whether or not it is being looked
+        at, so the only reason to read one at a time was that nothing kept the
+        rest. A tab lights up when its chart has a setup, which is the whole
+        point: the pair worth looking at finds you. Clicking one reads it —
+        nothing is clicked on the platform, and no order is placed.
+
+        Two to a row: eight of these side by side would run off a 320px panel.
+        """
+        self._widgets["watchlist"] = tk.Frame(parent, bg=COLORS["panel"])
+        self._widgets["watchlist"].pack(fill="x", padx=8, pady=(2, 0))
+        self._widgets["watchlist"].columnconfigure(0, weight=1, uniform="watch")
+        self._widgets["watchlist"].columnconfigure(1, weight=1, uniform="watch")
+        self._watch_tabs: list[tk.Label] = []
+
+    def _render_watchlist(self, rows: list[dict[str, Any]]) -> None:
+        frame = self._widgets["watchlist"]
+        if not rows:
+            for tab in self._watch_tabs:
+                tab.destroy()
+            self._watch_tabs = []
+            frame.pack_forget()
+            return
+
+        frame.pack(fill="x", padx=8, pady=(2, 0))
+        # Rebuild only when the set of charts changes; re-creating widgets on
+        # every repaint makes the row flicker and eats the click.
+        signature = [row["label"] for row in rows]
+        if signature != getattr(self, "_watch_signature", None):
+            for tab in self._watch_tabs:
+                tab.destroy()
+            self._watch_tabs = []
+            for index, row in enumerate(rows):
+                tab = tk.Label(
+                    frame, text=row["label"], font=self.f_label,
+                    bg=COLORS["raised"], fg=COLORS["dim"],
+                    cursor="hand2", padx=4, pady=2, anchor="w",
+                )
+                tab.grid(
+                    row=index // 2, column=index % 2,
+                    sticky="ew", padx=1, pady=1,
+                )
+                tab.bind(
+                    "<Button-1>",
+                    lambda _e, name=row["asset"]: self.on_asset(name),
+                )
+                self._watch_tabs.append(tab)
+            self._watch_signature = signature
+
+        for tab, row in zip(self._watch_tabs, rows):
+            score = row["score"]
+            tab.configure(
+                text=(
+                    f"{row['label']} {score:.0f}" if score is not None else row["label"]
+                ),
+                fg=row["color"],
+                bg=COLORS["border"] if row["active"] else COLORS["raised"],
+            )
 
     def _build_verdict(self, parent: tk.Widget) -> None:
         box = tk.Frame(parent, bg=COLORS["bg"], highlightthickness=1)
@@ -750,6 +812,7 @@ class OverlayPanel:
 
         proof = data["proof"]
         w["proof"].configure(text=proof["text"], fg=proof["color"])
+        self._render_watchlist(data["watchlist"])
         w["lesson"].configure(text=data["lesson"])
         w["tuning"].configure(text="\n".join(data["tuning"]))
 

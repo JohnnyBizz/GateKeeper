@@ -54,6 +54,9 @@ COLORS = {
     "accent": "#3b82f6",
 }
 
+# The chart on screen plus the eight the feed keeps behind it.
+MAX_WATCHED = 9
+
 
 def direction_color(direction: Direction | str) -> str:
     key = direction.value if isinstance(direction, Direction) else str(direction)
@@ -174,6 +177,9 @@ class OverlayViewModel:
     tuning: list[Any] = field(default_factory=list)
     # Rules the chart has shown to be wrong, and which no longer block.
     retired: list[str] = field(default_factory=list)
+    # Every chart the feed is carrying, with its own verdict. The socket
+    # delivers them whether or not they are being looked at.
+    watchlist: list[Any] = field(default_factory=list)
 
     # ------------------------------------------------------------------
 
@@ -283,6 +289,7 @@ class OverlayViewModel:
                 "stake_overridden": self.stake_override is not None,
                 "collapsed": self.risk_collapsed,
             },
+            "watchlist": self._watchlist(),
             "lesson": self._lesson(),
             "proof": self._proof(),
             "calibration": self._calibration(),
@@ -386,6 +393,32 @@ class OverlayViewModel:
             "ready": True,
             "beats": beats,
         }
+
+    def _watchlist(self) -> list[dict[str, Any]]:
+        """Every watched chart, ready to be shown as tabs.
+
+        The chart on screen plus the eight the feed keeps behind it. Bounded,
+        so a long session of looking around cannot grow the row past the panel.
+        """
+        rows = []
+        for row in self.watchlist[:MAX_WATCHED]:
+            direction = str(row.get("direction", "WAIT"))
+            rows.append(
+                {
+                    "asset": row.get("asset", ""),
+                    "label": str(row.get("asset", "")).replace(" OTC", ""),
+                    "score": row.get("score"),
+                    "direction": direction,
+                    "actionable": bool(row.get("actionable")),
+                    "color": (
+                        direction_color(direction)
+                        if row.get("actionable")
+                        else COLORS["faint"]
+                    ),
+                    "active": row.get("asset") == self.asset,
+                }
+            )
+        return rows
 
     def _lesson(self) -> str:
         """What the losing calls on this chart had in common.

@@ -127,6 +127,14 @@ class FeedChartSource(ChartSource):
         self._refresh_requested = False
         self._refreshed_at: float | None = None
         self._auto_refreshes = 0
+        # A watched chart the user has chosen to read instead of the open one.
+        # Nothing is clicked on the platform to honour it — the stream already
+        # carries every instrument, so this only picks which one is read.
+        self._focus: tuple[str, int] | None = None
+        # Charts that have actually been open, as against ones that merely
+        # ticked past. Kept because the two are not worth the same when the
+        # watchlist is full and something has to be dropped.
+        self._visited: set[tuple[str, int]] = set()
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -338,10 +346,28 @@ class FeedChartSource(ChartSource):
                         # screen, so wait to be told rather than pick.
                         self._streaming.update(tick.symbol for tick in ticks)
                         return
-                    mine = [tick for tick in ticks if tick.symbol == self._asset]
-                    if mine:
-                        self._asset_seen = time.monotonic()
-                    self._builder.extend(mine)
+                    # Every instrument the socket carries gets its own builder,
+                    # at the timeframe the open chart is on. The stream arrives
+                    # regardless; reading one and dropping the rest threw away
+                    # a watchlist that costs nothing to keep.
+                    period = int(self._period or 60)
+                    for tick in ticks:
+                        if tick.symbol == self._asset:
+                            self._asset_seen = time.monotonic()
+                            self._builder.add(tick)
+                            continue
+                        key = (tick.symbol, period)
+                        builder = self._charts.get(key)
+                        if builder is None:
+                            if len(self._charts) >= MAX_REMEMBERED_CHARTS:
+                                continue
+                            builder = CandleBuilder(
+                                period_seconds=period,
+                                max_candles=self.max_candles,
+                                symbol=tick.symbol,
+                            )
+                            self._charts[key] = builder
+                        builder.add(tick)
                     return
 
             # Last resort, and only while nothing is known: any message the
@@ -393,9 +419,16 @@ class FeedChartSource(ChartSource):
         """
         log.info("chart is %s at %ss", asset, period)
         key = (asset, int(period))
+        # Opening a chart on the platform is the clearest statement of what the
+        # user wants read, so it ends any tab they had pinned here. Last action
+        # wins, whichever window it happened in.
+        if rank >= RANK_DECLARED:
+            self._focus = None
         if self._asset is not None and self._period is not None:
-            self._charts[(self._asset, int(self._period))] = self._builder
-            self._history_by_chart[(self._asset, int(self._period))] = self._history_seen
+            leaving = (self._asset, int(self._period))
+            self._charts[leaving] = self._builder
+            self._history_by_chart[leaving] = self._history_seen
+            self._visited.add(leaving)
 
         self._asset = asset
         self._period = int(period)
@@ -422,11 +455,19 @@ class FeedChartSource(ChartSource):
 
         Remembering every chart ever opened is a slow leak dressed as a
         feature; a handful covers looking around and coming back.
+
+        A chart the user has actually opened is worth more than one that
+        merely appeared on the stream — the platform ticks far more
+        instruments than anyone trades, and without this the eight slots fill
+        with whatever happened to arrive first and push out the pairs the user
+        works on. Charts they have been on are given up last.
         """
         while len(self._charts) > MAX_REMEMBERED_CHARTS:
-            oldest = next(iter(self._charts))
+            unvisited = [key for key in self._charts if key not in self._visited]
+            oldest = unvisited[0] if unvisited else next(iter(self._charts))
             self._charts.pop(oldest, None)
             self._history_by_chart.pop(oldest, None)
+            self._visited.discard(oldest)
 
     def resync(self) -> str:
         """Forget the chart and ask the page to announce it again.
@@ -445,7 +486,64 @@ class FeedChartSource(ChartSource):
             )
             self._refresh_requested = True
             self._auto_refreshes = 0
+            self._focus = None
         return "Re-reading the chart from the platform…"
+
+    def focus(self, asset: str | None) -> bool:
+        """Read one of the other watched charts instead of the open one.
+
+        Every instrument on the watchlist is already being built from the same
+        stream, so switching between them changes nothing on the platform:
+        nothing is clicked, no chart is opened, no order is placed. It only
+        picks which of the charts already in hand the panel reads.
+
+        Passing the chart that is actually open on the platform — or None —
+        goes back to following it.
+        """
+        wanted = str(asset or "").strip()
+        with self._lock:
+            open_key = (
+                (self._asset, int(self._period or 60))
+                if self._asset is not None
+                else None
+            )
+            if not wanted:
+                changed = self._focus is not None
+                self._focus = None
+                return changed
+
+            match = self._resolve(wanted, open_key)
+            if match is None:
+                log.info("no watched chart called %s", wanted)
+                return False
+            if match == open_key:
+                changed = self._focus is not None
+                self._focus = None
+                return changed
+            if match == self._focus:
+                return False
+            log.info("reading %s from the watchlist", match[0])
+            self._focus = match
+            return True
+
+    def _resolve(
+        self, wanted: str, open_key: tuple[str, int] | None
+    ) -> tuple[str, int] | None:
+        """Find a watched chart by name. Lock held.
+
+        The name may arrive in either form — the raw ``EURUSD_otc`` off the
+        wire or the ``EUR/USD OTC`` the panel shows — so both are compared.
+        """
+        target = wanted.upper().replace(" ", "")
+        candidates = list(self._charts)
+        if open_key is not None:
+            candidates.insert(0, open_key)
+        for key in candidates:
+            symbol = key[0]
+            for name in (symbol, display_symbol(symbol)):
+                if name.upper().replace(" ", "") == target:
+                    return key
+        return None
 
     # -- the engine's view --------------------------------------------------
 
@@ -463,6 +561,21 @@ class FeedChartSource(ChartSource):
             silent_for = (
                 time.monotonic() - self._last_message if self._last_message else None
             )
+
+            # A chart picked off the watchlist is read in place of the open
+            # one. It is built from the same stream, so it is as current; what
+            # it will not have is the platform's history, which only arrives
+            # for the chart actually open.
+            focused = False
+            if self._focus is not None and self._focus != (asset, period):
+                builder = self._charts.get(self._focus)
+                if builder is None:
+                    # It aged out of what is remembered; stop pretending.
+                    self._focus = None
+                else:
+                    asset, period = self._focus[0], self._focus[1]
+                    series = builder.series()
+                    focused = True
 
         issues: list[str] = []
         confidence = 100.0
@@ -504,10 +617,19 @@ class FeedChartSource(ChartSource):
             # history behind it needs minutes before there is enough to read.
             shortfall = 1.0 - count / max(self.min_candles, 1)
             confidence = min(confidence, 100.0 - 60.0 * shortfall)
+            if focused:
+                # The platform only sends history for the chart it has open, so
+                # a watched one fills from live ticks alone. Say that, rather
+                # than promise a backfill that is not coming.
+                tail = (
+                    " Watched from the live stream — open it on the platform "
+                    "to load its history."
+                )
+            else:
+                tail = "" if history_seen else " Loading history from the platform…"
             issues.append(
                 f"{count} candles so far; {self.min_candles} are needed for a "
-                "full read."
-                + ("" if history_seen else " Loading history from the platform…")
+                "full read." + tail
             )
 
         quality = DataQuality(
@@ -529,12 +651,41 @@ class FeedChartSource(ChartSource):
                     "asset": asset,
                     "period": period,
                     "connected": connected,
-                    "history_loaded": history_seen,
+                    "history_loaded": history_seen and not focused,
                     "silent_for": round(silent_for, 1) if silent_for else None,
                     "candles": count,
+                    "focused": focused,
                 }
             },
         )
+
+    def watched(self) -> list[tuple[str, int, Series]]:
+        """Every chart being followed, the active one first.
+
+        The socket delivers all of them whether or not they are being looked
+        at, so a watchlist is free — the only question is whether anything
+        bothers to keep it.
+
+        Names come out in the same display form as :meth:`read`, so a chart on
+        this list and the same chart once it is opened are one chart to
+        everything downstream: the panel's active tab, and the record of what
+        has measured where.
+        """
+        with self._lock:
+            out: list[tuple[str, int, Series]] = []
+            if self._asset is not None:
+                out.append(
+                    (
+                        display_symbol(self._asset),
+                        int(self._period or 60),
+                        self._builder.series(),
+                    )
+                )
+            for (asset, period), builder in self._charts.items():
+                if asset == self._asset and period == (self._period or 60):
+                    continue
+                out.append((display_symbol(asset), period, builder.series()))
+        return out
 
     def describe(self) -> dict[str, Any]:
         with self._lock:
@@ -546,4 +697,6 @@ class FeedChartSource(ChartSource):
                 "connected": self._connected,
                 "history_loaded": self._history_seen,
                 "candles": len(self._builder.settled),
+                "watching": len(self._charts) + (1 if self._asset else 0),
+                "focused": display_symbol(self._focus[0]) if self._focus else None,
             }

@@ -957,3 +957,210 @@ class TestLookingAroundIsFree:
         for i in range(MAX_REMEMBERED_CHARTS + 5):
             self._fill(source, f"PAIR{i:02d}_otc", [1.1, 1.2, 1.3, 1.4])
         assert len(source._charts) <= MAX_REMEMBERED_CHARTS + 1
+
+
+class TestTheWholeStreamIsUsed:
+    """The socket carries every instrument whether or not one is being read.
+
+    Reading one and discarding the rest meant a setup on another pair went
+    unseen until the user happened to look — which is the job they were hoping
+    to hand over.
+    """
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        return FeedChartSource(port=59999)
+
+    def test_every_streaming_instrument_gets_its_own_candles(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(20):
+            t = 1_786_662_000 + i * 30
+            source._handle("updateStream", [["EURUSD_otc", t, 1.10 + i * 0.001]])
+            source._handle("updateStream", [["GBPUSD_otc", t, 1.36 + i * 0.001]])
+            source._handle("updateStream", [["USDJPY_otc", t, 157.0 + i * 0.01]])
+
+        watched = {asset: series for asset, _tf, series in source.watched()}
+        assert set(watched) == {"EUR/USD OTC", "GBP/USD OTC", "USD/JPY OTC"}
+        for series in watched.values():
+            assert len(series) > 3
+
+    def test_the_open_chart_comes_first(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(6):
+            t = 1_786_662_000 + i * 30
+            source._handle("updateStream", [["GBPUSD_otc", t, 1.36]])
+            source._handle("updateStream", [["EURUSD_otc", t, 1.10]])
+        assert source.watched()[0][0] == "EUR/USD OTC"
+
+    def test_prices_never_cross_between_instruments(self):
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(20):
+            t = 1_786_662_000 + i * 30
+            source._handle("updateStream", [["EURUSD_otc", t, 1.10]])
+            source._handle("updateStream", [["USDJPY_otc", t, 157.0]])
+        for asset, _tf, series in source.watched():
+            for candle in series:
+                assert candle.close < 10 if asset == "EUR/USD OTC" else candle.close > 100
+
+    def test_the_watchlist_uses_the_same_names_as_the_panel(self):
+        """A watched chart and that chart once opened have to be one chart.
+
+        The panel names the open chart ``EUR/USD OTC``. If the watchlist said
+        ``EURUSD_otc`` the active tab would never light up, and the measurement
+        kept for one would never be found for the other.
+        """
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        source._handle("updateStream", [["GBPUSD_otc", 1_786_662_000, 1.36]])
+
+        names = [asset for asset, _tf, _series in source.watched()]
+        assert names == ["EUR/USD OTC", "GBP/USD OTC"]
+
+        assert source.capture().asset == names[0]
+
+    def test_a_chart_you_have_opened_outlives_one_that_just_ticked_past(self):
+        """The platform ticks far more instruments than anyone trades.
+
+        Without a preference the eight slots fill with whatever arrived first,
+        and the pairs actually being worked on get pushed out by noise.
+        """
+        from poa.feed.source import MAX_REMEMBERED_CHARTS
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        # A pair that was actually opened, then left.
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        assert ("EURUSD_otc", 60) in source._charts
+
+        # Then a crowd of instruments that only ever ticked past.
+        for i in range(MAX_REMEMBERED_CHARTS + 6):
+            source._handle("updateStream", [[f"NOISE{i:02d}_otc", 1_786_662_000, 1.1]])
+        # And another chart opened, forcing something out.
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "USDJPY_otc", "period": 60}]
+        )
+
+        assert ("EURUSD_otc", 60) in source._charts
+        assert ("GBPUSD_otc", 60) in source._charts
+        assert len(source._charts) <= MAX_REMEMBERED_CHARTS
+
+    def test_the_watchlist_is_bounded(self):
+        from poa.feed.source import MAX_REMEMBERED_CHARTS
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(MAX_REMEMBERED_CHARTS + 10):
+            source._handle(
+                "updateStream", [[f"PAIR{i:02d}_otc", 1_786_662_000, 1.1]]
+            )
+        assert len(source._charts) <= MAX_REMEMBERED_CHARTS
+
+
+class TestPickingAWatchedChart:
+    """Reading another chart must not touch the platform.
+
+    The stream already carries every instrument, so swapping between them is a
+    choice about which candles to read. Nothing is clicked in the browser, no
+    chart is opened, and no order is placed — the user's own rule, and the only
+    way this can be safe to do from a panel.
+    """
+
+    def _source(self, *, extra=("GBPUSD_otc", "USDJPY_otc")):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(40):
+            t = 1_786_662_000 + i * 20
+            source._handle("updateStream", [["EURUSD_otc", t, 1.10 + i * 0.001]])
+            for j, symbol in enumerate(extra):
+                source._handle("updateStream", [[symbol, t, 100.0 + j + i * 0.01]])
+        return source
+
+    def test_a_watched_chart_can_be_read_instead(self):
+        source = self._source()
+        assert source.capture().asset == "EUR/USD OTC"
+
+        assert source.focus("GBP/USD OTC") is True
+        capture = source.capture()
+        assert capture.asset == "GBP/USD OTC"
+        assert capture.series is not None and len(capture.series) > 3
+        # The candles are that chart's, not the one it replaced.
+        assert all(c.close > 50 for c in capture.series)
+
+    def test_the_raw_name_works_too(self):
+        source = self._source()
+        assert source.focus("GBPUSD_otc") is True
+        assert source.capture().asset == "GBP/USD OTC"
+
+    def test_picking_the_open_chart_goes_back_to_following_it(self):
+        source = self._source()
+        source.focus("GBP/USD OTC")
+        assert source.focus("EUR/USD OTC") is True
+        assert source._focus is None
+        assert source.capture().asset == "EUR/USD OTC"
+
+    def test_an_unknown_name_changes_nothing(self):
+        source = self._source()
+        assert source.focus("CADCHF OTC") is False
+        assert source.capture().asset == "EUR/USD OTC"
+
+    def test_opening_a_chart_on_the_platform_wins(self):
+        """The browser is the user speaking too. Whichever they did last wins."""
+        source = self._source()
+        source.focus("GBP/USD OTC")
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "AUDCAD_otc", "period": 60}]
+        )
+        assert source._focus is None
+        assert source.capture().asset == "AUD/CAD OTC"
+
+    def test_nothing_is_asked_of_the_platform(self):
+        """Focusing is a read.
+
+        The only thing this class ever sends to the browser is a page reload,
+        and that is driven by ``_refresh_requested``. Picking a chart must not
+        set it, and must leave the chart the platform has open exactly as it
+        was — the panel reads elsewhere, the browser is not steered.
+        """
+        source = self._source()
+        before = (source._asset, source._period, source._builder)
+
+        assert source.focus("GBP/USD OTC") is True
+
+        assert source._refresh_requested is False
+        assert (source._asset, source._period, source._builder) == before
+
+    def test_a_watched_chart_says_it_has_no_platform_history(self):
+        source = self._source()
+        source.focus("USD/JPY OTC")
+        capture = source.capture()
+        assert capture.meta["feed"]["focused"] is True
+        assert capture.meta["feed"]["history_loaded"] is False
+
+    def test_a_forgotten_chart_releases_the_pick(self):
+        source = self._source()
+        source.focus("GBP/USD OTC")
+        source._charts.clear()
+        assert source.capture().asset == "EUR/USD OTC"
+        assert source._focus is None

@@ -357,6 +357,60 @@ class AnalysisEngine:
         self._broadcast()
         return self.state
 
+    def evaluate_series(
+        self,
+        series: Series,
+        asset: str,
+        timeframe: int,
+        calibration: Any | None = None,
+    ) -> Signal | None:
+        """Read one chart without touching the live state.
+
+        The watchlist needs a verdict per chart, and the tracker, the journal
+        and the alerts all belong to the chart the user is actually on. This
+        evaluates and returns; it records nothing and interrupts nothing.
+
+        A chart that has been measured before can be read against its own
+        record by passing it in — otherwise a tab would be judged by the
+        defaults and change its mind the moment it was opened.
+        """
+        depth = int(self.config.get("market.analysis_candles", 600))
+        visible = series.tail(depth) if len(series) > depth else series
+        if len(visible) < int(self.config.get("market.min_candles", 60)):
+            return None
+        quality = validate_series(
+            visible,
+            min_candles=int(self.config.get("market.min_candles", 60)),
+            source=getattr(self.source, "name", "feed"),
+            expected_timeframe=timeframe,
+        )
+        try:
+            return self.signal_engine.evaluate(
+                SignalRequest(
+                    series=visible,
+                    asset=asset,
+                    chart_timeframe=timeframe,
+                    trade_duration=self.trade_duration,
+                    quality=quality,
+                    available_durations=TRADE_DURATIONS,
+                    higher_multiple=int(
+                        self.config.get("market.higher_timeframe_multiple", 5)
+                    ),
+                    entry_multiple=int(
+                        self.config.get("market.entry_timeframe_multiple", 1)
+                    ),
+                    settings=self.gate_settings(),
+                    calibration=(
+                        calibration
+                        if calibration is not None
+                        else self._calibration_for(asset, timeframe)
+                    ),
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("watchlist evaluation failed for %s: %s", asset, exc)
+            return None
+
     def latest_series(self) -> Series | None:
         """The candles behind the current signal, or None before the first read."""
         with self._lock:

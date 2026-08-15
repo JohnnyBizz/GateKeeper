@@ -52,6 +52,11 @@ MAX_ADVISORY_GATES = 2
 # How many charts keep their measurement while another is being looked at.
 MAX_REMEMBERED_CHARTS = 8
 
+# How often every watched chart is re-read. Frequent enough that a setup
+# elsewhere is noticed while it is still a setup, rare enough that eight
+# evaluations do not compete with the one the user is looking at.
+WATCH_SWEEP_SECONDS = 15.0
+
 # How much better the recommended expiry has to score before the tool
 # switches to it. Small preferences would have the panel changing expiry
 # every poll, which is its own kind of unusable.
@@ -121,6 +126,11 @@ class OverlayApp:
         self._proof_at: Any | None = None
         # What each chart last measured, so switching away and back is free.
         self._measured: dict[tuple[Any, ...], tuple[Any, int, Any]] = {}
+
+        # Verdicts for every chart the socket carries, not just the open one.
+        self._watch_results: queue.Queue[Any] = queue.Queue()
+        self._watch_busy = False
+        self._watch_at: Any | None = None
 
         # Results from the chart-search worker, handed back to the UI thread.
         self._scan_results: queue.Queue[Any] = queue.Queue()
@@ -508,6 +518,97 @@ class OverlayApp:
         self._proof_at = None
         self.vm.proof = None
 
+    # -- the watchlist ------------------------------------------------------
+
+    def _sweep_watchlist(self) -> None:
+        """Read every chart the socket is carrying, not only the open one.
+
+        The stream delivers all of them anyway. Reading one and discarding the
+        rest meant a setup on another pair went unseen until the user happened
+        to look — which is the job they were hoping to hand over.
+        """
+        if self._watch_busy:
+            return
+        watched = getattr(self.engine.source, "watched", None)
+        if not callable(watched):
+            return
+        now = utcnow()
+        if self._watch_at is not None:
+            if (now - self._watch_at).total_seconds() < WATCH_SWEEP_SECONDS:
+                return
+        self._watch_at = now
+
+        try:
+            charts = watched()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not list the watched charts: %s", exc)
+            return
+        if len(charts) < 2:
+            self.vm.watchlist = []
+            return
+
+        # A chart that has been measured is judged by its own record, here as
+        # much as when it is open. Read on this thread — the cache belongs to
+        # it — and handed over with the charts.
+        duration = self.engine.trade_duration
+        measured = {}
+        for asset, timeframe, _series in charts:
+            remembered = self._measured.get((asset, timeframe, duration))
+            if remembered is not None:
+                measured[(asset, timeframe)] = getattr(
+                    remembered[0], "calibration", None
+                )
+
+        self._watch_busy = True
+        threading.Thread(
+            target=self._watch_worker, args=(charts, measured), daemon=True
+        ).start()
+
+    def _watch_worker(self, charts: Any, measured: Any = None) -> None:
+        """Off the UI thread. Evaluates only; records and alerts nothing.
+
+        Always answers, even on the way out of a failure: the busy flag is
+        cleared by the reply, so a worker that died quietly would leave the
+        watchlist frozen for the rest of the session with nothing to show for
+        it.
+        """
+        measured = measured or {}
+        rows = []
+        try:
+            for asset, timeframe, series in charts:
+                signal = self.engine.evaluate_series(
+                    series, asset, timeframe, measured.get((asset, timeframe))
+                )
+                if signal is None:
+                    continue
+                rows.append(
+                    {
+                        "asset": asset,
+                        "timeframe": timeframe,
+                        "direction": signal.direction.value,
+                        "score": round(signal.direction_confidence, 0),
+                        "actionable": bool(signal.actionable),
+                        "candles": len(series),
+                    }
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("reading the watchlist failed: %s", exc)
+        finally:
+            self._watch_results.put(rows)
+
+    def _collect_watchlist(self) -> None:
+        try:
+            rows = self._watch_results.get_nowait()
+        except queue.Empty:
+            return
+        self._watch_busy = False
+        # Fixed order, by name. Sorting by score would put the best setup first,
+        # but these are click targets: a tab that moves between the reach and
+        # the press opens a pair the user did not ask for. Colour marks the ones
+        # worth looking at, and colour can change without anything moving.
+        rows.sort(key=lambda r: str(r["asset"]))
+        self.vm.watchlist = rows
+
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""
         self.vm.risk_collapsed = not self.vm.risk_collapsed
@@ -875,9 +976,33 @@ class OverlayApp:
         self.vm.session.adjust(wins, losses)
 
     def _set_asset(self, asset: str) -> None:
-        """The user renamed the pair after switching charts on the platform."""
-        asset = asset.strip().upper()
-        if not asset or asset == self.vm.asset:
+        """A pair was picked — from a watchlist tab, or typed into the box.
+
+        On the feed this reads a chart already in hand rather than renaming the
+        one being read: every watched instrument arrives on the same stream.
+        Nothing is clicked on the platform to do it, and no order is placed.
+        Where the source cannot name its own chart the old behaviour stands and
+        the typed name is a label.
+        """
+        asset = asset.strip()
+        if not asset:
+            return
+        pick = getattr(self.engine.source, "focus", None)
+        if callable(pick):
+            try:
+                if not pick(asset):
+                    return
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("could not read %s: %s", asset, exc)
+                return
+            # The next poll names the chart; blank the old verdict rather than
+            # show one pair's call under another pair's name.
+            self.vm.signal = None
+            self._refresh_session()
+            return
+
+        asset = asset.upper()
+        if asset == self.vm.asset:
             return
         try:
             self.engine.update_settings({"asset": asset})
@@ -1101,6 +1226,8 @@ class OverlayApp:
             self._collect_scan_result()
             self._collect_proof()
             self._maybe_measure()
+            self._collect_watchlist()
+            self._sweep_watchlist()
             # The scan state is held open while the search runs, not just for
             # the timer. Letting the timer end it early would drop the panel
             # out of SCANNING and paint the *previous* chart's verdict as if

@@ -364,10 +364,10 @@ POA_SERVER__PORT=9000 python run.py   # override any setting via env
 
 A frameless, draggable window that stays above the chart. Top to bottom:
 **PAIR / PAYOUT / TIME** tiles (with the chart timeframe shown separately —
-the two are never conflated), the big **SIGNAL** box, **TAKE NOW**, the 0–100
-score with a HIGH/MEDIUM/LOW badge and the named candle pattern, **duration
-fit** and the engine's suggested expiration, **Scan / Reset**, a session
-WIN/LOSS tally, and a risk block.
+the two are never conflated), the **watchlist tabs**, the big **SIGNAL** box,
+**TAKE NOW**, the 0–100 score with a HIGH/MEDIUM/LOW badge and the named candle
+pattern, **duration fit** and the engine's suggested expiration, **Scan /
+Reset**, a session WIN/LOSS tally, and a risk block.
 
 **TAKE NOW** is the count of setups that pass every gate at this moment — `0
 trades` or `1 trade`, because one chart yields at most one setup. It exists
@@ -386,6 +386,46 @@ number means much.)
 The **RISK header folds the block away** — click it, and the panel remembers
 across restarts. It is the tallest section and the one that changes least once
 a stake is set.
+
+### Eight charts at once
+
+The platform's socket carries **every instrument you have open, all the time** —
+not just the chart in front of you. Reading one and discarding the rest was
+throwing away a watchlist that costs nothing to keep, so it no longer does:
+each instrument on the stream gets its own candle builder, up to eight behind
+the one on screen.
+
+Each of those is read on its own every 15 seconds and appears as a **tab**,
+two to a row under the tiles. A tab shows the pair and its score, and it is
+**coloured only when that chart has a setup that passes every gate** — green
+for CALL, red for PUT, grey otherwise. That is the point of the row: the pair
+worth looking at finds you, instead of you finding it by clicking through
+charts and hoping the moment is still there when you arrive.
+
+**Click a tab and the panel reads that chart.** The whole panel switches to it
+— signal, score, duration fit, risk, the replay measurement, everything —
+because all of it was built from the same stream and was already in hand. The
+tab you are reading is highlighted.
+
+Three things about that click are worth being exact about:
+
+* **Nothing happens in the browser.** No chart is opened, nothing is clicked,
+  and no order is placed. Picking a tab chooses which of the candles already
+  held gets read. This is the same rule the whole tool runs on — it reads and
+  tells you; you place trades yourself.
+* **Opening a chart on the platform wins.** If you click a pair in the browser,
+  that ends whatever tab you had pinned and the panel follows the platform
+  again. Whichever you did last is what you meant.
+* **A watched chart has no platform history.** The platform only sends the
+  backfill for the chart it actually has open, so the others fill from live
+  ticks alone and start shallow — the panel says so, in candles, rather than
+  pretending otherwise. Open one properly on the platform and its history
+  arrives.
+
+Tabs are ordered by name and stay put. Sorting by score would put the best
+setup first, but these are click targets, and a tab that moves between the
+reach and the press opens a pair you did not ask for. The colour does the
+ranking; the colour can change without anything moving.
 
 ### Calibration — what the score is actually worth
 
