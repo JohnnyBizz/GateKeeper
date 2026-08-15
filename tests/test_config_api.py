@@ -479,3 +479,78 @@ class TestAChartSwitchIsNoticed:
         engine.source.timeframe = 300
         engine.tick()
         assert engine.state.capture_meta["chart_changed"] is True
+
+
+class TestDepthIsForMeasuringNotDeciding:
+    """Keeping thousands of candles must not slow down every poll.
+
+    The replay's sample scales almost linearly with history, so depth is worth
+    having. The live read's longest lookback is a 200-period EMA, so depth buys
+    it nothing and costs real time — 5000 candles takes 110ms against 17ms for
+    600, on a loop that runs every couple of seconds.
+    """
+
+    class _Deep:
+        name = "feed"
+        vision_based = False
+        names_own_chart = True
+
+        def __init__(self, bars):
+            from tests.conftest import pullback_trend
+
+            self.series = pullback_trend(bars, direction=1)
+
+        def capture(self):
+            from poa.chart_detection.base import Capture
+            from poa.chart_detection.quality import validate_series
+
+            return Capture(
+                series=self.series,
+                quality=validate_series(self.series, source="feed"),
+                asset="EUR/USD OTC",
+                timeframe_seconds=60,
+            )
+
+        def start(self): pass
+        def stop(self): pass
+
+    def _engine(self, tmp_path, bars):
+        from poa.config import load_config
+        from poa.engine import AnalysisEngine
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("alerts.desktop_notifications", False)
+        engine = AnalysisEngine(config)
+        engine.source = self._Deep(bars)
+        return engine
+
+    def test_the_live_read_looks_at_a_bounded_tail(self, tmp_path):
+        engine = self._engine(tmp_path, 3000)
+        try:
+            engine.tick()
+            depth = int(engine.config.get("market.analysis_candles", 600))
+            # The signal was made from the tail …
+            assert len(engine.state.signal.mtf.current.series) <= depth
+        finally:
+            engine.close()
+
+    def test_the_replay_still_gets_every_candle(self, tmp_path):
+        engine = self._engine(tmp_path, 3000)
+        try:
+            engine.tick()
+            held = len(engine.source.series)
+            depth = int(engine.config.get("market.analysis_candles", 600))
+            assert held > depth  # the point of the test
+            assert len(engine.latest_series()) == held
+        finally:
+            engine.close()
+
+    def test_a_short_history_is_not_truncated(self, tmp_path):
+        engine = self._engine(tmp_path, 200)
+        try:
+            engine.tick()
+            assert len(engine.latest_series()) == len(engine.source.series)
+        finally:
+            engine.close()

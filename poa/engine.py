@@ -271,8 +271,13 @@ class AnalysisEngine:
                 invalidate()
         chart_timeframe = capture.timeframe_seconds or self.chart_timeframe
 
+        # Deep history is kept for the replay to measure against; the live
+        # read only needs enough lookback for its longest indicator.
+        analysis_depth = int(self.config.get("market.analysis_candles", 600))
+        visible = series.tail(analysis_depth) if len(series) > analysis_depth else series
+
         request = SignalRequest(
-            series=series,
+            series=visible,
             asset=asset,
             chart_timeframe=chart_timeframe,
             trade_duration=self.trade_duration,

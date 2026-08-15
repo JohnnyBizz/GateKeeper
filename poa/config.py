@@ -151,7 +151,19 @@ DEFAULTS: dict[str, Any] = {
         "higher_timeframe_multiple": 5,
         "entry_timeframe_multiple": 1,
         "min_candles": 60,
-        "max_candles": 600,
+        # Every candle kept is a candle the replay can learn from, and the
+        # measurement scales almost linearly with them: 600 bars yields a
+        # few dozen settled trades, 2400 yields a couple of hundred — the
+        # difference between a number that is barely readable and one that
+        # can be broken down by regime and by hour. The old 600 was
+        # throwing away most of what the platform sends.
+        "max_candles": 5000,
+        # How many of those the *live* read looks at. Its longest lookback
+        # is the 200-period EMA, so more than this buys nothing but costs
+        # real time on every poll — 5000 candles takes 110ms against 17ms
+        # for 600, which the panel feels. The replay still gets all of
+        # them; depth is for measuring, not for deciding.
+        "analysis_candles": 600,
         # Broker payout on a win, as a fraction. This sets the break-even win
         # rate, so it is not cosmetic: 0.92 means 52.1% wins is break-even.
         "payout": 0.92,

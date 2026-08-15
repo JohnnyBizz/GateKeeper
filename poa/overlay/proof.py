@@ -65,6 +65,19 @@ MIN_WINDOW = 70
 SURVEY_CONFIDENCE = 40.0
 SURVEY_DURATION = 25.0
 
+# The most decisions one replay will test. Depth is worth having — the
+# sample scales with it — but a replay that takes a minute is one the user
+# is waiting on, so past this point the walk is sampled more coarsely
+# rather than truncated. Coverage of the whole history beats a fine-
+# grained look at the most recent tenth of it.
+MAX_EVALUATIONS = 1100
+
+
+def _step_for(bars: int, window: int) -> int:
+    """Sample the walk so deep history stays affordable."""
+    testable = max(0, bars - window)
+    return max(2, -(-testable // MAX_EVALUATIONS))
+
 
 def _window_for(bars: int) -> int:
     """Warm-up that leaves a usable number of decisions behind it."""
@@ -254,7 +267,7 @@ def measure(
             series,
             trade_duration=trade_duration,
             asset=asset,
-            step=max(1, int(step)),
+            step=max(int(step), _step_for(bars, _window_for(bars))),
             min_gap_bars=min_gap_bars,
         )
     except Exception as exc:  # pragma: no cover - defensive
@@ -311,6 +324,7 @@ def measure(
             payout=payout,
             settings=live,
             window=_window_for(bars),
+            step=_step_for(bars, _window_for(bars)) + 1,
             higher_multiple=higher_multiple,
             entry_multiple=entry_multiple,
         )
