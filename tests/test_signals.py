@@ -494,3 +494,96 @@ class TestTheRecordSetsTheGates:
             assert "measured" in adjustment.reason
             assert "%" in adjustment.reason
             assert "→" in adjustment.describe()
+
+
+class TestARuleTheChartDisproves:
+    """Every blocking gate is a claim, and a claim can be wrong.
+
+    "Setups failing this are worse than setups passing it" is checkable, and
+    nothing in the app had ever checked it. A gate refusing trades that would
+    have paid is not prudence — it is a rule quietly costing money, and no
+    amount of reasoning about the rule discovers that.
+    """
+
+    def _report(self, direction=Direction.PUT):
+        from poa.analysis import build_multi_timeframe
+        from poa.signals.gates import evaluate_gates
+        from poa.signals.scoring import score_direction
+
+        series = pullback_trend(400, direction=1)
+        mtf = build_multi_timeframe(series, 5, 1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="t"
+        )
+        score = score_direction(mtf, direction)
+        return mtf, direction, score, quality, evaluate_gates
+
+    def test_a_demoted_gate_stops_blocking_but_keeps_reporting(self):
+        from poa.signals.gates import GateSettings
+
+        mtf, direction, score, quality, run = self._report()
+        blocking = run(mtf, direction, score, quality, GateSettings())
+        demoted = run(
+            mtf, direction, score, quality,
+            GateSettings(advisory=frozenset({"momentum"})),
+        )
+
+        assert "momentum" in {f.name for f in blocking.failures}
+        assert "momentum" not in {f.name for f in demoted.failures}
+        # Still evaluated, still reported — it just holds no veto.
+        result = next(g for g in demoted.results if g.name == "momentum")
+        assert result.passed is False
+        assert result.blocking is False
+
+    def test_data_quality_can_never_be_demoted(self):
+        """No win rate makes an unreadable chart tradeable."""
+        from poa.signals.gates import NEVER_ADVISORY, GateSettings
+
+        assert "data_quality" in NEVER_ADVISORY
+        series = pullback_trend(400, direction=1)
+        unreadable = DataQuality(
+            ok=False, confidence=5.0, candle_count=len(series),
+            issues=["unreadable"], source="t",
+        )
+        signal = evaluate(
+            series,
+            quality=unreadable,
+            settings=GateSettings(advisory=frozenset({"data_quality"})),
+        )
+        assert signal.direction is Direction.WAIT
+        assert not signal.actionable
+
+    def test_the_audit_names_a_gate_that_refuses_winners(self):
+        from poa.backtesting.gatecheck import check_gates
+
+        report = check_gates(
+            pullback_trend(500, direction=1), trade_duration=180, payout=0.92
+        )
+        # Every gate that blocked anything is scored against what it blocked.
+        for verdict in report.verdicts:
+            assert verdict.blocked >= 0
+            if verdict.blocked:
+                assert verdict.blocked_rate is not None
+        # And the headline is a sentence either way.
+        assert isinstance(report.headline(), str) and report.headline()
+
+    def test_a_gate_blocking_losers_is_left_alone(self):
+        from poa.backtesting.gatecheck import GateVerdict
+
+        good = GateVerdict("market_structure", blocked_wins=4, blocked_losses=46)
+        assert good.blocked_rate == 8.0
+        assert not good.costly(52.1)
+
+    def test_a_gate_blocking_winners_is_flagged(self):
+        from poa.backtesting.gatecheck import GateVerdict
+
+        bad = GateVerdict("momentum", blocked_wins=48, blocked_losses=21)
+        assert bad.blocked_rate is not None and bad.blocked_rate > 52.1
+        assert bad.costly(52.1)
+
+    def test_a_handful_of_blocks_cannot_condemn_a_gate(self):
+        from poa.backtesting.gatecheck import GateVerdict
+
+        thin = GateVerdict("momentum", blocked_wins=5, blocked_losses=0)
+        assert thin.blocked_rate == 100.0
+        assert not thin.costly(52.1)

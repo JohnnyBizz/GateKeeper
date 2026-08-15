@@ -31,6 +31,7 @@ from ..backtesting.calibration import (
     build_calibration,
     records_from_trades,
 )
+from ..backtesting.gatecheck import check_gates
 from ..backtesting.paper import Backtester
 from ..backtesting.stats import breakeven_rate
 from ..logging_setup import get_logger
@@ -87,6 +88,9 @@ class ProofResult:
     # live gates would have taken. The gap between the two is what the
     # threshold table is ranking.
     surveyed: int = 0
+    # Which gates are earning their keep on this chart, and which are
+    # refusing setups that would have paid.
+    gate_report: Any | None = None
     by_direction: dict[str, Any] = field(default_factory=dict)
     # What the score was actually worth, by band, by threshold, by regime and
     # by hour. None when the replay produced nothing to calibrate against.
@@ -296,6 +300,21 @@ def measure(
     # taken, the other only considered. Pooling them would dilute the record
     # that matters with the one that does not, so the real record is used
     # *instead* as soon as there is enough of it to stand on its own.
+    # Which of the gates deserve their veto, measured the same way.
+    try:
+        gates = check_gates(
+            series,
+            trade_duration=trade_duration,
+            payout=payout,
+            settings=live,
+            window=_window_for(bars),
+            higher_multiple=higher_multiple,
+            entry_multiple=entry_multiple,
+        )
+    except Exception:  # pragma: no cover - defensive
+        log.exception("gate audit failed")
+        gates = None
+
     real = list(real_records or [])
     if len(real) >= min_sample:
         calibration = build_calibration(real, payout=payout, min_sample=min_sample)
@@ -320,4 +339,5 @@ def measure(
         payout=payout,
         by_direction=by_direction,
         calibration=calibration,
+        gate_report=gates,
     )

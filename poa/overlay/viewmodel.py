@@ -172,6 +172,8 @@ class OverlayViewModel:
     # Shown because a setting that changes silently is indistinguishable from
     # a bug, and the user is entitled to see the tool adjusting itself.
     tuning: list[Any] = field(default_factory=list)
+    # Rules the chart has shown to be wrong, and which no longer block.
+    retired: list[str] = field(default_factory=list)
 
     # ------------------------------------------------------------------
 
@@ -285,7 +287,8 @@ class OverlayViewModel:
             "calibration": self._calibration(),
             "tuning": [
                 adjustment.describe() for adjustment in self.tuning[-2:]
-            ],
+            ]
+            + list(self.retired[-2:]),
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),

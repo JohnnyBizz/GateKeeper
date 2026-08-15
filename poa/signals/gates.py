@@ -66,6 +66,12 @@ class GateReport:
         }
 
 
+# Gates that may never be demoted. Data quality is not a claim about the
+# market — it is a claim about whether the candles are readable at all, and no
+# win rate can make an unreadable chart tradeable.
+NEVER_ADVISORY = frozenset({"data_quality"})
+
+
 @dataclass
 class GateSettings:
     min_confidence: float = 75.0
@@ -80,6 +86,11 @@ class GateSettings:
     # often than this payout can carry. Only ever acts on a sample big enough
     # to mean something, so it is silent until one exists.
     require_measured_edge: bool = True
+    # Gates demoted to advisory because the measured record says they block
+    # setups that would have paid. A blocking gate is a claim — "setups failing
+    # this are worse than setups passing it" — and a claim the chart disagrees
+    # with is not prudence, it is a rule quietly costing money.
+    advisory: frozenset[str] = frozenset()
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "GateSettings":
@@ -118,6 +129,7 @@ class GateSettings:
             require_measured_edge=bool(
                 section.get("require_measured_edge", defaults.require_measured_edge)
             ),
+            advisory=frozenset(section.get("advisory_gates", ()) or ()),
         )
 
 
@@ -359,5 +371,15 @@ def evaluate_gates(
             # after a settings change there is no record yet, and refusing to
             # signal until one exists would mean never building one.
             results.append(GateResult("measured_edge", True, detail, blocking=False))
+
+    # Demotion last, in one place, so every gate above can be written as if
+    # it blocks and none of them has to know it might not.
+    if settings.advisory:
+        results = [
+            GateResult(r.name, r.passed, r.detail, blocking=False)
+            if r.name in settings.advisory and r.name not in NEVER_ADVISORY
+            else r
+            for r in results
+        ]
 
     return GateReport(results=results)

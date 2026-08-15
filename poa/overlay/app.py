@@ -44,6 +44,11 @@ UNKNOWN_ASSET = "—"
 PROOF_MIN_BARS = 150
 PROOF_RERUN_BARS = 60
 
+# The most gates that may ever be demoted to advisory. A tool able to
+# retire all its own rules eventually has none left, and the point is to
+# correct a wrong rule rather than to dismantle the strategy.
+MAX_ADVISORY_GATES = 2
+
 
 class OverlayApp:
     """The overlay application: engine + panel + the glue between them."""
@@ -273,6 +278,55 @@ class OverlayApp:
             asset, timeframe, _duration = self._proof_key
             self.engine.set_calibration(result.calibration, asset, timeframe)
             self._auto_tune(result.calibration)
+        if result.gate_report is not None:
+            self._retire_costly_gates(result.gate_report)
+
+    def _retire_costly_gates(self, report: Any) -> None:
+        """Stop enforcing a rule the chart has shown to be wrong.
+
+        Every blocking gate is a claim: setups failing it are worse than setups
+        passing it. The audit checks that claim against what the blocked setups
+        actually settled at, and a gate refusing trades that would have paid is
+        not prudence — it is a rule quietly costing money, and no amount of
+        reasoning about the rule can discover that.
+
+        Demotion is to *advisory*, never removal: the gate still reports, it
+        just stops holding a veto. And it is bounded — a tool that can retire
+        all its own rules eventually has none.
+        """
+        if not bool(self.config.get("signals.auto_tune", True)):
+            return
+        costly = report.costly()
+        if not costly:
+            return
+
+        current = set(self.config.get("signals.advisory_gates", []) or [])
+        room = MAX_ADVISORY_GATES - len(current)
+        if room <= 0:
+            return
+
+        added = []
+        for verdict in costly[:room]:
+            if verdict.name in current:
+                continue
+            current.add(verdict.name)
+            added.append(
+                f"{verdict.name.replace('_', ' ')} no longer blocks · it "
+                f"refused {verdict.blocked} setups that settled at "
+                f"{verdict.blocked_rate:.0f}%"
+            )
+        if not added:
+            return
+
+        self.config.set("signals.advisory_gates", sorted(current))
+        try:
+            self.config.save()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not save the gate demotions: %s", exc)
+        for line in added:
+            log.info("retired a gate: %s", line)
+        self.vm.retired = added
+        self._run_engine_cycle()
 
     def _auto_tune(self, calibration: Any) -> None:
         """Let the measured record set the gates, rather than a typed number.
