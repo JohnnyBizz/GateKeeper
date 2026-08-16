@@ -415,10 +415,15 @@ class OverlayViewModel:
         seconds while the sweep runs every fifteen.
         """
         here = 1 if signal.actionable else 0
+        # A chart is a pair *and* a timeframe. The same pair at five minutes
+        # is a different read from the one on screen at one minute, and a
+        # tradeable setup there is a trade that is genuinely available.
         elsewhere = [
             row
             for row in self.watchlist
-            if row.get("actionable") and row.get("asset") != self.asset
+            if row.get("actionable")
+            and (row.get("asset"), int(row.get("timeframe") or 0))
+            != (self.asset, self.chart_timeframe)
         ]
         total = here + len(elsewhere)
         label = f"{total} trade{'' if total == 1 else 's'}"
@@ -534,16 +539,49 @@ class OverlayViewModel:
     def _watchlist(self) -> list[dict[str, Any]]:
         """Every watched chart, ready to be shown as tabs.
 
-        The chart on screen plus the eight the feed keeps behind it. Bounded,
-        so a long session of looking around cannot grow the row past the panel.
+        A chart is a pair *and* a timeframe: the same candles that say nothing
+        at one minute can be a clean structure at five, so both appear, and
+        both are named. Bounded, so a long session cannot grow the row past
+        the panel.
+
+        Ranking decides which rows survive the cut, not where they sit. With
+        several timeframes per pair there are more charts than places, so the
+        ones worth acting on have to be the ones kept — but the survivors are
+        then laid out by name, because these are click targets and a tab that
+        moves between the reach and the press opens something nobody asked
+        for. Colour does the ranking on screen; colour can change without
+        anything moving.
         """
+        # A row containing only the chart already on screen says nothing the
+        # rest of the panel is not already saying at greater length. Judged
+        # here rather than upstream, because a lone setup elsewhere is still
+        # worth counting and still worth an alert — it is only the *tabs* that
+        # have nothing to show.
+        if len(self.watchlist) < 2 and not any(
+            (row.get("asset"), int(row.get("timeframe") or 0))
+            != (self.asset, self.chart_timeframe)
+            for row in self.watchlist
+        ):
+            return []
+
+        kept = sorted(
+            self.watchlist,
+            key=lambda row: (not row.get("actionable"), -float(row.get("score") or 0)),
+        )[:MAX_WATCHED]
         rows = []
-        for row in self.watchlist[:MAX_WATCHED]:
+        for row in sorted(
+            kept, key=lambda r: (str(r.get("asset", "")), int(r.get("timeframe") or 0))
+        ):
             direction = str(row.get("direction", "WAIT"))
+            asset = str(row.get("asset", ""))
+            timeframe = int(row.get("timeframe") or 0)
+            short = format_duration(timeframe).replace(" ", "") if timeframe else ""
             rows.append(
                 {
-                    "asset": row.get("asset", ""),
-                    "label": str(row.get("asset", "")).replace(" OTC", ""),
+                    "asset": asset,
+                    "timeframe": timeframe,
+                    "expiry": int(row.get("expiry") or 0),
+                    "label": f"{asset.replace(' OTC', '')} {short}".strip(),
                     "score": row.get("score"),
                     "direction": direction,
                     "actionable": bool(row.get("actionable")),
@@ -552,7 +590,9 @@ class OverlayViewModel:
                         if row.get("actionable")
                         else COLORS["faint"]
                     ),
-                    "active": row.get("asset") == self.asset,
+                    "active": (
+                        asset == self.asset and timeframe == self.chart_timeframe
+                    ),
                 }
             )
         return rows

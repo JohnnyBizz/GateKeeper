@@ -363,6 +363,7 @@ class AnalysisEngine:
         asset: str,
         timeframe: int,
         calibration: Any | None = None,
+        trade_duration: int | None = None,
     ) -> Signal | None:
         """Read one chart without touching the live state.
 
@@ -373,6 +374,12 @@ class AnalysisEngine:
         A chart that has been measured before can be read against its own
         record by passing it in — otherwise a tab would be judged by the
         defaults and change its mind the moment it was opened.
+
+        ``trade_duration`` overrides the expiry the fit is judged against. An
+        expiry belongs to the chart it is taken on: three minutes against a
+        fifteen-minute candle is not a poor fit, it is the wrong question, and
+        asking it of every timeframe would fail all of them for a reason that
+        says nothing about the market.
         """
         depth = int(self.config.get("market.analysis_candles", 600))
         visible = series.tail(depth) if len(series) > depth else series
@@ -390,7 +397,7 @@ class AnalysisEngine:
                     series=visible,
                     asset=asset,
                     chart_timeframe=timeframe,
-                    trade_duration=self.trade_duration,
+                    trade_duration=int(trade_duration or self.trade_duration),
                     quality=quality,
                     available_durations=TRADE_DURATIONS,
                     higher_multiple=int(

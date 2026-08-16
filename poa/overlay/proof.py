@@ -254,6 +254,12 @@ def measure(
         min_confidence=SURVEY_CONFIDENCE,
         min_duration_compatibility=SURVEY_DURATION,
         require_measured_edge=False,
+        # And the record's opinion of market conditions is off here too. This
+        # replay is what *builds* that opinion; letting it filter the survey
+        # would have the record choose which evidence it is allowed to be
+        # built from, and a condition ruled out once could never again produce
+        # the trades that might show it was ruled out wrongly.
+        avoid_weak_regimes=False,
     )
     backtester = Backtester(
         settings=loose,

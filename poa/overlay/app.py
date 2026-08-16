@@ -132,7 +132,7 @@ class OverlayApp:
         self._charts_seen: set[str] = set()
         # Watched charts already announced, so a setup that stands for several
         # sweeps is called once rather than every fifteen seconds.
-        self._announced: set[str] = set()
+        self._announced: set[tuple[str, int]] = set()
 
         # Verdicts for every chart the socket carries, not just the open one.
         self._watch_results: queue.Queue[Any] = queue.Queue()
@@ -556,18 +556,18 @@ class OverlayApp:
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("could not list the watched charts: %s", exc)
             return
-        if len(charts) < 2:
-            # Only when the feed genuinely has one chart — not while it is
-            # between charts. watched() reports nothing at all during a reload
-            # or a re-read, and wiping the row on that blink threw the tabs
-            # away for a moment that had nothing to do with the watchlist.
-            if charts:
-                self.vm.watchlist = []
+        if not charts:
+            # Between charts — a reload, a re-read, or the moment before the
+            # platform says which one is open. watched() reports nothing at
+            # all during those, and wiping the row on that blink threw the
+            # tabs away for something that had nothing to do with them.
             return
 
         # A chart that has been measured is judged by its own record, here as
         # much as when it is open. Read on this thread — the cache belongs to
-        # it — and handed over with the charts.
+        # it. Only the charts the feed really holds have a record; a timeframe
+        # derived by aggregation is a chart nothing has measured yet, and the
+        # lookup returning nothing for it is the right answer.
         duration = self.engine.trade_duration
         measured = {}
         for asset, timeframe, _series in charts:
@@ -582,6 +582,49 @@ class OverlayApp:
             target=self._watch_worker, args=(charts, measured), daemon=True
         ).start()
 
+    def _with_other_timeframes(self, charts: Any) -> Any:
+        """Read each chart at the platform's other timeframes as well.
+
+        A setup is a statement about a timeframe as much as about a pair: the
+        same candles that say nothing at one minute can be a clean structure
+        at five, and reading only the timeframe the chart happens to be open
+        on throws that away. The platform offers S5 through M30, and every one
+        of them is derivable from candles already in hand.
+
+        Only upwards, and only on whole multiples — that is what aggregation
+        can honestly do. A one-minute chart yields M2, M3, M5, M10, M15 and
+        M30 immediately, from real history rather than from ticks gathered
+        over the next several hours. Going the other way would mean inventing
+        candles, so a chart open at M1 simply does not offer the second
+        timeframes; opening one on the platform is what makes those available.
+        """
+        from ..analysis.resample import resample
+        from ..config import SCAN_TIMEFRAMES
+
+        if not bool(self.config.get("market.scan_timeframes", True)):
+            return charts
+
+        minimum = int(self.config.get("market.min_candles", 60))
+        out = list(charts)
+        seen = {(asset, timeframe) for asset, timeframe, _s in charts}
+
+        for asset, timeframe, series in list(charts):
+            if series is None or timeframe <= 0:
+                continue
+            for target in SCAN_TIMEFRAMES:
+                if target <= timeframe or target % timeframe or (asset, target) in seen:
+                    continue
+                # Enough aggregated bars to read, or there is nothing to say.
+                if len(series) // (target // timeframe) < minimum:
+                    continue
+                try:
+                    out.append((asset, target, resample(series, target)))
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.debug("could not resample %s to %ss: %s", asset, target, exc)
+                    continue
+                seen.add((asset, target))
+        return out
+
     def _watch_worker(self, charts: Any, measured: Any = None) -> None:
         """Off the UI thread. Evaluates only; records and alerts nothing.
 
@@ -593,16 +636,46 @@ class OverlayApp:
         measured = measured or {}
         rows = []
         try:
-            for asset, timeframe, series in charts:
+            # Aggregating eight deep charts up through six timeframes is a few
+            # hundred milliseconds. On the UI thread that is a visible stutter
+            # every fifteen seconds, so it happens here.
+            here = (self.vm.asset, int(self.vm.chart_timeframe))
+            for asset, timeframe, series in self._with_other_timeframes(charts):
+                calibration = measured.get((asset, timeframe))
                 signal = self.engine.evaluate_series(
-                    series, asset, timeframe, measured.get((asset, timeframe))
+                    series, asset, timeframe, calibration
                 )
                 if signal is None:
                     continue
+
+                # An expiry has to suit the chart it is taken against. The
+                # user's setting belongs to the chart they are looking at; on
+                # a fifteen-minute chart a three-minute expiry is not a poor
+                # fit, it is the wrong question — and asking it of every other
+                # timeframe made all of them fail the fit gate, which would
+                # have made this whole feature produce nothing.
+                #
+                # So elsewhere, the expiry is the one the engine picks for
+                # that chart, and the row carries it so the user knows what to
+                # set before taking it.
+                expiry = int(self.engine.trade_duration)
+                if (asset, timeframe) != here and signal.duration is not None:
+                    wanted = int(signal.duration.recommended_seconds)
+                    if wanted and wanted != expiry:
+                        expiry = wanted
+                        signal = (
+                            self.engine.evaluate_series(
+                                series, asset, timeframe, calibration,
+                                trade_duration=wanted,
+                            )
+                            or signal
+                        )
+
                 rows.append(
                     {
                         "asset": asset,
                         "timeframe": timeframe,
+                        "expiry": expiry,
                         "direction": signal.direction.value,
                         "score": round(signal.direction_confidence, 0),
                         "actionable": bool(signal.actionable),
@@ -637,10 +710,12 @@ class OverlayApp:
         noise, once, on the transition into being tradeable — not on every
         sweep while it stays that way.
         """
+        here = (self.vm.asset, int(self.vm.chart_timeframe))
         live = {
-            str(row["asset"])
+            (str(row["asset"]), int(row.get("timeframe") or 0))
             for row in rows
-            if row.get("actionable") and row.get("asset") != self.vm.asset
+            if row.get("actionable")
+            and (str(row["asset"]), int(row.get("timeframe") or 0)) != here
         }
         fresh = live - self._announced
         # Forget the ones that have gone, so the same pair setting up again
@@ -649,16 +724,22 @@ class OverlayApp:
 
         for row in rows:
             asset = str(row.get("asset", ""))
-            if asset not in fresh:
+            timeframe = int(row.get("timeframe") or 0)
+            if (asset, timeframe) not in fresh:
                 continue
             direction = str(row.get("direction", ""))
+            where = f"{asset} {format_duration(timeframe)}" if timeframe else asset
+            expiry = int(row.get("expiry") or 0)
+            # The expiry belongs in the alert, not just the panel: it is the
+            # one thing the user has to change on the platform before the
+            # setup being described is the trade they would place.
+            take = f" Set a {format_duration(expiry)} expiry." if expiry else ""
             self.engine.emit_alert(
                 kind="watchlist",
-                title=f"{asset} — {direction}",
+                title=f"{where} — {direction}",
                 body=(
-                    f"{direction} setup on {asset} at "
-                    f"{float(row.get('score') or 0):.0f}/100. "
-                    "Click its tab to read it."
+                    f"{direction} setup on {where} at "
+                    f"{float(row.get('score') or 0):.0f}/100.{take}"
                 ),
                 confidence=float(row.get("score") or 0.0),
             )

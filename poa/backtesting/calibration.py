@@ -223,6 +223,51 @@ class Calibration:
             return False, detail
         return True, detail
 
+    def overall_rate(self) -> float | None:
+        """How often setups on this chart have won, across every regime."""
+        wins = sum(bucket.wins for bucket in self.by_regime.values())
+        losses = sum(bucket.losses for bucket in self.by_regime.values())
+        total = wins + losses
+        return round(wins / total * 100.0, 1) if total else None
+
+    def weak_regimes(self) -> dict[str, Bucket]:
+        """Market conditions this chart measurably wins less often in.
+
+        Not "loses money in" — how much a win pays is somebody else's
+        arithmetic, and it changes with the payout on offer without anything
+        about the market changing at all. This is the simpler and more useful
+        question: *are these the conditions where the reading is least often
+        right?*
+
+        Judged against this chart's own overall rate rather than a fixed
+        number, because a chart that reads at 70% everywhere and one that
+        reads at 45% everywhere need different bars, and neither of them is a
+        constant anybody could pick in advance. A regime has to fall short of
+        that average by more than the sample's own error before it counts —
+        eight trades running badly is a bad afternoon, not a finding.
+
+        Unlike a verdict on the score band, this cannot silence the tool: it
+        rules out some conditions and leaves the rest open, so trading
+        continues and the record keeps growing. That is what makes it safe to
+        act on replayed evidence rather than waiting for real trades.
+        """
+        average = self.overall_rate()
+        if average is None:
+            return {}
+        weak: dict[str, Bucket] = {}
+        for name, bucket in self.by_regime.items():
+            if not bucket.meaningful or bucket.win_rate is None:
+                continue
+            error = bucket.standard_error or 0.0
+            if average - bucket.win_rate > error:
+                weak[name] = bucket
+        # Never every regime at once. If each of them reads below the average
+        # the average is wrong, not the market, and refusing them all would be
+        # a tool that has argued itself into never trading.
+        if len(weak) >= len(self.by_regime):
+            return {}
+        return weak
+
     def recommended_duration_threshold(self) -> tuple[int, Bucket] | None:
         """The expiry-fit gate the record says was worth the most."""
         return self._best_of(self.duration_thresholds)

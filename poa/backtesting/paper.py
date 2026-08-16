@@ -129,6 +129,7 @@ class Backtester:
         entry_multiple: int = 1,
         available_durations: Sequence[int] = TRADE_DURATIONS,
         payout: float = 0.80,
+        calibration: Any | None = None,
     ) -> None:
         self.engine = engine or SignalEngine()
         self.settings = settings or GateSettings()
@@ -137,6 +138,11 @@ class Backtester:
         self.entry_multiple = entry_multiple
         self.available_durations = tuple(available_durations)
         self.payout = payout
+        # A record for the gates that consult one. None by default, and it has
+        # to stay None wherever the replay's own trades are what *builds* the
+        # record — measuring a tool against a record derived from that very
+        # measurement answers a question about itself.
+        self.calibration = calibration
 
     def run(
         self,
@@ -222,6 +228,7 @@ class Backtester:
                 higher_multiple=self.higher_multiple,
                 entry_multiple=self.entry_multiple,
                 settings=self.settings,
+                calibration=self.calibration,
             )
             try:
                 signal = self.engine.evaluate(request)

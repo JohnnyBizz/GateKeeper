@@ -76,7 +76,19 @@ EXAMPLE_CONFIG_PATH = bundle_root() / "config.example.yaml"
 # badge is snapped onto, so a timeframe missing from here cannot be read off
 # the screen at all — H3 is in the list because the platform offers it.
 CHART_TIMEFRAMES: tuple[int, ...] = (
-    5, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 10800, 14400, 86400,
+    5, 10, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 10800, 14400, 86400,
+)
+
+# The timeframes the same pair is also read at, on top of whichever one the
+# chart is open on. Seconds and minutes: the platform's S5 through M30. Higher
+# ones are left out deliberately — an H4 candle takes four hours to settle,
+# which is not a timeframe anyone is taking three-minute expiries against.
+#
+# Every one of these is built from candles already in hand, so scanning them
+# costs a resample rather than a new subscription, and the answer is available
+# immediately instead of hours from now.
+SCAN_TIMEFRAMES: tuple[int, ...] = (
+    5, 10, 15, 30, 60, 120, 180, 300, 600, 900, 1800,
 )
 
 # Expirations Pocket Option style platforms commonly offer, in seconds.
@@ -203,6 +215,10 @@ DEFAULTS: dict[str, Any] = {
         # there is a sample big enough to mean something, so it never stops a
         # record being built in the first place.
         "require_measured_edge": True,
+        # Refuse the market conditions this chart is measurably least often
+        # right in. Measured per chart rather than fixed, because where the
+        # reading works varies by instrument.
+        "avoid_weak_regimes": True,
         # Let the measured record set min_confidence and
         # min_duration_compatibility for itself, rather than leaving them at
         # numbers somebody typed. Moves a few points at a time, within bounds,

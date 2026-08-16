@@ -1332,6 +1332,7 @@ class TestSwappingBetweenWatchedCharts:
         config.set("storage.database", str(tmp_path / "j.db"))
         config.set("storage.screenshot_dir", str(tmp_path / "s"))
         config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "reports"))
         config.set("alerts.desktop_notifications", False)
         config.set("capture.source", source)
         return OverlayApp(config)
@@ -1412,15 +1413,16 @@ class TestSwappingBetweenWatchedCharts:
         app = self._app(tmp_path)
         try:
             app.vm.asset = "GBP/USD OTC"
+            app.vm.chart_timeframe = 60
             app.vm.watchlist = [
                 {"asset": "EUR/USD OTC", "score": 50.0, "actionable": False,
-                 "direction": "WAIT"},
+                 "direction": "WAIT", "timeframe": 60},
                 {"asset": "GBP/USD OTC", "score": 80.0, "actionable": True,
-                 "direction": "CALL"},
+                 "direction": "CALL", "timeframe": 60},
             ]
             rows = app.vm.render()["watchlist"]
             assert [row["active"] for row in rows] == [False, True]
-            assert [row["label"] for row in rows] == ["EUR/USD", "GBP/USD"]
+            assert [row["label"] for row in rows] == ["EUR/USD 1MIN", "GBP/USD 1MIN"]
         finally:
             app.shutdown()
 
@@ -1465,19 +1467,22 @@ class TestSwappingBetweenWatchedCharts:
                 ("GBP/USD OTC", 60, series),
             ]
 
+            # Keyed by chart — pair *and* timeframe — because the same pair
+            # is now also read at the timeframes above the one it is open on,
+            # and those have no record of their own.
             seen = {}
             app.engine.evaluate_series = (
-                lambda s, a, tf, cal=None: seen.__setitem__(a, cal)
+                lambda s, a, tf, cal=None: seen.__setitem__((a, tf), cal)
             )
             app._sweep_watchlist()
             import time as _t
             for _ in range(100):
-                if len(seen) == 2:
+                if len(seen) >= 2:
                     break
                 _t.sleep(0.02)
 
-            assert seen["GBP/USD OTC"] == "the record"
-            assert seen["EUR/USD OTC"] is None
+            assert seen[("GBP/USD OTC", 60)] == "the record"
+            assert seen[("EUR/USD OTC", 60)] is None
         finally:
             app.shutdown()
 
@@ -1500,11 +1505,17 @@ class TestSwappingBetweenWatchedCharts:
             app._sweep_watchlist()
             assert app.vm.watchlist  # kept
 
-            # One chart and nothing else really is an empty watchlist.
-            app.engine.source.watched = lambda: [("EUR/USD OTC", 60, None)]
-            app._watch_at = None
-            app._sweep_watchlist()
-            assert app.vm.watchlist == []
+            # A row containing only the chart already on screen has nothing to
+            # show — but that is a question about the tabs, not about the data.
+            # A lone setup elsewhere is still counted and still announced, so
+            # the emptying happens where it is drawn.
+            app.vm.asset = "EUR/USD OTC"
+            app.vm.chart_timeframe = 60
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "score": 60.0, "actionable": False,
+                 "direction": "WAIT", "timeframe": 60},
+            ]
+            assert app.vm._watchlist() == []
         finally:
             app.shutdown()
 
@@ -1812,8 +1823,10 @@ class TestEveryWatchedChartCounts:
         return app
 
     def _rows(self, *specs):
+        """As _watch_worker builds them — a chart is a pair and a timeframe."""
         return [
-            {"asset": a, "score": s, "actionable": act, "direction": d}
+            {"asset": a, "score": s, "actionable": act, "direction": d,
+             "timeframe": 60}
             for a, s, act, d in specs
         ]
 
@@ -1981,3 +1994,180 @@ class TestAKindAddedLaterIsNotSilentlyOff:
         from poa.alerts.manager import AlertSettings
 
         assert "WATCHLIST" in AlertSettings().notify_on
+
+
+class TestTheSamePairAtSeveralTimeframes:
+    """A setup is a statement about a timeframe as much as about a pair.
+
+    The candles that say nothing at one minute can be a clean structure at
+    five, and reading only the timeframe the chart happens to be open on threw
+    that away. Every one of the platform's S5–M30 timeframes is derivable from
+    candles already in hand.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "reports"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def _series(self, bars=1200, timeframe=60, symbol="EUR/USD OTC"):
+        from datetime import datetime, timedelta, timezone
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 16, tzinfo=timezone.utc)
+        return Series(
+            [
+                Candle(start + timedelta(seconds=i * timeframe),
+                       1.19, 1.191, 1.189, 1.190)
+                for i in range(bars)
+            ],
+            timeframe,
+            symbol,
+        )
+
+    def test_a_one_minute_chart_yields_the_minutes_above_it(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 60, self._series())]
+            )
+            offered = sorted(tf for _a, tf, _s in charts)
+            assert offered == [60, 120, 180, 300, 600, 900]
+        finally:
+            app.shutdown()
+
+    def test_the_aggregated_candles_are_the_right_count(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            charts = dict(
+                (tf, s)
+                for _a, tf, s in app._with_other_timeframes(
+                    [("EUR/USD OTC", 60, self._series(1200))]
+                )
+            )
+            assert len(charts[300]) == 240  # 1200 one-minute bars at five
+            assert len(charts[900]) == 80
+        finally:
+            app.shutdown()
+
+    def test_it_never_aggregates_downwards(self, tmp_path):
+        """Below the chart's own timeframe there is nothing to aggregate from.
+
+        Going that way would mean inventing candles. Opening a shorter
+        timeframe on the platform is what makes it available.
+        """
+        app = self._app(tmp_path)
+        try:
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 300, self._series(1200, timeframe=300))]
+            )
+            assert all(tf >= 300 for _a, tf, _s in charts)
+        finally:
+            app.shutdown()
+
+    def test_only_whole_multiples(self, tmp_path):
+        """A 2-minute chart cannot make 3-minute candles honestly."""
+        app = self._app(tmp_path)
+        try:
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 120, self._series(1200, timeframe=120))]
+            )
+            offered = sorted(tf for _a, tf, _s in charts)
+            assert all(tf % 120 == 0 for tf in offered)
+            assert 180 not in offered
+        finally:
+            app.shutdown()
+
+    def test_a_timeframe_with_too_few_bars_is_not_offered(self, tmp_path):
+        """Aggregating 100 bars up to thirty minutes leaves three of them."""
+        app = self._app(tmp_path)
+        try:
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 60, self._series(100))]
+            )
+            assert sorted(tf for _a, tf, _s in charts) == [60]
+        finally:
+            app.shutdown()
+
+    def test_hours_and_days_are_left_alone(self, tmp_path):
+        """An H4 candle takes four hours to settle.
+
+        That is not a timeframe anyone is taking three-minute expiries
+        against, and scanning it would only crowd the row.
+        """
+        app = self._app(tmp_path)
+        try:
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 60, self._series(20000))]
+            )
+            assert all(tf <= 1800 for _a, tf, _s in charts)
+        finally:
+            app.shutdown()
+
+    def test_it_can_be_switched_off(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("market.scan_timeframes", False)
+            charts = app._with_other_timeframes(
+                [("EUR/USD OTC", 60, self._series())]
+            )
+            assert len(charts) == 1
+        finally:
+            app.shutdown()
+
+    def test_each_timeframe_is_named_on_its_tab(self, tmp_path):
+        """"EUR/USD" twice over would be two tabs nobody could tell apart."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.asset = "EUR/USD OTC"
+            app.vm.chart_timeframe = 60
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "timeframe": 60, "score": 60.0,
+                 "actionable": False, "direction": "WAIT"},
+                {"asset": "EUR/USD OTC", "timeframe": 300, "score": 84.0,
+                 "actionable": True, "direction": "CALL"},
+            ]
+            labels = [row["label"] for row in app.vm._watchlist()]
+            assert labels == ["EUR/USD 1MIN", "EUR/USD 5MIN"]
+        finally:
+            app.shutdown()
+
+    def test_the_open_chart_is_marked_by_pair_and_timeframe(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.asset = "EUR/USD OTC"
+            app.vm.chart_timeframe = 60
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "timeframe": 60, "score": 60.0,
+                 "actionable": False, "direction": "WAIT"},
+                {"asset": "EUR/USD OTC", "timeframe": 300, "score": 84.0,
+                 "actionable": True, "direction": "CALL"},
+            ]
+            assert [row["active"] for row in app.vm._watchlist()] == [True, False]
+        finally:
+            app.shutdown()
+
+    def test_a_setup_at_another_timeframe_is_a_trade_available(self, tmp_path):
+        """Same pair, different read, genuinely separate opportunity."""
+        from types import SimpleNamespace
+
+        app = self._app(tmp_path)
+        try:
+            app.vm.asset = "EUR/USD OTC"
+            app.vm.chart_timeframe = 60
+            app.vm.watchlist = [
+                {"asset": "EUR/USD OTC", "timeframe": 300, "score": 84.0,
+                 "actionable": True, "direction": "CALL"},
+            ]
+            counted = app.vm._take_now(SimpleNamespace(actionable=False))
+            assert counted["take_now"] == 1
+        finally:
+            app.shutdown()

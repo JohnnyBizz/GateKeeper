@@ -1108,3 +1108,163 @@ class TestTradesYouTookYourselfTeachIt:
         self._fill(journal, n=3)
         rows = journal.recent(limit=5)
         assert rows and all(row["notes"] == "manual" for row in rows)
+
+
+class TestTheConditionsAChartReadsWorstIn:
+    """Where the reading works varies by instrument, so it is measured.
+
+    The score says how strong a setup looks. This asks a different question:
+    in which market conditions has this chart's reading actually been right
+    least often? Trending, ranging and choppy markets are not one population,
+    and averaging across them hides exactly the thing worth knowing.
+    """
+
+    def _calibration(self, regimes, payout=0.92):
+        from poa.backtesting.calibration import Record, build_calibration
+
+        records = []
+        for regime, (wins, losses) in regimes.items():
+            records += [Record(score=70.0, won=True, regime=regime)] * wins
+            records += [Record(score=70.0, won=False, regime=regime)] * losses
+        return build_calibration(records, payout=payout)
+
+    def test_it_names_the_condition_that_reads_worst(self):
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (46, 14), "WEAK_UPTREND": (25, 35)}
+        )
+        weak = calibration.weak_regimes()
+        assert set(weak) == {"WEAK_UPTREND"}
+        assert weak["WEAK_UPTREND"].win_rate is not None
+
+    def test_it_is_judged_against_this_chart_not_a_fixed_number(self):
+        """A chart reading at 45% everywhere has no worst condition.
+
+        Every regime being below some constant says the constant is wrong,
+        not that the market is. What matters is the spread within the chart.
+        """
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (27, 33), "WEAK_UPTREND": (27, 33)}
+        )
+        assert calibration.weak_regimes() == {}
+
+    def test_a_shortfall_inside_the_noise_is_not_a_finding(self):
+        """Fifty trades a few points below average is a bad afternoon.
+
+        The standard error on fifty trades near 60% is about seven points, so
+        a four-point shortfall is well inside what chance produces. Acting on
+        it would be superstition with a decimal point.
+        """
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (40, 20), "WEAK_UPTREND": (30, 20)}
+        )
+        assert "WEAK_UPTREND" not in calibration.weak_regimes()
+
+    def test_too_few_trades_in_a_condition_is_no_verdict(self):
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (45, 15), "BREAKOUT": (1, 5)}
+        )
+        assert "BREAKOUT" not in calibration.weak_regimes()
+
+    def test_it_never_rules_out_every_condition(self):
+        """A tool that has argued itself into never trading is broken.
+
+        If each regime reads below the average then the average is being
+        pulled by something other than the regimes, and refusing all of them
+        would leave nothing.
+        """
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (30, 30), "WEAK_UPTREND": (30, 30)}
+        )
+        assert calibration.weak_regimes() == {}
+
+    def test_the_overall_rate_is_across_every_condition(self):
+        calibration = self._calibration(
+            {"STRONG_UPTREND": (45, 15), "WEAK_UPTREND": (15, 45)}
+        )
+        assert calibration.overall_rate() == 50.0
+
+    def test_nothing_measured_is_no_opinion(self):
+        from poa.backtesting.calibration import build_calibration
+
+        empty = build_calibration([], payout=0.92)
+        assert empty.overall_rate() is None
+        assert empty.weak_regimes() == {}
+
+
+class TestTheRegimeRecordGate:
+    """It blocks on replayed evidence, and that is deliberate.
+
+    A verdict on the score band may not: live setups land in the band the
+    replay is dominated by, so blocking there silences the tool, and a silent
+    tool never earns the record that would reopen the question. Ruling out one
+    market condition leaves the others open — trading continues, the record
+    keeps growing, and the decision stays revisable.
+    """
+
+    def _gates(self, calibration, avoid=True):
+        import random
+        from datetime import datetime, timedelta, timezone
+
+        from poa.analysis import build_multi_timeframe
+        from poa.models import Candle, DataQuality, Direction, Series
+        from poa.signals.gates import GateSettings, evaluate_gates
+        from poa.signals.scoring import score_direction
+
+        random.seed(3)
+        start = datetime(2026, 8, 16, tzinfo=timezone.utc)
+        bars, price = [], 1.19
+        for i in range(400):
+            price += 0.00012 + random.gauss(0, 0.0002)
+            o = price
+            c = price + 0.00008
+            bars.append(
+                Candle(start + timedelta(minutes=i), o, max(o, c) + 0.00005,
+                       min(o, c) - 0.00005, c)
+            )
+        series = Series(bars, 60, "TEST")
+        mtf = build_multi_timeframe(series, higher_multiple=5, entry_multiple=1)
+        score = score_direction(mtf, Direction.CALL)
+        quality = DataQuality(ok=True, confidence=95.0, candle_count=len(series),
+                              issues=[], source="test")
+        report = evaluate_gates(
+            mtf, Direction.CALL, score, quality,
+            GateSettings(avoid_weak_regimes=avoid), calibration=calibration,
+        )
+        return report, mtf.current.regime.regime.name
+
+    def _calibration(self, worst):
+        """A record where ``worst`` reads clearly below every other condition."""
+        from poa.backtesting.calibration import Record, build_calibration
+
+        records = [Record(score=70.0, won=i < 50, regime="OTHER_CONDITION")
+                   for i in range(60)]
+        records += [Record(score=70.0, won=i < 15, regime=worst) for i in range(60)]
+        return build_calibration(records, payout=0.92)
+
+    def test_no_record_means_no_such_gate(self):
+        report, _ = self._gates(None)
+        assert not any(r.name == "regime_record" for r in report.results)
+
+    def test_the_worst_condition_is_refused(self):
+        report, regime = self._gates(self._calibration("PLACEHOLDER"))
+        report, _ = self._gates(self._calibration(regime))
+        failed = [r for r in report.results if r.name == "regime_record"]
+        assert failed and not failed[0].passed and failed[0].blocking
+
+    def test_a_condition_that_reads_fine_is_not_refused(self):
+        report, regime = self._gates(self._calibration("PLACEHOLDER"))
+        assert regime != "SOMETHING_ELSE"
+        report, _ = self._gates(self._calibration("SOMETHING_ELSE"))
+        assert not any(r.name == "regime_record" for r in report.results)
+
+    def test_it_can_be_switched_off(self):
+        report, regime = self._gates(self._calibration("PLACEHOLDER"))
+        report, _ = self._gates(self._calibration(regime), avoid=False)
+        assert not any(r.name == "regime_record" for r in report.results)
+
+    def test_the_reason_names_the_condition_and_both_rates(self):
+        """A refusal nobody can check is a refusal nobody can correct."""
+        report, regime = self._gates(self._calibration("PLACEHOLDER"))
+        report, _ = self._gates(self._calibration(regime))
+        detail = [r for r in report.results if r.name == "regime_record"][0].detail
+        assert "%" in detail and "against" in detail

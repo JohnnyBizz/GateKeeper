@@ -86,6 +86,11 @@ class GateSettings:
     # often than this payout can carry. Only ever acts on a sample big enough
     # to mean something, so it is silent until one exists.
     require_measured_edge: bool = True
+    # Refuse setups in the market conditions this chart is measurably least
+    # often right in. Unlike a verdict on the score band this cannot silence
+    # the tool — it rules out some conditions and leaves the rest open — so it
+    # can act on replayed evidence rather than waiting for real trades.
+    avoid_weak_regimes: bool = True
     # Gates demoted to advisory because the measured record says they block
     # setups that would have paid. A blocking gate is a claim — "setups failing
     # this are worse than setups passing it" — and a claim the chart disagrees
@@ -128,6 +133,9 @@ class GateSettings:
             ),
             require_measured_edge=bool(
                 section.get("require_measured_edge", defaults.require_measured_edge)
+            ),
+            avoid_weak_regimes=bool(
+                section.get("avoid_weak_regimes", defaults.avoid_weak_regimes)
             ),
             advisory=frozenset(section.get("advisory_gates", ()) or ()),
         )
@@ -371,6 +379,34 @@ def evaluate_gates(
             # after a settings change there is no record yet, and refusing to
             # signal until one exists would mean never building one.
             results.append(GateResult("measured_edge", True, detail, blocking=False))
+
+        # And the conditions this chart is least often right in. A separate
+        # question from the score band, and answerable from replayed evidence
+        # where the band is not: ruling out one regime leaves the others open,
+        # so the tool goes on trading and goes on learning. Ruling out a score
+        # band silences it, and a silent tool never earns the record that
+        # would reopen the question.
+        weak = {}
+        if settings.avoid_weak_regimes:
+            try:
+                weak = calibration.weak_regimes()
+            except Exception:  # pragma: no cover - defensive
+                weak = {}
+        here = weak.get(current.regime.regime.name)
+        if here is not None:
+            average = calibration.overall_rate() or 0.0
+            results.append(
+                GateResult(
+                    "regime_record",
+                    False,
+                    (
+                        f"Setups in a {regime.label.lower()} market have been "
+                        f"right {here.win_rate:.0f}% of the time here over "
+                        f"{here.settled}, against {average:.0f}% across every "
+                        "condition — the least reliable place to read this chart"
+                    ),
+                )
+            )
 
     # Demotion last, in one place, so every gate above can be written as if
     # it blocks and none of them has to know it might not.
