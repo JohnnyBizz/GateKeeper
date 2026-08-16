@@ -1025,8 +1025,12 @@ class TestTheWholeStreamIsUsed:
         )
         source._handle("updateStream", [["GBPUSD_otc", 1_786_662_000, 1.36]])
 
-        names = [asset for asset, _tf, _series in source.watched()]
-        assert names == ["EUR/USD OTC", "GBP/USD OTC"]
+        watched = source.watched()
+        names = [asset for asset, _tf, _series in watched]
+        # The open chart leads, and every name is in the panel's own form.
+        assert names[0] == "EUR/USD OTC"
+        assert set(names) == {"EUR/USD OTC", "GBP/USD OTC"}
+        assert all(" OTC" in name for name in names)
 
         assert source.capture().asset == names[0]
 
@@ -1290,3 +1294,72 @@ class TestTheWatchlistIsTheUsersOwnCharts:
         from poa.feed.protocol import parse_workspace_charts
 
         assert parse_workspace_charts({"layout": "grid", "theme": "dark"}) == set()
+
+
+class TestTheSecondsCandlesNothingCouldSee:
+    """Nothing can be aggregated downwards.
+
+    Five-second candles cannot be recovered from one-minute ones, so a chart
+    open at M1 had no way to see any of the platform's S5–S30 timeframes at
+    all — while the ticks needed to build them were already arriving several
+    times a second.
+    """
+
+    def _source(self, period=60, minutes=10, pairs=("EURUSD_otc",)):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": period}]
+        )
+        start = 1_786_662_000
+        for i in range(int(minutes * 60 / 0.35)):
+            when = start + i * 0.35
+            for pair in pairs:
+                source._handle("updateStream", [[pair, when, 1.19 + i * 0.00001]])
+        return source
+
+    def _lengths(self, source, asset="EUR/USD OTC"):
+        return sorted(tf for a, tf, _s in source.watched() if a == asset)
+
+    def test_a_one_minute_chart_now_offers_the_seconds_below_it(self):
+        assert self._lengths(self._source()) == [5, 10, 15, 30, 60]
+
+    def test_they_fill_far_faster_than_the_minute_chart(self):
+        """Which is the point: S5 is readable in minutes, M1 takes an hour."""
+        watched = {tf: s for _a, tf, s in self._source().watched()}
+        assert len(watched[5]) > 100
+        assert len(watched[5]) > len(watched[60]) * 5
+
+    def test_nothing_is_built_at_or_above_the_open_chart(self):
+        """Those come from aggregating candles already held.
+
+        Building them twice would be two answers to one question, free to
+        drift apart.
+        """
+        assert self._lengths(self._source(period=15)) == [5, 10, 15]
+
+    def test_each_length_holds_only_its_own_prices(self):
+        source = self._source(pairs=("EURUSD_otc",))
+        for _a, tf, s in source.watched():
+            for candle in s:
+                assert 1.18 < candle.close < 1.25, tf
+
+    def test_they_are_bounded(self):
+        from poa.feed.source import MAX_FAST_CHARTS
+
+        source = self._source(minutes=1)
+        for i in range(12):
+            source._handle("updateStream", [[f"NOISE{i:02d}_otc", 1_786_662_000, 1.1]])
+        assert len(source._fast) <= MAX_FAST_CHARTS
+
+    def test_only_the_charts_the_page_keeps(self):
+        """The workspace filter applies here too, or the seconds candles
+        would reintroduce every instrument it exists to exclude."""
+        source = self._source(minutes=1)
+        source._handle(
+            "saveCharts",
+            ["saveCharts", {"charts": [{"symbol": "EURUSD_otc", "chartPeriod": 60}]}],
+        )
+        source._handle("updateStream", [["GBPJPY_otc", 1_786_662_900, 1.5]])
+        assert not any(asset == "GBPJPY_otc" for asset, _p in source._fast)

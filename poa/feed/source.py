@@ -49,6 +49,20 @@ STALE_AFTER_SECONDS = 20.0
 # buffers become a slow leak dressed as a feature.
 MAX_REMEMBERED_CHARTS = 8
 
+# Candle lengths built straight from the tick stream, below whatever the open
+# chart is on. Everything *above* the chart's timeframe can be aggregated from
+# candles already held, but nothing can be aggregated downwards — five-second
+# candles cannot be recovered from one-minute ones, and a chart open at M1
+# therefore had no way to see them at all.
+#
+# The ticks for them are already arriving several times a second, so this
+# costs nothing on the wire. It costs a builder per pair per length, which is
+# why they are capped and kept shallow: sixty candles is what the analysis
+# reads, and a few hundred is ample for the replay behind it.
+FAST_PERIODS: tuple[int, ...] = (5, 10, 15, 30)
+MAX_FAST_CHARTS = 24
+FAST_MAX_CANDLES = 600
+
 # How long the instrument we are following may go without a message before a
 # lesser-ranked claim from another instrument is believed. This is the escape
 # hatch for the case where the platform changed chart without saying so in a
@@ -139,6 +153,11 @@ class FeedChartSource(ChartSource):
         # The instruments the page says it keeps charts for — the tabs along
         # the top of the platform. Empty until it says so.
         self._workspace: set[str] = set()
+        # Sub-minute candles, built from the same ticks. Separate from
+        # _charts because these are derived rather than followed: no history
+        # ever arrives for them, and they are never what the platform means by
+        # "the open chart".
+        self._fast: dict[tuple[str, int], CandleBuilder] = {}
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -363,11 +382,12 @@ class FeedChartSource(ChartSource):
                     period = int(self._period or 60)
                     keep = self._watchable()
                     for tick in ticks:
+                        if keep is not None and tick.symbol not in keep:
+                            continue
+                        self._add_fast(tick, period)
                         if tick.symbol == self._asset:
                             self._asset_seen = time.monotonic()
                             self._builder.add(tick)
-                            continue
-                        if keep is not None and tick.symbol not in keep:
                             continue
                         key = (tick.symbol, period)
                         builder = self._charts.get(key)
@@ -393,6 +413,29 @@ class FeedChartSource(ChartSource):
                 asset, period = parse_chart_request(payload)
                 if asset and period:
                     self._claim(asset, period, RANK_TICK_HISTORY)
+
+    def _add_fast(self, tick: Any, period: int) -> None:
+        """Build the candle lengths below the open chart's. Lock held.
+
+        Only below it: anything at or above can be aggregated from candles
+        already held, and building it twice would be two answers to one
+        question that could drift apart.
+        """
+        for length in FAST_PERIODS:
+            if length >= period:
+                break
+            key = (tick.symbol, length)
+            builder = self._fast.get(key)
+            if builder is None:
+                if len(self._fast) >= MAX_FAST_CHARTS:
+                    continue
+                builder = CandleBuilder(
+                    period_seconds=length,
+                    max_candles=FAST_MAX_CANDLES,
+                    symbol=tick.symbol,
+                )
+                self._fast[key] = builder
+            builder.add(tick)
 
     def _watchable(self) -> set[str] | None:
         """The instruments worth building candles for. Lock held.
@@ -723,6 +766,8 @@ class FeedChartSource(ChartSource):
             for (asset, period), builder in self._charts.items():
                 if asset == self._asset and period == (self._period or 60):
                     continue
+                out.append((display_symbol(asset), period, builder.series()))
+            for (asset, period), builder in self._fast.items():
                 out.append((display_symbol(asset), period, builder.series()))
         return out
 

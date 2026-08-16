@@ -2171,3 +2171,125 @@ class TestTheSamePairAtSeveralTimeframes:
             assert counted["take_now"] == 1
         finally:
             app.shutdown()
+
+
+class TestSweepingFastEnoughToMatter:
+    """A sweep slower than the candles misses most of what closes.
+
+    At fifteen seconds a five-second chart is read once every three bars, so
+    two setups in three are over before anything looks. Reading more often is
+    only affordable because a chart whose newest candle has not moved cannot
+    have changed its mind, and is skipped.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "reports"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def _series(self, period, bars=300, symbol="EUR/USD OTC"):
+        from datetime import datetime, timedelta, timezone
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 16, tzinfo=timezone.utc)
+        return Series(
+            [
+                Candle(start + timedelta(seconds=i * period),
+                       1.19, 1.191, 1.189, 1.190)
+                for i in range(bars)
+            ],
+            period,
+            symbol,
+        )
+
+    def test_the_pace_follows_the_shortest_candle(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = [{"asset": "E", "timeframe": 5},
+                                {"asset": "E", "timeframe": 60}]
+            assert app._sweep_interval() == 5.0
+        finally:
+            app.shutdown()
+
+    def test_it_never_sweeps_faster_than_it_can_afford(self, tmp_path):
+        from poa.overlay.app import MIN_WATCH_SWEEP_SECONDS
+
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = [{"asset": "E", "timeframe": 1}]
+            assert app._sweep_interval() == MIN_WATCH_SWEEP_SECONDS
+        finally:
+            app.shutdown()
+
+    def test_slow_charts_do_not_make_it_sluggish(self, tmp_path):
+        from poa.overlay.app import WATCH_SWEEP_SECONDS
+
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = [{"asset": "E", "timeframe": 1800}]
+            assert app._sweep_interval() == WATCH_SWEEP_SECONDS
+        finally:
+            app.shutdown()
+
+    def test_nothing_watched_yet_uses_the_default(self, tmp_path):
+        from poa.overlay.app import WATCH_SWEEP_SECONDS
+
+        app = self._app(tmp_path)
+        try:
+            assert app._sweep_interval() == WATCH_SWEEP_SECONDS
+        finally:
+            app.shutdown()
+
+    def test_a_chart_that_has_not_closed_a_candle_is_not_re_read(self, tmp_path):
+        """Re-deriving an identical verdict from identical candles buys
+        nothing, and skipping it is what makes a fast sweep affordable."""
+        app = self._app(tmp_path)
+        try:
+            # One chart, and the open one, so neither the aggregated
+            # timeframes nor the expiry re-read muddy the count: this test is
+            # about the skip and nothing else.
+            app.config.set("market.scan_timeframes", False)
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD OTC", 60
+            charts = [("EUR/USD OTC", 60, self._series(60))]
+            reads = []
+            real = app.engine.evaluate_series
+            app.engine.evaluate_series = lambda *a, **k: (
+                reads.append(a[1]) or real(*a, **k)
+            )
+            app._watch_worker(charts, {})
+            first = app._watch_results.get_nowait()
+            after_first = len(reads)
+            app._watch_worker(charts, {})
+            second = app._watch_results.get_nowait()
+
+            assert after_first == 1
+            assert len(reads) == after_first   # the second sweep read nothing
+            assert first == second             # and the answer is unchanged
+        finally:
+            app.shutdown()
+
+    def test_a_new_candle_does_get_re_read(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("market.scan_timeframes", False)
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD OTC", 60
+            reads = []
+            real = app.engine.evaluate_series
+            app.engine.evaluate_series = lambda *a, **k: (
+                reads.append(a[1]) or real(*a, **k)
+            )
+            app._watch_worker([("EUR/USD OTC", 60, self._series(60, 300))], {})
+            app._watch_results.get_nowait()
+            app._watch_worker([("EUR/USD OTC", 60, self._series(60, 301))], {})
+            app._watch_results.get_nowait()
+            assert len(reads) == 2
+        finally:
+            app.shutdown()

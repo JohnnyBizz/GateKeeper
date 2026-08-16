@@ -53,10 +53,14 @@ MAX_ADVISORY_GATES = 2
 # How many charts keep their measurement while another is being looked at.
 MAX_REMEMBERED_CHARTS = 8
 
-# How often every watched chart is re-read. Frequent enough that a setup
-# elsewhere is noticed while it is still a setup, rare enough that eight
-# evaluations do not compete with the one the user is looking at.
+# How often every watched chart is re-read. Paced by the shortest candle
+# being watched, because a sweep slower than the candles is a sweep that
+# misses most of what closes: at fifteen seconds a five-second chart is
+# read once every three bars, and two setups in three are over before
+# anything looks. Charts whose newest candle has not moved are skipped, so
+# a fast sweep costs no more than the charts that actually changed.
 WATCH_SWEEP_SECONDS = 15.0
+MIN_WATCH_SWEEP_SECONDS = 4.0
 
 # How much better the recommended expiry has to score before the tool
 # switches to it. Small preferences would have the panel changing expiry
@@ -133,6 +137,13 @@ class OverlayApp:
         # Watched charts already announced, so a setup that stands for several
         # sweeps is called once rather than every fifteen seconds.
         self._announced: set[tuple[str, int]] = set()
+        # The newest candle each chart had when it was last read, and what it
+        # said. A one-minute chart changes once a minute; re-deriving the same
+        # verdict from the same candles in between is work that buys nothing,
+        # and skipping it is what makes sweeping often enough for five-second
+        # charts affordable at all.
+        self._read_at: dict[tuple[str, int], Any] = {}
+        self._read_was: dict[tuple[str, int], dict[str, Any]] = {}
 
         # Verdicts for every chart the socket carries, not just the open one.
         self._watch_results: queue.Queue[Any] = queue.Queue()
@@ -547,7 +558,7 @@ class OverlayApp:
             return
         now = utcnow()
         if self._watch_at is not None:
-            if (now - self._watch_at).total_seconds() < WATCH_SWEEP_SECONDS:
+            if (now - self._watch_at).total_seconds() < self._sweep_interval():
                 return
         self._watch_at = now
 
@@ -581,6 +592,22 @@ class OverlayApp:
         threading.Thread(
             target=self._watch_worker, args=(charts, measured), daemon=True
         ).start()
+
+    def _sweep_interval(self) -> float:
+        """How long to wait before reading everything again.
+
+        Paced by the shortest candle on the watchlist. Waiting fifteen seconds
+        between reads of a five-second chart means two setups in three are
+        finished before anything looks at them.
+        """
+        periods = [
+            int(row.get("timeframe") or 0)
+            for row in self.vm.watchlist
+            if int(row.get("timeframe") or 0) > 0
+        ]
+        if not periods:
+            return WATCH_SWEEP_SECONDS
+        return max(MIN_WATCH_SWEEP_SECONDS, min(float(min(periods)), WATCH_SWEEP_SECONDS))
 
     def _with_other_timeframes(self, charts: Any) -> Any:
         """Read each chart at the platform's other timeframes as well.
@@ -641,6 +668,18 @@ class OverlayApp:
             # every fifteen seconds, so it happens here.
             here = (self.vm.asset, int(self.vm.chart_timeframe))
             for asset, timeframe, series in self._with_other_timeframes(charts):
+                key = (asset, timeframe)
+
+                # Nothing has closed on this chart since it was last read, so
+                # the answer cannot have changed. Re-use it rather than
+                # recomputing an identical verdict.
+                newest = series.candles[-1].timestamp if len(series) else None
+                if newest is not None and self._read_at.get(key) == newest:
+                    previous = self._read_was.get(key)
+                    if previous is not None:
+                        rows.append(previous)
+                        continue
+
                 calibration = measured.get((asset, timeframe))
                 signal = self.engine.evaluate_series(
                     series, asset, timeframe, calibration
@@ -671,17 +710,19 @@ class OverlayApp:
                             or signal
                         )
 
-                rows.append(
-                    {
-                        "asset": asset,
-                        "timeframe": timeframe,
-                        "expiry": expiry,
-                        "direction": signal.direction.value,
-                        "score": round(signal.direction_confidence, 0),
-                        "actionable": bool(signal.actionable),
-                        "candles": len(series),
-                    }
-                )
+                row = {
+                    "asset": asset,
+                    "timeframe": timeframe,
+                    "expiry": expiry,
+                    "direction": signal.direction.value,
+                    "score": round(signal.direction_confidence, 0),
+                    "actionable": bool(signal.actionable),
+                    "candles": len(series),
+                }
+                rows.append(row)
+                if newest is not None:
+                    self._read_at[key] = newest
+                    self._read_was[key] = row
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("reading the watchlist failed: %s", exc)
         finally:
