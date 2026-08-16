@@ -379,6 +379,195 @@ class TestThePairIsNotCutOff:
         assert sorted(captions) == ["CHART", "EXPIRY"]
 
 
+class TestTheVerdictStaysAtTheTopOfItsBox:
+    """It is swapped for the scanning dots and swapped back, and packing a
+    widget that was hidden puts it at the *end* of its parent — so the word
+    the whole panel exists to print ended up underneath the market strip as
+    soon as the first scan finished."""
+
+    def test_it_survives_a_scan(self, panel_module):
+        panel = _panel(panel_module)
+        box = panel._widgets["verdict_box"]
+        before = box.packed.index(panel._widgets["verdict_slot"])
+
+        panel.refresh()
+        panel.vm.scan.begin()
+        panel.refresh()  # scanning: the dots take its place
+        panel.vm.scan.reset()
+        panel.refresh()  # and it comes back
+
+        assert box.packed.index(panel._widgets["verdict_slot"]) == before
+        assert before < box.packed.index(panel._widgets["trend_strip"])
+
+    def test_the_dots_appear_where_the_verdict_was(self, panel_module):
+        """Not at the bottom of the box, which is where packing sends them."""
+        panel = _panel(panel_module)
+        panel.vm.scan.begin()
+        panel.refresh()
+        assert panel._widgets["dots_frame"].parent is panel._widgets["verdict_slot"]
+        assert panel._widgets["verdict"].pack_info_ is None
+
+
+def _entry(text="TAKE IT NOW", clock="0:23", progress=0.6, urgent=False, ready=True):
+    return {
+        "text": text, "detail": "3 MIN expiry — 23s left on this candle",
+        "clock": clock, "seconds": 23, "progress": progress,
+        "urgent": urgent, "ready": ready,
+    }
+
+
+class TestTheEntryCountdownIsInTheSignalBox:
+    """The verdict and its timing are one decision.
+
+    A BUY with no indication of how much of the candle is left is an
+    instruction with the timing filed somewhere else, and the panel had no
+    somewhere else — it simply never said when.
+    """
+
+    def test_it_sits_inside_the_signal_box(self, panel_module):
+        panel = _panel(panel_module)
+        assert panel._widgets["entry_wrap"].parent is panel._widgets["verdict_box"]
+
+    def test_it_is_above_the_market_direction_strip(self, panel_module):
+        """What to do, then when, then which way the market is going."""
+        panel = _panel(panel_module)
+        box = panel._widgets["verdict_box"]
+        assert box.packed.index(panel._widgets["entry_wrap"]) < box.packed.index(
+            panel._widgets["trend_strip"]
+        )
+
+    def test_the_clock_and_the_call_both_show(self, panel_module):
+        panel = _panel(panel_module)
+        panel._render_entry(_entry(), "#22c55e")
+        assert panel._widgets["entry_text"].cget("text") == "TAKE IT NOW"
+        assert panel._widgets["entry_clock"].cget("text") == "0:23"
+        assert panel._widgets["entry_text"].cget("fg") == "#22c55e"
+
+    def test_nothing_to_act_on_is_greyed_rather_than_coloured(self, panel_module):
+        """Colour is how the panel says "this one" — it cannot also mean "not
+        this one" or it stops meaning anything."""
+        panel = _panel(panel_module)
+        panel._render_entry(_entry("WAIT FOR NEXT CANDLE", ready=False), "#22c55e")
+        from poa.overlay.viewmodel import COLORS
+
+        assert panel._widgets["entry_text"].cget("fg") == COLORS["faint"]
+
+    def test_the_last_seconds_of_a_bar_pulse(self, panel_module):
+        """The one thing on this panel worth animating: a number counting
+        down in a corner is easy to miss, a breathing one is not."""
+        panel = _panel(panel_module)
+        tones = set()
+        for _ in range(panel.PULSE_FRAMES):
+            panel._pulse += 1
+            panel._render_entry(_entry(urgent=True), "#22c55e")
+            tones.add(panel._widgets["entry_text"].cget("fg"))
+        assert len(tones) > 4
+
+    def test_a_setup_that_is_not_urgent_holds_still(self, panel_module):
+        panel = _panel(panel_module)
+        tones = set()
+        for _ in range(panel.PULSE_FRAMES):
+            panel._pulse += 1
+            panel._render_entry(_entry(), "#22c55e")
+            tones.add(panel._widgets["entry_text"].cget("fg"))
+        assert tones == {"#22c55e"}
+
+    def test_the_bar_drains_rather_than_fills(self, panel_module):
+        """It shows what is left, not what is gone — the countdown is the
+        point, and a bar that grows as time runs out reads backwards."""
+        panel = _panel(panel_module)
+        drawn = []
+        panel._widgets["entry_bar"].create_rectangle = (
+            lambda *a, **k: drawn.append(a[2])
+        )
+        panel._draw_entry_bar(0.25, "#22c55e")
+        panel._draw_entry_bar(0.75, "#22c55e")
+        assert drawn[0] > drawn[1]
+
+
+class TestTheEvidenceBlockFolds:
+    """Every line under the decision earned its place one at a time, and
+    together they turned a panel meant to be glanced at into a page."""
+
+    def test_the_detail_lines_live_in_the_folding_body(self, panel_module):
+        panel = _panel(panel_module)
+        body = panel._widgets["details_body"]
+        for key in (
+            "calibration", "duration_score", "recommended", "session_edge",
+            "session_calls", "session_taught", "proof", "lesson", "tuning",
+        ):
+            widget = panel._widgets[key]
+            assert body in (widget.parent, widget.parent.parent), key
+
+    def test_the_decision_itself_never_folds(self, panel_module):
+        """The verdict, the countdown, the score and the brake stay out."""
+        panel = _panel(panel_module)
+        body = panel._widgets["details_body"]
+        for key in (
+            "verdict", "entry_text", "score", "badge", "take_now",
+            "session_win", "session_loss", "paused",
+        ):
+            node, parents = panel._widgets[key], set()
+            while node is not None:
+                parents.add(id(node))
+                node = node.parent
+            assert id(body) not in parents, key
+
+    def test_it_is_folded_after_a_repaint(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        assert panel._widgets["details_body"].pack_info_ is None
+        assert panel._widgets["details_caret"].cget("text") == "▸"
+
+    def test_unfolding_brings_it_back_under_its_own_header(self, panel_module):
+        """Safe to hide by unpacking only because the body is the last child
+        of its wrapper — re-packing appends, and appending is where it goes.
+        The assertion is the guard on that staying true."""
+        panel = _panel(panel_module)
+        wrap = panel._widgets["details_body"].parent
+        built = wrap.packed.index(panel._widgets["details_body"])
+        panel.refresh()  # folded
+        panel.vm.details_collapsed = False
+        panel.refresh()  # and back
+        assert wrap.packed.index(panel._widgets["details_body"]) == built
+        assert panel._widgets["details_caret"].cget("text") == "▾"
+
+    def test_the_header_click_asks_the_app_to_toggle(self, panel_module):
+        clicks = []
+        panel = _panel(panel_module, on_toggle_details=lambda: clicks.append(1))
+        panel._widgets["details_caret"].binds["<Button-1>"](None)
+        assert clicks == [1]
+
+    def test_folding_keeps_the_headline_number_on_screen(self, panel_module):
+        """Folding must not hide whether the measured record is good news."""
+        panel = _panel(panel_module)
+        panel.refresh()
+        assert panel._widgets["details_summary"].cget("text") == "not measured yet"
+
+
+class TestTheScoreBarEases:
+    def test_it_moves_toward_a_new_score_rather_than_jumping(self, panel_module):
+        panel = _panel(panel_module)
+        panel._draw_score_bar(20.0, "#22c55e")
+        panel._draw_score_bar(90.0, "#22c55e")
+        assert 20.0 < panel._score_shown < 90.0
+
+    def test_it_arrives(self, panel_module):
+        """Easing that never lands would leave the bar disagreeing with the
+        number printed beside it."""
+        panel = _panel(panel_module)
+        panel._draw_score_bar(20.0, "#22c55e")
+        for _ in range(40):
+            panel._draw_score_bar(90.0, "#22c55e")
+        assert panel._score_shown == 90.0
+
+    def test_nothing_to_show_resets_it(self, panel_module):
+        panel = _panel(panel_module)
+        panel._draw_score_bar(90.0, "#22c55e")
+        panel._draw_score_bar(None, "#64748b")
+        assert panel._score_shown is None
+
+
 class TestItIsReadableAcrossADesk:
     def test_no_type_is_smaller_than_eight_point(self, panel_module):
         """7pt captions are below comfortable reading on a 1080p screen."""

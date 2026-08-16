@@ -289,6 +289,152 @@ class TestViewModel:
             assert not contains_banned_language(joined)
 
 
+class _Actionable:
+    """Only the attribute the entry countdown reads."""
+
+    def __init__(self, actionable: bool = True) -> None:
+        self.actionable = actionable
+
+
+# A wall-clock instant that is exactly on a 5-second, 1-minute and 5-minute
+# boundary at once, so "N seconds into the bar" means the same thing for every
+# timeframe the countdown is checked at.
+BAR_START = 1_700_000_100.0
+
+
+class TestWhenToGetIn:
+    """The verdict says *what*; nothing on the panel said *when*.
+
+    A setup is read off candles that have closed, so the answer on screen
+    belongs to the bar now forming and is re-derived the moment it ends. BUY
+    at 82 with no idea whether that bar has fifty seconds left or three is
+    half an answer, and it is the half that decides between being on time and
+    chasing a move that already happened.
+    """
+
+    def _vm(self, into: float, timeframe: int = 60, **kwargs) -> OverlayViewModel:
+        """A view model reading the clock ``into`` seconds through a bar."""
+        return OverlayViewModel(
+            session=SessionStats(),
+            chart_timeframe=timeframe,
+            _now=lambda: BAR_START + into,
+            **kwargs,
+        )
+
+    def test_it_counts_down_to_the_close_of_the_forming_candle(self):
+        """Candles sit on wall-clock boundaries, so this is arithmetic."""
+        entry = self._vm(into=37)._entry(False, _Actionable())
+        assert entry["seconds"] == 23  # 37s into a 60s bar
+        assert entry["clock"] == "0:23"
+
+    def test_the_countdown_follows_the_chart_timeframe(self):
+        """A five-minute chart is not counted down as a one-minute one."""
+        entry = self._vm(into=100, timeframe=300)._entry(False, _Actionable())
+        assert entry["seconds"] == 200
+        assert entry["clock"] == "3:20"
+
+    def test_a_five_second_chart_counts_in_seconds(self):
+        entry = self._vm(into=3, timeframe=5)._entry(False, _Actionable())
+        assert entry["seconds"] == 2
+        assert entry["clock"] == "0:02"
+
+    def test_the_bar_drains_as_the_candle_does(self):
+        assert self._vm(into=30)._entry(False, _Actionable())[
+            "progress"
+        ] == pytest.approx(0.5)
+
+    def test_a_setup_says_take_it_now(self):
+        entry = self._vm(into=30)._entry(False, _Actionable())
+        assert entry["text"] == "TAKE IT NOW"
+        assert entry["ready"] is True
+        assert "3 MIN expiry" in entry["detail"]
+
+    def test_no_setup_says_wait_for_the_next_candle(self):
+        entry = self._vm(into=30)._entry(False, _Actionable(False))
+        assert entry["text"] == "WAIT FOR NEXT CANDLE"
+        assert entry["ready"] is False
+        assert entry["urgent"] is False
+
+    def test_the_last_seconds_of_a_bar_are_urgent(self):
+        """A setup confirmed on this bar is about to be re-read."""
+        assert self._vm(into=58)._entry(False, _Actionable())["urgent"]
+        assert not self._vm(into=30)._entry(False, _Actionable())["urgent"]
+
+    def test_urgency_scales_with_the_timeframe(self):
+        """Twenty seconds left is nearly over on a 5m chart and a third of a
+        1m one — so "nearly gone" cannot be a fixed number of seconds."""
+        assert self._vm(into=280, timeframe=300)._entry(False, _Actionable())["urgent"]
+        assert not self._vm(into=40)._entry(False, _Actionable())["urgent"]
+
+    def test_nothing_is_promised_while_scanning(self):
+        entry = self._vm(into=30)._entry(True, _Actionable())
+        assert entry["text"] == "—"
+        assert entry["clock"] == ""
+        assert entry["ready"] is False
+
+    def test_it_never_claims_a_win(self):
+        """The forbidden vocabulary, checked on the one new line of prose."""
+        banned = ("guarantee", "100%", "cannot lose", "sure thing", "risk-free")
+        for into in (1, 30, 59):
+            for signal in (None, _Actionable(), _Actionable(False)):
+                entry = self._vm(into=into)._entry(False, signal)
+                blob = f"{entry['text']} {entry['detail']}".lower()
+                assert not any(word in blob for word in banned)
+
+    def test_it_reaches_the_render_payload(self):
+        """And says nothing before the first chart has been read.
+
+        A countdown running under "WAITING FOR DATA" would be a clock ticking
+        toward nothing, which reads as a deadline the panel has not earned.
+        """
+        entry = self._vm(into=45).render()["entry"]
+        assert entry["seconds"] == 15
+        assert entry["clock"] == ""
+        assert entry["ready"] is False
+
+
+class _FakeProof:
+    """A measured record, without running a replay to get one."""
+
+    def __init__(self, *, edge: float, meaningful: bool, settled: int) -> None:
+        self.edge = edge
+        self.meaningful = meaningful
+        self.settled = settled
+        self.calibration = None
+        self.attribution = None
+
+    def summary(self) -> str:
+        return f"{self.settled} replayed setups"
+
+
+class TestTheEvidenceFoldsAway:
+    """Every line under the decision earned its place one at a time, and
+    together they turned a panel meant to be glanced at into a page."""
+
+    def test_it_is_folded_by_default(self):
+        assert OverlayViewModel(session=SessionStats()).render()["details"][
+            "collapsed"
+        ] is True
+
+    def test_unfolding_shows(self):
+        vm = OverlayViewModel(session=SessionStats(), details_collapsed=False)
+        assert vm.render()["details"]["collapsed"] is False
+
+    def test_the_headline_number_stays_out_when_it_is_folded(self):
+        """Folding must not hide whether the record is good news."""
+        vm = OverlayViewModel(session=SessionStats())
+        assert vm.render()["details"]["summary"] == "not measured yet"
+
+        vm.proof = _FakeProof(edge=4.2, meaningful=True, settled=60)
+        assert vm.render()["details"]["summary"] == "+4 pts vs break-even"
+
+    def test_a_sample_too_small_to_read_is_not_dressed_up_as_an_edge(self):
+        """A 30-point edge over three trades is noise wearing a number."""
+        vm = OverlayViewModel(session=SessionStats())
+        vm.proof = _FakeProof(edge=30.0, meaningful=False, settled=3)
+        assert vm.render()["details"]["summary"] == "3 measured so far"
+
+
 class TestOverlayAppLogic:
     """The engine-to-panel glue, run without any window."""
 

@@ -100,6 +100,7 @@ class OverlayApp:
             source=str(self.config.get("capture.source", "screen")),
             session_manual=bool(self.config.get("overlay.session_manual", True)),
             risk_collapsed=bool(self.config.get("overlay.risk_collapsed", False)),
+            details_collapsed=bool(self.config.get("overlay.details_collapsed", True)),
             max_losses_in_a_row=int(self.config.get("risk.max_losses_in_a_row", 0)),
             max_daily_loss_percent=float(
                 self.config.get("risk.max_daily_loss_percent", 0.0)
@@ -828,11 +829,19 @@ class OverlayApp:
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""
         self.vm.risk_collapsed = not self.vm.risk_collapsed
-        self.config.set("overlay.risk_collapsed", self.vm.risk_collapsed)
+        self._remember_fold("overlay.risk_collapsed", self.vm.risk_collapsed)
+
+    def _toggle_details(self) -> None:
+        """Fold the evidence block away, and remember that across restarts."""
+        self.vm.details_collapsed = not self.vm.details_collapsed
+        self._remember_fold("overlay.details_collapsed", self.vm.details_collapsed)
+
+    def _remember_fold(self, key: str, collapsed: bool) -> None:
+        self.config.set(key, collapsed)
         try:
             self.config.save()
         except Exception as exc:  # pragma: no cover - defensive
-            log.debug("could not save the risk fold state: %s", exc)
+            log.debug("could not save the fold state for %s: %s", key, exc)
 
     def _refresh_session(self) -> None:
         # The tally is the user's record of their own trading, and only they
@@ -1590,6 +1599,7 @@ class OverlayApp:
             on_settings=self._open_settings,
             on_close=self.shutdown,
             on_toggle_risk=self._toggle_risk,
+            on_toggle_details=self._toggle_details,
             on_payout=self.set_payout,
             position=(
                 int(self.config.get("overlay.x", 40)),

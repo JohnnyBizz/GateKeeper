@@ -36,6 +36,7 @@ class OverlayPanel:
         on_settings: Callable[[], None] | None = None,
         on_close: Callable[[], None] | None = None,
         on_toggle_risk: Callable[[], None] | None = None,
+        on_toggle_details: Callable[[], None] | None = None,
         on_payout: Callable[[float], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
@@ -50,6 +51,7 @@ class OverlayPanel:
         self.on_settings = on_settings or (lambda: None)
         self.on_close = on_close or (lambda: None)
         self.on_toggle_risk = on_toggle_risk or (lambda: None)
+        self.on_toggle_details = on_toggle_details or (lambda: None)
         self.on_payout = on_payout or (lambda p: None)
 
         self.root = tk.Tk()
@@ -77,6 +79,13 @@ class OverlayPanel:
         self._drag_origin = (0, 0)
         self._widgets: dict[str, Any] = {}
         self._dots: list[tk.Label] = []
+        # Where the pulse is in its cycle, advanced once per repaint. Urgency
+        # is the one thing on this panel worth animating: a number counting
+        # down in the corner is easy to miss, a breathing one is not.
+        self._pulse = 0
+        # The score bar eases toward its target rather than jumping, so a
+        # verdict that moves is visibly a change rather than a different panel.
+        self._score_shown: float | None = None
 
         self._build_fonts()
         self._build()
@@ -141,6 +150,8 @@ class OverlayPanel:
         self._divider(self._body)
         self._build_session(self._body)
         self._divider(self._body)
+        self._build_details(self._body)
+        self._divider(self._body)
         self._build_risk(self._body)
         self._build_footer(self._body)
 
@@ -188,7 +199,7 @@ class OverlayPanel:
         label.bind("<Leave>", lambda _e, w=label: w.configure(fg=COLORS["dim"]))
         return label
 
-    def _entry(
+    def _text_field(
         self, parent: tk.Widget, *, width: int, on_commit: Callable[[str], None]
     ) -> tk.Entry:
         """A themed Entry that commits on Enter or when focus leaves it."""
@@ -235,7 +246,7 @@ class OverlayPanel:
         ).pack(side="left")
         # Editable, so a chart switch the source cannot name can be corrected
         # by hand — and, on the feed, so typing a watched pair reads it.
-        self._widgets["tile_pair"] = self._entry(
+        self._widgets["tile_pair"] = self._text_field(
             pair_row, width=14, on_commit=self.on_asset
         )
         self._widgets["tile_pair"].pack(side="left", padx=(8, 0))
@@ -260,7 +271,7 @@ class OverlayPanel:
                 # 52.1% at a 92% payout and 55.6% at 80%, so a stale number
                 # here moves the bar that every measurement in this panel is
                 # judged against — quietly, and in the flattering direction.
-                value = self._entry(tile, width=6, on_commit=self._commit_payout)
+                value = self._text_field(tile, width=6, on_commit=self._commit_payout)
                 value.pack(anchor="w", padx=4, pady=(0, 5))
             else:
                 # The chart timeframe is shown apart from the trade duration on
@@ -357,14 +368,23 @@ class OverlayPanel:
         )
         self._widgets["arrow"].pack()
 
+        # The verdict and the scanning dots swap places, so they live in a slot
+        # of their own. Hiding one and showing the other by packing would
+        # otherwise send whichever came back to the *end* of the signal box —
+        # which is how BUY ended up printed underneath the market strip after
+        # the first scan, having started out above it.
+        slot = tk.Frame(box, bg=COLORS["bg"])
+        slot.pack(fill="x")
+        self._widgets["verdict_slot"] = slot
+
         self._widgets["verdict"] = tk.Label(
-            box, text="--", font=self.f_verdict, bg=COLORS["bg"], fg=COLORS["neutral"]
+            slot, text="--", font=self.f_verdict, bg=COLORS["bg"], fg=COLORS["neutral"]
         )
         self._widgets["verdict"].pack(pady=(0, 2))
 
         # The scanning indicator occupies the same space the verdict does, so
         # the panel does not jump between states.
-        dots = tk.Frame(box, bg=COLORS["bg"])
+        dots = tk.Frame(slot, bg=COLORS["bg"])
         self._widgets["dots_frame"] = dots
         for _ in range(3):
             dot = tk.Label(dots, text="●", font=self.f_arrow, bg=COLORS["bg"], fg=COLORS["faint"])
@@ -374,9 +394,68 @@ class OverlayPanel:
         self._widgets["state"] = tk.Label(
             box, text="", font=self.f_label, bg=COLORS["bg"], fg=COLORS["faint"]
         )
-        self._widgets["state"].pack(pady=(0, 6))
+        self._widgets["state"].pack(pady=(0, 4))
 
+        self._build_entry(box)
         self._build_trend(box)
+
+    def _build_entry(self, parent: tk.Widget) -> None:
+        """When to get in, directly under what to do.
+
+        The verdict and its timing are one decision and belong in one box: a
+        BUY with no indication of how much of the candle is left is an
+        instruction with the timing filed somewhere else, and somewhere else is
+        where it got lost. The bar drains as the candle does, so the countdown
+        is something seen rather than read.
+        """
+        wrap = tk.Frame(parent, bg=COLORS["bg"])
+        wrap.pack(fill="x", padx=12, pady=(0, 6))
+        self._widgets["entry_wrap"] = wrap
+
+        row = tk.Frame(wrap, bg=COLORS["bg"])
+        row.pack(fill="x")
+        self._widgets["entry_text"] = tk.Label(
+            row, text="—", font=self.f_badge, bg=COLORS["bg"], fg=COLORS["faint"],
+        )
+        self._widgets["entry_text"].pack(side="left")
+        self._widgets["entry_clock"] = tk.Label(
+            row, text="", font=self.f_mono, bg=COLORS["bg"], fg=COLORS["faint"],
+        )
+        self._widgets["entry_clock"].pack(side="right")
+
+        self._widgets["entry_bar"] = tk.Canvas(
+            wrap, height=4, bg=COLORS["raised"], highlightthickness=0,
+        )
+        self._widgets["entry_bar"].pack(fill="x", pady=(3, 0))
+
+        self._widgets["entry_detail"] = tk.Label(
+            wrap, text="", font=self.f_label, bg=COLORS["bg"], fg=COLORS["faint"],
+            wraplength=PANEL_WIDTH - 44, justify="left",
+        )
+        self._widgets["entry_detail"].pack(anchor="w", pady=(3, 0))
+
+    def _render_entry(self, entry: dict[str, Any], color: str) -> None:
+        w = self._widgets
+        if entry["ready"]:
+            tone = self._pulse_toward(color) if entry["urgent"] else color
+        else:
+            tone = COLORS["faint"]
+        w["entry_text"].configure(text=entry["text"], fg=tone)
+        w["entry_clock"].configure(
+            text=entry["clock"], fg=tone if entry["urgent"] else COLORS["dim"]
+        )
+        w["entry_detail"].configure(text=entry["detail"])
+        self._draw_entry_bar(entry["progress"], tone)
+
+    def _draw_entry_bar(self, progress: float, color: str) -> None:
+        """How much of the current candle is left, draining as it goes."""
+        canvas: tk.Canvas = self._widgets["entry_bar"]
+        canvas.delete("all")
+        width = canvas.winfo_width() or (PANEL_WIDTH - 44)
+        remaining = max(0.0, min(1.0, 1.0 - progress))
+        filled = int(width * remaining)
+        if filled > 0:
+            canvas.create_rectangle(0, 0, filled, 4, fill=color, outline="")
 
     def _build_trend(self, parent: tk.Widget) -> None:
         """Which way the market is going, inside the signal box.
@@ -488,41 +567,6 @@ class OverlayPanel:
         )
         self._widgets["pattern"].pack(anchor="w", padx=2, pady=(2, 0))
 
-        # What the score above was actually worth here. Sits directly under it
-        # on purpose: the score is a number the engine made up, and this is the
-        # measurement that says whether that number means anything.
-        self._widgets["calibration"] = tk.Label(
-            wrap, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"],
-            wraplength=PANEL_WIDTH - 32, justify="left",
-        )
-        self._widgets["calibration"].pack(anchor="w", padx=2)
-
-        # Duration is reported on its own line with its own score, because a
-        # right direction on a wrong expiration is not a tradeable setup.
-        duration_row = tk.Frame(wrap, bg=COLORS["panel"])
-        duration_row.pack(fill="x", pady=(4, 2))
-        tk.Label(
-            duration_row, text="DURATION FIT", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(side="left", padx=2)
-        self._widgets["duration_score"] = tk.Label(
-            duration_row, text="--", font=self.f_mono,
-            bg=COLORS["panel"], fg=COLORS["neutral"],
-        )
-        self._widgets["duration_score"].pack(side="right", padx=2)
-
-        recommend_row = tk.Frame(wrap, bg=COLORS["panel"])
-        recommend_row.pack(fill="x")
-        tk.Label(
-            recommend_row, text="SUGGESTED", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(side="left", padx=2)
-        self._widgets["recommended"] = tk.Label(
-            recommend_row, text="--", font=self.f_mono,
-            bg=COLORS["panel"], fg=COLORS["dim"],
-        )
-        self._widgets["recommended"].pack(side="right", padx=2)
-
     def _build_buttons(self, parent: tk.Widget) -> None:
         row = self._section(parent, pady=(6, 4))
 
@@ -587,16 +631,87 @@ class OverlayPanel:
         )
         self._widgets["session_rate"].pack(anchor="w", padx=2, pady=(2, 0))
 
-        self._widgets["session_edge"] = tk.Label(
-            wrap, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"]
+        # A limit that is reached quietly is a limit that gets argued with, so
+        # this one stays out even when the evidence block is folded.
+        self._widgets["paused"] = tk.Label(
+            wrap, text="", font=self.f_badge,
+            bg=COLORS["panel"], fg=COLORS["no_trade"],
+            wraplength=PANEL_WIDTH - 28, justify="left",
         )
-        self._widgets["session_edge"].pack(anchor="w", padx=2)
+        self._widgets["paused"].pack(anchor="w", padx=2, pady=(4, 0))
+
+    def _build_details(self, parent: tk.Widget) -> None:
+        """Everything supporting the decision, folded away by default.
+
+        Each of these lines earned its place one at a time, and together they
+        turned a panel meant to be glanced at into a page to be read. None of
+        them is wrong and none is removed — they are one click away, with the
+        single number that says whether the record is good news left on the
+        header so folding them costs nothing that has to be acted on.
+        """
+        wrap = self._section(parent, pady=(2, 2))
+        header = tk.Frame(wrap, bg=COLORS["panel"])
+        header.pack(fill="x")
+
+        self._widgets["details_caret"] = tk.Label(
+            header, text="▸", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
+        )
+        self._widgets["details_caret"].pack(side="left")
+        title = tk.Label(
+            header, text="EVIDENCE", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
+        )
+        title.pack(side="left", padx=2)
+        self._widgets["details_summary"] = tk.Label(
+            header, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["faint"],
+        )
+        self._widgets["details_summary"].pack(side="right", padx=2)
+        for widget in (self._widgets["details_caret"], title, header):
+            widget.bind("<Button-1>", lambda _e: self.on_toggle_details())
+
+        body = tk.Frame(wrap, bg=COLORS["panel"])
+        body.pack(fill="x")
+        self._widgets["details_body"] = body
+
+        # What the score above was actually worth here. First in the block on
+        # purpose: the score is a number the engine made up from weights
+        # somebody chose, and this is the measurement that says whether that
+        # number means anything.
+        self._widgets["calibration"] = tk.Label(
+            body, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"],
+            wraplength=PANEL_WIDTH - 32, justify="left",
+        )
+        self._widgets["calibration"].pack(anchor="w", padx=2)
+
+        # Duration is reported on its own line with its own score, because a
+        # right direction on a wrong expiration is not a tradeable setup.
+        for key, caption, color in (
+            ("duration_score", "DURATION FIT", COLORS["neutral"]),
+            ("recommended", "SUGGESTED", COLORS["dim"]),
+        ):
+            row = tk.Frame(body, bg=COLORS["panel"])
+            row.pack(fill="x", pady=(2, 0))
+            tk.Label(
+                row, text=caption, font=self.f_label,
+                bg=COLORS["panel"], fg=COLORS["faint"],
+            ).pack(side="left", padx=2)
+            self._widgets[key] = tk.Label(
+                row, text="--", font=self.f_mono, bg=COLORS["panel"], fg=color,
+            )
+            self._widgets[key].pack(side="right", padx=2)
+
+        self._widgets["session_edge"] = tk.Label(
+            body, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"]
+        )
+        self._widgets["session_edge"].pack(anchor="w", padx=2, pady=(4, 0))
 
         # How many setups have passed the gates since the session began. A
         # quiet panel is either a quiet market or a broken app, and the count
         # is what tells the two apart.
         self._widgets["session_calls"] = tk.Label(
-            wrap, text="", font=self.f_label,
+            body, text="", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["faint"],
         )
         self._widgets["session_calls"].pack(anchor="w", padx=2)
@@ -605,28 +720,20 @@ class OverlayPanel:
         # move a counter and appear to do nothing else, and the one loop that
         # makes the tool better is invisible while it is filling up.
         self._widgets["session_taught"] = tk.Label(
-            wrap, text="", font=self.f_label,
+            body, text="", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["accent"],
             wraplength=PANEL_WIDTH - 28, justify="left",
         )
         self._widgets["session_taught"].pack(anchor="w", padx=2)
 
-        # A limit that is reached quietly is a limit that gets argued with.
-        self._widgets["paused"] = tk.Label(
-            wrap, text="", font=self.f_badge,
-            bg=COLORS["panel"], fg=COLORS["no_trade"],
-            wraplength=PANEL_WIDTH - 28, justify="left",
-        )
-        self._widgets["paused"].pack(anchor="w", padx=2, pady=(4, 0))
-
         # The measured record of this engine on this chart's own history — the
         # one line on the panel that is a fact rather than a forecast.
         tk.Label(
-            wrap, text="MEASURED ON THIS CHART", font=self.f_label,
+            body, text="MEASURED ON THIS CHART", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["faint"],
         ).pack(anchor="w", padx=2, pady=(6, 0))
         self._widgets["proof"] = tk.Label(
-            wrap, text="Measuring this chart…", font=self.f_small,
+            body, text="Measuring this chart…", font=self.f_small,
             bg=COLORS["panel"], fg=COLORS["faint"],
             wraplength=PANEL_WIDTH - 32, justify="left",
         )
@@ -636,7 +743,7 @@ class OverlayPanel:
         # looking line, and the only one that explains a loss rather than
         # reporting it.
         self._widgets["lesson"] = tk.Label(
-            wrap, text="", font=self.f_label,
+            body, text="", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["wait"],
             wraplength=PANEL_WIDTH - 32, justify="left",
         )
@@ -645,7 +752,7 @@ class OverlayPanel:
         # What the record changed about the gates. A setting that moves
         # silently is indistinguishable from a bug.
         self._widgets["tuning"] = tk.Label(
-            wrap, text="", font=self.f_label,
+            body, text="", font=self.f_label,
             bg=COLORS["panel"], fg=COLORS["accent"],
             wraplength=PANEL_WIDTH - 32, justify="left",
         )
@@ -695,7 +802,7 @@ class OverlayPanel:
                 row, text=caption, font=self.f_small,
                 bg=COLORS["panel"], fg=COLORS["dim"],
             ).pack(side="left", padx=2)
-            entry = self._entry(row, width=10, on_commit=commit)
+            entry = self._text_field(row, width=10, on_commit=commit)
             entry.pack(side="right", padx=2)
             self._widgets[f"risk_{key}"] = entry
 
@@ -822,6 +929,7 @@ class OverlayPanel:
         """Paint the current view model onto the widgets."""
         data = self.vm.render()
         w = self._widgets
+        self._pulse += 1
 
         header = data["header"]
         w["status"].configure(text=header["status"], fg=header["status_color"])
@@ -844,9 +952,20 @@ class OverlayPanel:
             w["dots_frame"].pack_forget()
             w["verdict"].pack(pady=(0, 2))
 
+        entry = data["entry"]
+        self._render_entry(entry, verdict["color"])
+
         w["arrow"].configure(text=verdict["arrow"], fg=verdict["color"])
         w["verdict"].configure(text=verdict["direction_label"], fg=verdict["color"])
-        w["verdict_box"].configure(highlightbackground=verdict["color"])
+        # The border breathes only while there is something to act on, so the
+        # movement means "this one" rather than "the app is running".
+        w["verdict_box"].configure(
+            highlightbackground=(
+                self._pulse_toward(verdict["color"], COLORS["border"])
+                if verdict["actionable"]
+                else verdict["color"]
+            )
+        )
         # The state chip is only ever a warning about the *signal*. Scanning is
         # not a problem with the signal, so it must not borrow the alarm colour.
         state_colors = {
@@ -934,12 +1053,25 @@ class OverlayPanel:
         w["lesson"].configure(text=data["lesson"])
         w["tuning"].configure(text="\n".join(data["tuning"]))
 
+        details = data["details"]
+        # Safe to hide and re-show by packing because the body is the last
+        # child of its own wrapper: re-packing appends, and appending puts it
+        # back exactly where it was. The watchlist, which is packed among
+        # siblings, cannot do this — see ``_render_watchlist``.
+        if details["collapsed"]:
+            w["details_body"].pack_forget()
+            w["details_caret"].configure(text="▸")
+        else:
+            w["details_body"].pack_configure(fill="x")
+            w["details_caret"].configure(text="▾")
+        w["details_summary"].configure(text=details["summary"])
+
         risk = data["risk"]
         if risk.get("collapsed"):
             w["risk_body"].pack_forget()
             w["risk_caret"].configure(text="▸")
         else:
-            w["risk_body"].pack(fill="x")
+            w["risk_body"].pack_configure(fill="x")
             w["risk_caret"].configure(text="▾")
         self._set_entry(w["risk_balance"], f"{risk['balance']:.2f}")
         self._set_entry(w["risk_stake"], f"{risk['stake']:.2f}")
@@ -989,13 +1121,46 @@ class OverlayPanel:
         for index, dot in enumerate(self._dots):
             dot.configure(fg=COLORS["call"] if index == active else COLORS["faint"])
 
+    # -- animation ----------------------------------------------------------
+
+    PULSE_FRAMES = 24  # about two seconds at the overlay's repaint rate
+
+    @staticmethod
+    def _mix(first: str, second: str, amount: float) -> str:
+        """Blend two ``#rrggbb`` colours, ``amount`` of the way to the second."""
+        amount = max(0.0, min(1.0, amount))
+        channels = []
+        for offset in (1, 3, 5):
+            a = int(first[offset:offset + 2], 16)
+            b = int(second[offset:offset + 2], 16)
+            channels.append(int(round(a + (b - a) * amount)))
+        return "#{:02x}{:02x}{:02x}".format(*channels)
+
+    def _pulse_phase(self) -> float:
+        """0..1 and back again, so the pulse breathes rather than blinks."""
+        half = self.PULSE_FRAMES / 2
+        return abs(half - (self._pulse % self.PULSE_FRAMES)) / half
+
+    def _pulse_toward(self, color: str, target: str | None = None) -> str:
+        return self._mix(color, target or COLORS["text"], self._pulse_phase() * 0.55)
+
     def _draw_score_bar(self, score: float | None, color: str) -> None:
         canvas: tk.Canvas = self._widgets["score_bar"]
         canvas.delete("all")
         width = canvas.winfo_width() or (PANEL_WIDTH - 20)
         if score is None:
+            self._score_shown = None
             return
-        filled = max(2, int(width * max(0.0, min(100.0, score)) / 100.0))
+        target = max(0.0, min(100.0, score))
+        # Ease toward the new score instead of snapping to it. A quarter of the
+        # remaining distance per repaint settles in about a third of a second —
+        # long enough to be seen moving, short enough that the bar is never
+        # showing a number the panel is not.
+        if self._score_shown is None or abs(target - self._score_shown) < 0.5:
+            self._score_shown = target
+        else:
+            self._score_shown += (target - self._score_shown) * 0.25
+        filled = max(2, int(width * self._score_shown / 100.0))
         canvas.create_rectangle(0, 0, filled, 6, fill=color, outline="")
 
     # -- loop ---------------------------------------------------------------

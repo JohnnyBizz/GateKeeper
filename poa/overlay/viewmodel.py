@@ -188,6 +188,12 @@ class OverlayViewModel:
     # The brakes. Zero disables either one.
     max_losses_in_a_row: int = 0
     max_daily_loss_percent: float = 0.0
+    # Everything below the decision, folded away by default. The panel had
+    # grown to hold every true thing at once, which is a different job from
+    # showing the one thing being decided.
+    details_collapsed: bool = True
+    # Injected so the countdown can be tested without waiting for a minute.
+    _now: Any = field(default=time.time, repr=False)
 
     # ------------------------------------------------------------------
 
@@ -302,6 +308,8 @@ class OverlayViewModel:
                 "stake_overridden": self.stake_override is not None,
                 "collapsed": self.risk_collapsed,
             },
+            "entry": self._entry(scanning, signal),
+            "details": self._details(),
             "watchlist": self._watchlist(),
             "lesson": self._lesson(),
             "proof": self._proof(),
@@ -406,6 +414,88 @@ class OverlayViewModel:
             "ready": True,
             "beats": beats,
         }
+
+    def _entry(self, scanning: bool, signal: Signal | None) -> dict[str, Any]:
+        """When to act, which is a different question from whether to.
+
+        The panel could say BUY at 82 and still leave the one thing unanswered
+        that decides whether the trade is any good: *now, or not yet?* The
+        analysis reads candles that have closed, so the verdict on screen
+        belongs to the bar currently forming — and it is re-derived the moment
+        that bar ends. Knowing the verdict without knowing how much of that bar
+        is left is knowing half of it, and it is the half that separates being
+        on time from chasing.
+
+        Candles sit on wall-clock boundaries, so the time remaining is
+        arithmetic rather than something that has to be tracked: a one-minute
+        candle closes on the minute, wherever the app happened to start.
+        """
+        period = max(1, int(self.chart_timeframe))
+        remaining = period - (int(self._now()) % period)
+        elapsed = 1.0 - (remaining / period)
+        clock = f"{remaining // 60}:{remaining % 60:02d}"
+
+        blank = {
+            "text": "—",
+            "detail": "",
+            "clock": "",
+            "seconds": remaining,
+            "progress": elapsed,
+            "urgent": False,
+            "ready": False,
+        }
+        if scanning or signal is None:
+            return blank
+
+        if signal.actionable:
+            # The last stretch of a bar is when a setup confirmed on it is
+            # about to be re-read — which is a reason to hurry or to skip, but
+            # either way a reason to know.
+            urgent = remaining <= max(3, period // 10)
+            return {
+                "text": "TAKE IT NOW",
+                "detail": (
+                    f"{format_duration(self.trade_duration)} expiry — this "
+                    f"candle closes in {remaining}s and the read changes with it"
+                    if urgent
+                    else f"{format_duration(self.trade_duration)} expiry — "
+                    f"{remaining}s left on this candle"
+                ),
+                "clock": clock,
+                "seconds": remaining,
+                "progress": elapsed,
+                "urgent": urgent,
+                "ready": True,
+            }
+
+        return {
+            "text": "WAIT FOR NEXT CANDLE",
+            "detail": "No setup here yet — every chart is re-read as its bar closes.",
+            "clock": clock,
+            "seconds": remaining,
+            "progress": elapsed,
+            "urgent": False,
+            "ready": False,
+        }
+
+    def _details(self) -> dict[str, Any]:
+        """The evidence block, and the one line of it that stays out.
+
+        Everything under the decision — the measured record, what the losing
+        calls had in common, what the record changed about the gates — is true
+        and worth having, and all of it at once is why the panel stopped being
+        glanceable. Folded away by default, with the single number that says
+        whether any of it is good news left on the header.
+        """
+        summary = "not measured yet"
+        proof = self.proof
+        if proof is not None:
+            edge = getattr(proof, "edge", None)
+            if edge is not None and getattr(proof, "meaningful", False):
+                summary = f"{edge:+.0f} pts vs break-even"
+            elif getattr(proof, "settled", 0):
+                summary = f"{int(proof.settled)} measured so far"
+        return {"collapsed": self.details_collapsed, "summary": summary}
 
     def _take_now(self, signal: Signal) -> dict[str, Any]:
         """How many setups are live right now, across everything being read.
