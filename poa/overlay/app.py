@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 from typing import Any, Callable
 
 from ..config import Config, data_root, load_config
 from ..engine import AnalysisEngine
 from ..logging_setup import get_logger, install_crash_handlers, setup_logging
-from ..models import utcnow
+from ..models import format_duration, utcnow
 from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState
 
@@ -127,6 +128,9 @@ class OverlayApp:
         # What each chart last measured, so switching away and back is free.
         self._measured: dict[tuple[Any, ...], tuple[Any, int, Any]] = {}
 
+        # Every chart looked at this session, for the report written at the end.
+        self._charts_seen: set[str] = set()
+
         # Verdicts for every chart the socket carries, not just the open one.
         self._watch_results: queue.Queue[Any] = queue.Queue()
         self._watch_busy = False
@@ -200,6 +204,12 @@ class OverlayApp:
         # session. Carrying one pair's number onto another silently moves the
         # break-even bar that every measurement here is judged against.
         self._load_payout_for(self.vm.asset)
+
+        # Every chart looked at, named for the report written at the end.
+        if self.vm.asset and self.vm.asset != UNKNOWN_ASSET:
+            self._charts_seen.add(
+                f"{self.vm.asset} {format_duration(self.vm.chart_timeframe)}"
+            )
 
         # Count a setup once, when it first qualifies. Every evaluation mints
         # a fresh signal id, so keying on that counted the same standing setup
@@ -1364,7 +1374,48 @@ class OverlayApp:
         finally:
             self.shutdown()
 
+    def write_session_report(self) -> Any:
+        """Write down what was decided this session, and where it went.
+
+        The panel is a live instrument — it shows what is true at the moment
+        you look and forgets. Judging whether the thing is any good needs the
+        whole session laid out at once, in a file that outlives the process
+        and can be read by somebody who was not sitting in front of it.
+        """
+        from ..reporting import collect, write_report
+
+        try:
+            report = collect(
+                self.engine.journal,
+                started=self._session_since,
+                source=getattr(self.engine.source, "name", None),
+                stake=float(self.vm.risk.stake or 0.0),
+                payout=float(self.vm.payout),
+                charts=sorted(self._charts_seen),
+                tuning=self.vm.tuning,
+                retired=self.vm.retired,
+                measurement=(
+                    self.vm.proof.summary() if self.vm.proof is not None else ""
+                ),
+                # The one line wanted, not a whole repaint. Rendering the
+                # entire panel to fetch a string would let any unrelated
+                # drawing problem take the report down with it, at the one
+                # moment there is no next frame to recover on.
+                lesson=self.vm._lesson(),
+            )
+            return write_report(report, self._report_dir())
+        except Exception as exc:  # pragma: no cover - never block the exit
+            log.warning("could not write the session report: %s", exc)
+            return None
+
+    def _report_dir(self) -> Any:
+        configured = self.config.get("storage.report_dir", "storage/reports")
+        path = Path(str(configured))
+        return path if path.is_absolute() else data_root() / path
+
     def shutdown(self) -> None:
+        # Before the engine closes, while the journal is still open.
+        self.write_session_report()
         try:
             self.engine.unsubscribe(self._on_engine_state)
         except Exception:  # pragma: no cover - best effort

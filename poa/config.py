@@ -240,6 +240,10 @@ DEFAULTS: dict[str, Any] = {
     "storage": {
         "database": "storage/journal.db",
         "screenshot_dir": "storage/screenshots",
+        # Where the end-of-session report is written. One plain-text file per
+        # session, named for when it started so they sort into the order they
+        # happened in.
+        "report_dir": "storage/reports",
         "retain_screenshots": 500,
     },
     "logging": {

@@ -6,6 +6,7 @@ storage/*.db
 storage/*.db-journal
 storage/*.log*
 storage/screenshots/
+storage/reports/
 
 # Python
 __pycache__/

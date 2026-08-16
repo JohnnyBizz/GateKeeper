@@ -1001,6 +1001,62 @@ settled signals, because a win rate over ten trades says close to nothing.
 
 ---
 
+## 11b. The session report
+
+When the app closes it writes a plain-text account of the session to
+`storage/reports/session-YYYY-MM-DD-HHMM.txt` — one file per session, named
+for when it started so they sort into the order they happened in.
+
+The panel is a live instrument: it shows what is true at the moment you look
+at it, and forgets. That is the wrong shape for judging whether the tool is
+any good, or for showing anyone else. Judging it needs the whole session laid
+out at once — every call, in order, with the score that produced it and how it
+settled — somewhere that outlives the process.
+
+```
+CALLS MADE                                                        12 calls
+--------------------------------------------------------------------------
+TIME  PAIR          DIR    SCORE   EXPIRY      ENTRY    RESULT
+09:48 EUR/USD OTC   CALL      78    3 MIN    1.19280       WIN
+10:43 GBP/USD OTC   PUT       81    3 MIN    1.36106      LOSS
+
+HOW THEY SETTLED
+--------------------------------------------------------------------------
+Settled                   7W / 5L
+Win rate                  58.3%
+Break-even at 92% payout  52.1%   (above)
+Notional stake            $20.00 per call
+Notional return           +$36.80  (not placed)
+```
+
+Also in the file: the trades you placed by hand kept in their own section,
+the measured record, any gate the record moved and why, any rule stood down,
+and what the losing calls had in common.
+
+**The one thing the document is careful about.** GateKeeper places no trades
+and touches no account. Every call in it was made by the assistant and then
+followed to expiry against the platform's own prices; the return is priced at
+the stake and payout configured at the time, so it is what those calls *would*
+have returned had each been taken. A report that could be read as a record of
+executed trades would be worse than no report, so the wording never leaves it
+ambiguous — the header says it before any number appears, the return figure
+carries `(not placed)`, and the caveats repeat it at the end.
+
+Trades you placed yourself are listed separately for the same reason: pooling
+them would make it impossible to judge either the assistant or yourself.
+
+A session with no calls says so explicitly, and says what it means — every
+setup examined failed at least one confirmation, which is a finding rather
+than an empty page. Rates over small samples are labelled as too few to read,
+and are always set against the break-even rate for the payout rather than
+against 50%.
+
+`storage.report_dir` moves the folder. Losing a report is bad and hanging on
+the way out is worse, so a report that cannot be written is logged and the
+app still closes.
+
+---
+
 ## 12. Tests
 
 ```bash
