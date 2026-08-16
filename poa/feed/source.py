@@ -29,6 +29,8 @@ from .protocol import (
     parse_history_candles,
     parse_symbol_change,
     parse_tick_history,
+    parse_payouts,
+    parse_settled_trade,
     parse_workspace_charts,
 )
 from .ticks import CandleBuilder, display_symbol, parse_ticks
@@ -158,6 +160,13 @@ class FeedChartSource(ChartSource):
         # ever arrives for them, and they are never what the platform means by
         # "the open chart".
         self._fast: dict[tuple[str, int], CandleBuilder] = {}
+        # What each instrument pays, straight from the platform. Typed in by
+        # hand this goes stale silently and in the flattering direction.
+        self._payouts: dict[str, float] = {}
+        # Trades the user actually placed, as the broker settled them. The
+        # best evidence there is: a real fill on a real account, and not a
+        # replay's opinion of where price would have been.
+        self._settled: list[dict[str, Any]] = []
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -324,13 +333,35 @@ class FeedChartSource(ChartSource):
                     self._claim(change.asset, change.period_seconds, RANK_DECLARED)
                 return
 
+            if event == "updateAssets":
+                found = parse_payouts(payload)
+                if found:
+                    self._payouts.update(found)
+                return
+
+            if event == "successcloseOrder":
+                for trade in parse_settled_trade(payload):
+                    self._settled.append(trade)
+                    log.info(
+                        "settled %s %s at %s%%: %s",
+                        trade["asset"],
+                        trade["direction"],
+                        int((trade.get("payout") or 0) * 100),
+                        "win" if trade["won"] else "loss",
+                    )
+                # Bounded: this is a hand-off queue, not a second journal.
+                if len(self._settled) > 200:
+                    del self._settled[:-200]
+                return
+
             if event == "saveCharts":
-                # The page's own record of the charts it keeps — the tabs
-                # along the top of the platform. That is the watchlist the
-                # user meant; the stream carries dozens of other instruments.
-                workspace = parse_workspace_charts(payload)
-                if workspace:
-                    self._workspace = workspace
+                # The page's own record of a chart it keeps. One message
+                # describes one chart — chartId, and that chart's settings —
+                # so the workspace is the union of them, not the last one
+                # seen. Replacing it collapsed the watchlist to whichever
+                # chart the platform happened to save most recently, which is
+                # a worse answer than not filtering at all.
+                self._workspace |= parse_workspace_charts(payload)
                 asset, period = parse_displayed_chart(payload)
                 if asset:
                     self._claim(asset, period, RANK_DECLARED)
@@ -740,6 +771,25 @@ class FeedChartSource(ChartSource):
                 }
             },
         )
+
+    def payout_for(self, asset: str) -> float | None:
+        """What the platform says this instrument pays, or None."""
+        with self._lock:
+            if not self._payouts:
+                return None
+            wanted = str(asset).upper().replace(" ", "").replace("/", "")
+            for symbol, payout in self._payouts.items():
+                if symbol.upper().replace("_", "").replace("/", "") == wanted:
+                    return payout
+                if display_symbol(symbol).upper().replace(" ", "").replace("/", "") == wanted:
+                    return payout
+        return None
+
+    def take_settled(self) -> list[dict[str, Any]]:
+        """Hand over the real trades seen since this was last called."""
+        with self._lock:
+            out, self._settled = list(self._settled), []
+        return out
 
     def watched(self) -> list[tuple[str, int, Series]]:
         """Every chart being followed, the active one first.

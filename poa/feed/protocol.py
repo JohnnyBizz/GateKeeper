@@ -37,8 +37,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ..logging_setup import get_logger
 from ..models import Candle
 from .ticks import Tick, display_symbol
+
+log = get_logger(__name__)
 
 
 def _unwrap(payload: Any, name: str) -> Any:
@@ -256,3 +259,113 @@ def infer_period(candles: list[Candle]) -> int | None:
     if not gaps:
         return None
     return max(set(gaps), key=gaps.count)
+
+
+def parse_payouts(payload: Any) -> dict[str, float]:
+    """Per-asset payout percentages from ``updateAssets``.
+
+    The platform sends its whole instrument table as positional rows rather
+    than named fields, so this reads by position and checks the shape before
+    believing any of it::
+
+        [170, "#AAPL_otc", "Apple OTC", "stock", 3, 92, 60, ...]
+           ^index      ^symbol      ^name    ^kind   ^payout %
+
+    Worth having because the payout decides the rate a win has to beat, it
+    differs per instrument, and the platform changes it through the day. Typed
+    in by hand it goes stale silently and in the flattering direction.
+    """
+    rows = payload
+    if isinstance(rows, dict):
+        rows = rows.get("data") or rows.get("assets")
+    if not isinstance(rows, (list, tuple)):
+        return {}
+
+    payouts: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 6:
+            continue
+        symbol, percent = row[1], row[5]
+        if not isinstance(symbol, str) or not symbol:
+            continue
+        if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+            continue
+        # A payout is a percentage of the stake returned as profit. Outside
+        # this range the column is not the one being read.
+        if not 1 <= float(percent) <= 100:
+            continue
+        payouts[symbol] = round(float(percent) / 100.0, 4)
+    return payouts
+
+
+def parse_settled_trade(payload: Any) -> list[dict[str, Any]]:
+    """Trades the user actually placed, and how they actually settled.
+
+    From ``successcloseOrder``, which the platform sends when one of its own
+    expires. This is the best evidence there is about anything: a real trade,
+    at a real fill, on a real account, settled by the broker rather than by a
+    replay's opinion of where price would have been.
+
+    ``command`` is the direction — 1 is a put in every captured example, and
+    the recorded prices agree with it. The price move is checked against the
+    profit before a trade is believed, so a wrong reading of that field
+    discards the row rather than teaching the record something backwards.
+    """
+    body = payload
+    if isinstance(body, list) and body and isinstance(body[0], str):
+        body = body[1] if len(body) > 1 else None
+    if not isinstance(body, dict):
+        return []
+    deals = body.get("deals")
+    if not isinstance(deals, list):
+        return []
+
+    settled: list[dict[str, Any]] = []
+    for deal in deals:
+        if not isinstance(deal, dict):
+            continue
+        asset = deal.get("asset")
+        opened, closed = deal.get("openPrice"), deal.get("closePrice")
+        profit = deal.get("profit")
+        if not isinstance(asset, str) or not asset:
+            continue
+        if not all(isinstance(v, (int, float)) for v in (opened, closed, profit)):
+            continue
+        if not closed:  # still open; a close price of zero is not a price
+            continue
+
+        direction = "PUT" if deal.get("command") == 1 else "CALL"
+        won = float(profit) > 0
+        # The direction, the price move and the outcome have to agree. When
+        # they do not, the reading of one of them is wrong, and a record
+        # taught backwards is worse than one not taught at all.
+        moved_down = float(closed) < float(opened)
+        if float(closed) != float(opened):
+            expected = moved_down if direction == "PUT" else not moved_down
+            if expected != won:
+                log.debug("inconsistent settled trade on %s, skipping", asset)
+                continue
+
+        start = deal.get("openTimestamp")
+        end = deal.get("closeTimestamp")
+        settled.append(
+            {
+                "asset": asset,
+                "direction": direction,
+                "won": won,
+                "open_price": float(opened),
+                "close_price": float(closed),
+                "payout": (
+                    round(float(deal["percentProfit"]) / 100.0, 4)
+                    if isinstance(deal.get("percentProfit"), (int, float))
+                    else None
+                ),
+                "duration": (
+                    int(end - start)
+                    if isinstance(start, (int, float)) and isinstance(end, (int, float))
+                    else None
+                ),
+                "opened_at": start,
+            }
+        )
+    return settled

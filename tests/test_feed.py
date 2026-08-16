@@ -1669,3 +1669,151 @@ class TestSendingTheDataBack:
         from poa.feed.replay import export_candles
 
         assert export_candles([], tmp_path) == []
+
+
+class TestWhatTheRealCaptureRevealed:
+    """Three findings from a live recording of the platform.
+
+    Every shape here is copied from traffic that was actually captured, not
+    guessed at — which is the whole reason the recording was worth asking for.
+    """
+
+    # -- saveCharts describes ONE chart, not the tab list ------------------
+
+    def _save(self, symbol):
+        """A saveCharts exactly as the platform sends it."""
+        return [
+            "saveCharts",
+            {"chartId": "x", "settings": {
+                "chartId": "x", "chartType": 5, "chartPeriod": 4,
+                "candlesTimer": True, "symbol": symbol, "fastTimeframe": 180}},
+        ]
+
+    def test_the_workspace_accumulates_across_messages(self):
+        """One message, one chart. Replacing the set on each collapsed the
+        watchlist to whichever chart the platform saved most recently — a
+        worse answer than not filtering at all.
+        """
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for symbol in ("EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"):
+            source._handle("saveCharts", self._save(symbol))
+        assert source._workspace == {"EURUSD_otc", "GBPUSD_otc", "USDJPY_otc"}
+
+    def test_the_captured_period_code_is_not_mistaken_for_seconds(self):
+        """saveCharts reports chartPeriod 4 for a chart changeSymbol calls 60.
+
+        It is a code, not a duration, and reading it as seconds would rebucket
+        every candle on the chart.
+        """
+        from poa.feed.protocol import parse_displayed_chart
+
+        _asset, period = parse_displayed_chart(self._save("EURUSD_otc"))
+        assert period is None
+
+    # -- updateAssets carries the payout -----------------------------------
+
+    def _assets(self):
+        return [
+            [5, "#AAPL", "Apple", "stock", 2, 50, 60, 30, 3, 0, 170, 0, [],
+             1786924800, False, [{"time": 60}], -1, 60, 1786984500],
+            [170, "EURUSD_otc", "EUR/USD OTC", "currency", 3, 92, 60, 30, 3, 1,
+             0, 5, [], 1786924800, True, [{"time": 60}], 0, 3, -1],
+            [171, "LBPUSD_otc", "LBP/USD OTC", "currency", 3, 47, 60, 30, 3, 1,
+             0, 5, [], 1786924800, True, [{"time": 60}], 0, 3, -1],
+        ]
+
+    def test_payouts_are_read_per_instrument(self):
+        from poa.feed.protocol import parse_payouts
+
+        payouts = parse_payouts(self._assets())
+        assert payouts["EURUSD_otc"] == 0.92
+        assert payouts["LBPUSD_otc"] == 0.47
+
+    def test_the_payout_is_found_by_the_name_the_panel_uses(self):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle("updateAssets", self._assets())
+        assert source.payout_for("EUR/USD OTC") == 0.92
+        assert source.payout_for("LBP/USD OTC") == 0.47
+        assert source.payout_for("NOT/HERE") is None
+
+    def test_a_row_that_is_not_an_instrument_is_ignored(self):
+        from poa.feed.protocol import parse_payouts
+
+        assert parse_payouts([["junk"], None, 5, {}]) == {}
+
+    def test_an_impossible_payout_is_not_believed(self):
+        """Out of range means the column being read is not the payout."""
+        from poa.feed.protocol import parse_payouts
+
+        row = [1, "X_otc", "X", "currency", 3, 4000, 60, 30, 3, 1, 0, 5]
+        assert parse_payouts([row]) == {}
+
+    # -- successcloseOrder is a real settled trade -------------------------
+
+    def _closed(self, **over):
+        deal = {
+            "asset": "USDJPY_otc", "openPrice": 158.611, "closePrice": 158.597,
+            "command": 1, "profit": 8.8, "percentProfit": 88,
+            "openTimestamp": 1786923484, "closeTimestamp": 1786923664,
+        }
+        deal.update(over)
+        return {"profit": deal["profit"], "deals": [deal]}
+
+    def test_a_settled_trade_is_read_whole(self):
+        from poa.feed.protocol import parse_settled_trade
+
+        trade = parse_settled_trade(self._closed())[0]
+        assert trade["asset"] == "USDJPY_otc"
+        assert trade["direction"] == "PUT"
+        assert trade["won"] is True
+        assert trade["duration"] == 180
+        assert trade["payout"] == 0.88
+
+    def test_a_losing_trade_reads_as_one(self):
+        from poa.feed.protocol import parse_settled_trade
+
+        trade = parse_settled_trade(
+            self._closed(closePrice=158.70, profit=-10.0)
+        )[0]
+        assert trade["won"] is False
+
+    def test_a_reading_that_contradicts_itself_is_discarded(self):
+        """Direction, price move and outcome have to agree.
+
+        Where they do not, one of them is being read wrongly, and a record
+        taught backwards is worse than one not taught at all.
+        """
+        from poa.feed.protocol import parse_settled_trade
+
+        # A put whose price rose, reported as a win.
+        assert parse_settled_trade(
+            self._closed(closePrice=159.00, profit=8.8)
+        ) == []
+
+    def test_a_trade_still_open_is_not_settled(self):
+        from poa.feed.protocol import parse_settled_trade
+
+        assert parse_settled_trade(self._closed(closePrice=0)) == []
+
+    def test_settled_trades_are_handed_over_once(self):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle("successcloseOrder", self._closed())
+        assert len(source.take_settled()) == 1
+        assert source.take_settled() == []
+
+    def test_the_queue_is_bounded(self):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        for _ in range(400):
+            source._handle("successcloseOrder", self._closed())
+        assert len(source._settled) <= 200

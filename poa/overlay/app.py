@@ -20,6 +20,7 @@ from ..config import Config, data_root, load_config
 from ..engine import AnalysisEngine
 from ..logging_setup import get_logger, install_crash_handlers, setup_logging
 from ..models import format_duration, utcnow
+from ..feed.ticks import display_symbol
 from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState
 
@@ -184,6 +185,9 @@ class OverlayApp:
 
         if latest is not None:
             self._apply_state()
+
+        # Trades the platform has settled since the last poll.
+        self._collect_real_trades()
 
         # Refresh the session counters from settled journal outcomes.
         self._refresh_session()
@@ -514,9 +518,41 @@ class OverlayApp:
         log.info("expiry follows the analysis: %ss", wanted)
 
     def _load_payout_for(self, asset: str) -> None:
-        """Use the payout remembered for this chart, if one was set."""
+        """Use the payout the platform reports for this chart.
+
+        It differs per instrument and the platform moves it through the day,
+        so a number typed in once goes stale silently — and in the flattering
+        direction, since a stale high payout lowers the rate a win has to beat.
+        The platform's own figure beats anything remembered, which beats
+        nothing.
+        """
         if not asset or asset == UNKNOWN_ASSET:
             return
+
+        live = None
+        reported = getattr(self.engine.source, "payout_for", None)
+        if callable(reported):
+            try:
+                live = reported(asset)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.debug("could not read the payout for %s: %s", asset, exc)
+        if live:
+            # The platform's figure wins outright. Whether it differs from
+            # what is on screen only decides whether anything needs writing —
+            # it must never decide whether the *remembered* value gets a turn,
+            # because a live figure that happens to match the current one
+            # would then hand the decision to a stale one.
+            changed = abs(float(live) - float(self.vm.payout)) > 0.001
+            self.vm.payout = float(live)
+            self._payout_asset = asset
+            if changed or (self.config.get("market.payouts") or {}).get(asset) != live:
+                self.config.set("market.payout", float(live))
+                payouts = dict(self.config.get("market.payouts") or {})
+                payouts[asset] = float(live)
+                self.config.set("market.payouts", payouts)
+                log.info("payout for %s is %.0f%%", asset, float(live) * 100)
+            return
+
         if asset == self._payout_asset:
             return
         self._payout_asset = asset
@@ -1168,6 +1204,54 @@ class OverlayApp:
             # fixing a miscount, not reporting a trade that happened.
             self.vm.session.record(won=wins > 0)
             self._file_manual_outcome(won=wins > 0)
+
+    def _collect_real_trades(self) -> None:
+        """Learn from trades the platform says the user actually placed.
+
+        Better than the buttons in every way that matters: the direction, the
+        fill, the expiry and the outcome all come from the broker, so nothing
+        is assumed about which way the trade went and nothing depends on
+        remembering to press anything. The buttons stay, for trades on an
+        account this is not watching.
+        """
+        take = getattr(self.engine.source, "take_settled", None)
+        if not callable(take):
+            return
+        try:
+            trades = take()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read settled trades: %s", exc)
+            return
+
+        for trade in trades:
+            self.vm.session.record(won=trade["won"])
+            self.vm.session.adjust(wins=int(trade["won"]), losses=int(not trade["won"]))
+            try:
+                self.engine.journal.record_manual(
+                    asset=display_symbol(trade["asset"]),
+                    chart_timeframe=self.vm.chart_timeframe,
+                    trade_duration=int(trade.get("duration") or self.engine.trade_duration),
+                    direction=trade["direction"],
+                    direction_confidence=float(self.vm.signal.direction_confidence)
+                    if self.vm.signal is not None
+                    else 0.0,
+                    duration_confidence=float(self.vm.signal.duration_confidence)
+                    if self.vm.signal is not None
+                    else 0.0,
+                    won=trade["won"],
+                    source=getattr(self.engine.source, "name", None),
+                    price=trade.get("open_price"),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("could not file a settled trade: %s", exc)
+                continue
+            log.info(
+                "recorded a real %s on %s",
+                "win" if trade["won"] else "loss",
+                trade["asset"],
+            )
+        if trades:
+            self._proof_at = None
 
     def _file_manual_outcome(self, won: bool) -> None:
         """Teach the record from a trade the user placed themselves.

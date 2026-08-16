@@ -2293,3 +2293,141 @@ class TestSweepingFastEnoughToMatter:
             assert len(reads) == 2
         finally:
             app.shutdown()
+
+
+class TestLearningFromRealTrades:
+    """The platform reports every trade it settles, with the direction, the
+    fill, the expiry and the outcome. That is better evidence than the buttons
+    in every way: nothing is assumed about which way the trade went, and
+    nothing depends on remembering to press anything."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "reports"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        app = OverlayApp(config)
+        app.vm.asset, app.vm.chart_timeframe = "USD/JPY OTC", 60
+        return app
+
+    def _trade(self, won=True, direction="PUT"):
+        return {
+            "asset": "USDJPY_otc", "direction": direction, "won": won,
+            "open_price": 158.611, "close_price": 158.597,
+            "payout": 0.88, "duration": 180, "opened_at": 1786923484,
+        }
+
+    def _filed(self, app):
+        return app.engine.journal.calibration_records(
+            asset="USD/JPY OTC",
+            source=getattr(app.engine.source, "name", None),
+            chart_timeframe=60, trade_duration=180,
+        )
+
+    def test_a_settled_trade_reaches_the_record(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: [self._trade()]
+            app._collect_real_trades()
+            filed = self._filed(app)
+            assert len(filed) == 1
+            assert filed[0].direction == "PUT" and filed[0].won is True
+        finally:
+            app.shutdown()
+
+    def test_the_direction_comes_from_the_broker_not_a_guess(self, tmp_path):
+        """The buttons assume the trade went the way the panel was leaning.
+        This does not have to assume anything."""
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: [
+                self._trade(direction="CALL", won=False)
+            ]
+            app._collect_real_trades()
+            assert self._filed(app)[0].direction == "CALL"
+        finally:
+            app.shutdown()
+
+    def test_the_tally_and_the_streak_both_move(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: [
+                self._trade(won=False), self._trade(won=False)
+            ]
+            app._collect_real_trades()
+            assert (app.vm.session.wins, app.vm.session.losses) == (0, 2)
+            assert app.vm.session.losing_streak == 2
+        finally:
+            app.shutdown()
+
+    def test_nothing_settled_changes_nothing(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: []
+            app._collect_real_trades()
+            assert self._filed(app) == []
+        finally:
+            app.shutdown()
+
+    def test_a_source_that_cannot_report_them_is_fine(self, tmp_path):
+        """Screen reading has no socket to hear a settlement on."""
+        app = self._app(tmp_path)
+        try:
+            assert not hasattr(app.engine.source, "take_settled")
+            app._collect_real_trades()  # must not raise
+        finally:
+            app.shutdown()
+
+
+class TestThePayoutComesFromThePlatform:
+    """It differs per instrument and moves through the day. Typed in once it
+    goes stale silently, and in the flattering direction — a stale high payout
+    lowers the rate a win has to beat."""
+
+    def _app(self, tmp_path):
+        return TestLearningFromRealTrades()._app(tmp_path)
+
+    def test_the_reported_payout_is_used(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.payout = 0.92
+            app.engine.source.payout_for = lambda asset: 0.47
+            app._load_payout_for("LBP/USD OTC")
+            assert app.vm.payout == 0.47
+        finally:
+            app.shutdown()
+
+    def test_it_beats_a_remembered_one(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("market.payouts", {"EUR/USD OTC": 0.80})
+            app.engine.source.payout_for = lambda asset: 0.92
+            app._load_payout_for("EUR/USD OTC")
+            assert app.vm.payout == 0.92
+        finally:
+            app.shutdown()
+
+    def test_a_platform_that_says_nothing_falls_back(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("market.payouts", {"EUR/USD OTC": 0.80})
+            app.engine.source.payout_for = lambda asset: None
+            app._load_payout_for("EUR/USD OTC")
+            assert app.vm.payout == 0.80
+        finally:
+            app.shutdown()
+
+    def test_an_unknown_pair_is_left_alone(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.payout = 0.92
+            app._load_payout_for("—")
+            assert app.vm.payout == 0.92
+        finally:
+            app.shutdown()
