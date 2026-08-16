@@ -1076,6 +1076,46 @@ app still closes.
 
 ---
 
+## 11c. Measuring against a real market
+
+Everything the tool knows about its own accuracy is measured against candles,
+so where those candles come from decides what the measurement is worth.
+
+Until recently the only market available offline was a generated one, and that
+is a harsher limit than it sounds. **A random walk is unpredictable by
+construction.** Past the drift laid over it there is nothing in it to find, so
+a score that ranks setups perfectly and a score that ranks them by coin toss
+produce the same number on it. Measuring *"does the score separate winners
+from losers"* against generated data cannot answer the question either way —
+and measuring it there and reporting the answer would be worse than not
+measuring at all.
+
+`RecordFeed` already writes the platform's own frames to disk with the secrets
+stripped. Those can now be read back:
+
+```bash
+python tools/backtest.py --recording feed.jsonl --list-charts
+#    EUR/USD OTC        5 SEC    601 candles
+#    EUR/USD OTC       15 SEC    210 candles
+
+python tools/backtest.py --recording feed.jsonl --timeframe 15 --duration 60
+```
+
+The frames are replayed through the live source's own handler rather than a
+second parser written for the purpose. Two parsers would be two answers to one
+question, and the one used offline is the one nobody notices has drifted.
+
+What comes out is every timeframe the tool would have had at the time — the
+sub-minute ones built from ticks, the rest aggregated — as real candles from a
+real market. Every experiment worth running (which score threshold discriminates,
+whether the component weights can be fitted, which hours and conditions the
+reading holds up in) only means something when it runs on these.
+
+A recording is a log rather than a database: an unreadable line is skipped, not
+a reason to lose the session around it.
+
+---
+
 ## 12. Tests
 
 ```bash

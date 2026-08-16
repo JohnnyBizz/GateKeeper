@@ -1363,3 +1363,309 @@ class TestTheSecondsCandlesNothingCouldSee:
         )
         source._handle("updateStream", [["GBPJPY_otc", 1_786_662_900, 1.5]])
         assert not any(asset == "GBPJPY_otc" for asset, _p in source._fast)
+
+
+class TestReplayingARealRecording:
+    """Generated markets cannot answer the question that matters.
+
+    A random walk is unpredictable by construction: past its drift there is
+    nothing in it to find, so a score that ranks setups perfectly and one that
+    ranks them by coin toss measure the same on it. Recorded traffic is the
+    only offline market that can say whether the reading works.
+    """
+
+    def _recording(self, tmp_path, ticks=4200, asset="EURUSD_otc", period=60):
+        """Roughly twenty-five minutes of ticks — long enough that even the
+        one-minute chart clears the floor the analysis needs."""
+        import json
+
+        path = tmp_path / "rec.jsonl"
+        lines = [
+            {"direction": "in", "kind": "socket.io", "event": "changeSymbol",
+             "payload": ["changeSymbol", {"asset": asset, "period": period}]}
+        ]
+        start = 1_786_662_000
+        for i in range(ticks):
+            lines.append(
+                {"direction": "in", "kind": "socket.io", "event": "updateStream",
+                 "payload": [[asset, start + i * 0.35, 1.19 + (i % 200) * 0.00002]]}
+            )
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+        return path
+
+    def test_a_recording_becomes_candles(self, tmp_path):
+        from poa.feed.replay import charts_from_recording
+
+        charts = charts_from_recording(self._recording(tmp_path), min_candles=20)
+        assert charts
+        assert all(asset == "EUR/USD OTC" for asset, _tf, _s in charts)
+
+    def test_every_timeframe_the_live_tool_would_have_had(self, tmp_path):
+        """Through the live source's own handler, so the offline candles and
+        the live ones cannot quietly drift apart."""
+        from poa.feed.replay import charts_from_recording
+
+        charts = charts_from_recording(self._recording(tmp_path), min_candles=20)
+        assert sorted(tf for _a, tf, _s in charts) == [5, 10, 15, 30, 60]
+
+    def test_the_prices_are_the_recorded_ones(self, tmp_path):
+        from poa.feed.replay import series_from_recording
+
+        series = series_from_recording(self._recording(tmp_path), min_candles=20)
+        assert series is not None
+        assert all(1.18 < candle.close < 1.20 for candle in series)
+
+    def test_one_bad_line_does_not_lose_the_session(self, tmp_path):
+        """A recording is a log, not a database."""
+        from poa.feed.replay import charts_from_recording
+
+        path = self._recording(tmp_path)
+        path.write_text(path.read_text() + "not json at all\n{\n")
+        assert charts_from_recording(path, min_candles=20)
+
+    def test_an_empty_recording_yields_nothing_rather_than_failing(self, tmp_path):
+        from poa.feed.replay import charts_from_recording, series_from_recording
+
+        path = tmp_path / "empty.jsonl"
+        path.write_text("")
+        assert charts_from_recording(path) == []
+        assert series_from_recording(path) is None
+
+    def test_a_chart_can_be_asked_for_by_name_and_length(self, tmp_path):
+        from poa.feed.replay import series_from_recording
+
+        path = self._recording(tmp_path)
+        series = series_from_recording(
+            path, asset="EUR/USD OTC", timeframe=15, min_candles=20
+        )
+        assert series is not None and series.timeframe_seconds == 15
+        assert series_from_recording(path, asset="NOT/HERE") is None
+
+    def test_short_charts_are_left_out(self, tmp_path):
+        """Below what the analysis reads there is nothing to measure."""
+        from poa.feed.replay import charts_from_recording
+
+        charts = charts_from_recording(self._recording(tmp_path), min_candles=200)
+        assert all(len(s) >= 200 for _a, _tf, s in charts)
+
+
+class TestRecordingLongEnoughToMatter:
+    """A one-minute sample answers "what does the platform send".
+
+    Capturing a real market to measure the engine against is a different job,
+    and the recorder could not do it: it stopped at four thousand frames and
+    held every one in memory, so "record for a few hours" ended after a few
+    minutes. Frames now stream to disk as they arrive.
+    """
+
+    def _run(self, tmp_path, messages, seconds=5.0, max_frames=10**9):
+        import asyncio
+        import json
+        import types
+
+        from poa.feed import recorder
+
+        class FakeConnection:
+            def __init__(self, queued):
+                self.queued = list(queued)
+
+            async def send(self, _message):
+                return None
+
+            async def recv(self):
+                if self.queued:
+                    return self.queued.pop(0)
+                await asyncio.sleep(10)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        original = recorder.websockets
+        recorder.websockets = types.SimpleNamespace(
+            connect=lambda *a, **k: FakeConnection(messages)
+        )
+        path = tmp_path / "out.jsonl"
+        written = []
+        try:
+            with path.open("w", encoding="utf-8") as sink:
+                def keep(frame):
+                    sink.write(json.dumps(frame.to_dict(), default=str) + "\n")
+                    written.append(1)
+
+                capture = recorder.record(
+                    types.SimpleNamespace(websocket_url="ws://x", url="http://x"),
+                    seconds=seconds,
+                    max_frames=max_frames,
+                    on_frame=keep,
+                )
+                capture = asyncio.run(capture)
+        finally:
+            recorder.websockets = original
+        return path, len(written), capture
+
+    def _frames(self, count, with_symbol=True):
+        import json
+
+        def wrap(payload):
+            return json.dumps(
+                {"method": "Network.webSocketFrameReceived",
+                 "params": {"response": {"opcode": 1, "payloadData": payload}}}
+            )
+
+        out = []
+        if with_symbol:
+            out.append(wrap('42["changeSymbol",{"asset":"EURUSD_otc","period":60}]'))
+        for i in range(count):
+            out.append(wrap(
+                f'42["updateStream",[["EURUSD_otc",{1786662000 + i * 0.35},'
+                f'{1.19 + (i % 300) * 0.00002}]]]'
+            ))
+        return out
+
+    def test_it_records_past_the_old_ceiling(self, tmp_path):
+        _path, written, _capture = self._run(tmp_path, self._frames(5000))
+        assert written > 4000
+
+    def test_nothing_accumulates_in_memory(self, tmp_path):
+        """Which is what bounds a long recording by disk rather than by RAM."""
+        _path, _written, capture = self._run(tmp_path, self._frames(5000))
+        assert capture.frames == []
+
+    def test_what_it_wrote_replays_into_candles(self, tmp_path):
+        from poa.feed.replay import charts_from_recording
+
+        path, _written, _capture = self._run(tmp_path, self._frames(6000))
+        charts = charts_from_recording(path, min_candles=20)
+        assert sorted(tf for _a, tf, _s in charts) == [5, 10, 15, 30, 60]
+
+    def test_a_short_sample_still_collects_the_frames(self, tmp_path):
+        """Without a sink the frames come back, which is all a sample needs."""
+        import asyncio
+        import types
+
+        from poa.feed import recorder
+
+        class FakeConnection:
+            def __init__(self, queued):
+                self.queued = list(queued)
+
+            async def send(self, _m):
+                return None
+
+            async def recv(self):
+                if self.queued:
+                    return self.queued.pop(0)
+                await asyncio.sleep(10)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        original = recorder.websockets
+        recorder.websockets = types.SimpleNamespace(
+            connect=lambda *a, **k: FakeConnection(self._frames(50))
+        )
+        try:
+            capture = asyncio.run(
+                recorder.record(
+                    types.SimpleNamespace(websocket_url="ws://x", url="http://x"),
+                    seconds=3.0,
+                )
+            )
+        finally:
+            recorder.websockets = original
+        assert len(capture.frames) > 40
+
+    def test_the_summary_is_still_built_while_streaming(self, tmp_path):
+        """The readable report is what a protocol sample is *for*."""
+        _path, _written, capture = self._run(tmp_path, self._frames(200))
+        assert capture.summary.render()
+
+
+class TestSendingTheDataBack:
+    """Raw frames are large and mostly not market data.
+
+    Every heartbeat and acknowledgement the platform sends for reasons of its
+    own is in there, and none of it is what the engine gets measured against.
+    The candles are, and the same recording as candles is small enough to
+    actually send.
+    """
+
+    def _charts(self):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 16, tzinfo=timezone.utc)
+        return [
+            (
+                "EUR/USD OTC",
+                period,
+                Series(
+                    [
+                        Candle(start + timedelta(seconds=i * period),
+                               1.19, 1.1912, 1.1888, 1.1903)
+                        for i in range(120)
+                    ],
+                    period,
+                    "EUR/USD OTC",
+                ),
+            )
+            for period in (5, 60)
+        ]
+
+    def test_each_chart_is_written(self, tmp_path):
+        from poa.feed.replay import export_candles
+
+        paths = export_candles(self._charts(), tmp_path)
+        assert len(paths) == 2
+        assert all(path.exists() for path in paths)
+
+    def test_the_files_are_named_for_the_chart(self, tmp_path):
+        from poa.feed.replay import export_candles
+
+        names = sorted(p.name for p in export_candles(self._charts(), tmp_path))
+        assert names == ["EUR-USD-OTC-5s.csv", "EUR-USD-OTC-60s.csv"]
+
+    def test_they_load_back_through_the_reader_that_already_exists(self, tmp_path):
+        """An exported chart is replayable by the tools there are, rather than
+        by a new one written for the purpose."""
+        from poa.chart_detection import load_csv
+        from poa.feed.replay import export_candles
+
+        path = sorted(export_candles(self._charts(), tmp_path))[0]
+        series = load_csv(path)
+        assert len(series) == 120
+        assert series.timeframe_seconds == 5
+
+    def test_the_prices_survive_the_round_trip(self, tmp_path):
+        from poa.chart_detection import load_csv
+        from poa.feed.replay import export_candles
+
+        original = self._charts()[0][2]
+        path = sorted(export_candles(self._charts(), tmp_path))[0]
+        back = load_csv(path)
+        assert back[0].open == original[0].open
+        assert back[-1].close == original[-1].close
+
+    def test_it_carries_prices_and_nothing_else(self, tmp_path):
+        """Which is why the folder is safe to send without a second thought."""
+        from poa.feed.replay import export_candles
+
+        text = sorted(export_candles(self._charts(), tmp_path))[0].read_text()
+        assert text.splitlines()[0] == "timestamp,open,high,low,close"
+
+    def test_the_folder_is_created_if_it_is_not_there(self, tmp_path):
+        from poa.feed.replay import export_candles
+
+        assert export_candles(self._charts(), tmp_path / "a" / "b")
+
+    def test_nothing_to_export_is_not_a_failure(self, tmp_path):
+        from poa.feed.replay import export_candles
+
+        assert export_candles([], tmp_path) == []

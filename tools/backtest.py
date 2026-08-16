@@ -2,12 +2,18 @@
 """Run the signal engine over historical candles.
 
     python tools/backtest.py                                  # sample data
+    python tools/backtest.py --recording feed.jsonl           # a real session
     python tools/backtest.py --csv data/my-session.csv --duration 300
     python tools/backtest.py --compare-durations              # every expiration
 
 Results describe how the engine behaved on the data supplied. They do not
-predict future performance, and on synthetic data they measure the generator as
-much as the engine.
+predict future performance.
+
+``--recording`` takes what RecordFeed wrote and is the only one of these that
+measures the engine against a real market. Synthetic candles measure the
+generator at least as much as the engine, and a random walk is unpredictable
+by construction — on one of those, a score that ranks setups perfectly and a
+score that ranks them by coin toss produce the same answer.
 """
 
 from __future__ import annotations
@@ -28,6 +34,14 @@ from poa.signals import GateSettings
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv", default=None, help="candle CSV to replay")
+    parser.add_argument(
+        "--recording", default=None,
+        help="a RecordFeed capture (.jsonl) — real market data",
+    )
+    parser.add_argument(
+        "--list-charts", action="store_true",
+        help="show the charts a recording contains, then stop",
+    )
     parser.add_argument("--synthetic", type=int, default=None, help="generate N candles instead")
     parser.add_argument("--asset", default=None)
     parser.add_argument("--timeframe", type=int, default=None, help="seconds per candle")
@@ -50,7 +64,41 @@ def main() -> int:
 
     config = load_config()
 
-    if args.synthetic:
+    if args.recording:
+        from poa.feed.replay import charts_from_recording
+
+        try:
+            charts = charts_from_recording(args.recording)
+        except Exception as exc:
+            print(f"Could not read {args.recording}: {exc}")
+            return 1
+        if not charts:
+            print(
+                f"{args.recording} holds no chart with enough candles to read. "
+                "A longer recording, or one left running while a chart is open, "
+                "is what this needs."
+            )
+            return 1
+        if args.list_charts:
+            print(f"{args.recording} contains:")
+            for asset, timeframe, chart in sorted(charts, key=lambda c: (c[0], c[1])):
+                print(f"   {asset:<16}{format_duration(timeframe):>8}"
+                      f"{len(chart):>7} candles")
+            return 0
+        wanted = [
+            c for c in charts
+            if (args.asset is None or c[0] == args.asset)
+            and (args.timeframe is None or c[1] == args.timeframe)
+        ]
+        if not wanted:
+            print("No chart in that recording matches. Try --list-charts.")
+            return 1
+        asset, timeframe, series = max(wanted, key=lambda c: len(c[2]))
+        source_label = (
+            f"{args.recording} — {asset} at {format_duration(timeframe)}, "
+            f"{len(series)} candles of real market"
+        )
+    elif args.synthetic:
         series = generate_series(
             args.synthetic,
             symbol=args.asset or "SYNTHETIC",

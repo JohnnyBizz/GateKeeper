@@ -50,8 +50,17 @@ async def record(
     target: Target,
     seconds: float = 60.0,
     max_frames: int = 4000,
+    on_frame: Any = None,
 ) -> Capture:
-    """Listen to one page's WebSocket traffic for a while."""
+    """Listen to one page's WebSocket traffic for a while.
+
+    ``on_frame`` turns this from a sample into a session. Given one, each
+    frame is handed over as it arrives and not kept, so a recording is bounded
+    by disk rather than by memory and can run for hours — which is what it
+    takes to capture a real market rather than a glimpse of one. Without it
+    the frames are collected and returned, which is all a protocol sample
+    needs.
+    """
     if websockets is None:  # pragma: no cover - dependency guaranteed by requirements
         raise BrowserError("The 'websockets' package is required to read the feed.")
 
@@ -101,7 +110,10 @@ async def record(
                 direction="in" if method.endswith("Received") else "out",
                 opcode=int(response.get("opcode", 1)),
             )
-            frames.append(frame)
+            if on_frame is None:
+                frames.append(frame)
+            else:
+                on_frame(frame)
             summary.add(frame)
 
     return Capture(frames=frames, summary=summary, sockets=sockets)
@@ -111,6 +123,8 @@ def record_platform(
     port: int,
     seconds: float = 60.0,
     needle: str = "pocketoption",
+    max_frames: int = 4000,
+    on_frame: Any = None,
 ) -> Capture:
     """Find the platform's tab and record it. Synchronous wrapper."""
     targets = list_targets(port)
@@ -122,4 +136,6 @@ def record_platform(
             f"Open the platform in that window first. Tabs seen: {titles}."
         )
     log.info("recording %s", target.url)
-    return asyncio.run(record(target, seconds=seconds))
+    return asyncio.run(
+        record(target, seconds=seconds, max_frames=max_frames, on_frame=on_frame)
+    )
