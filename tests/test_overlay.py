@@ -1786,3 +1786,198 @@ class TestTheLearningLoopIsVisible:
         from poa.overlay.viewmodel import OverlayViewModel
 
         assert "taught" in OverlayViewModel().render()["session"]
+
+
+class TestEveryWatchedChartCounts:
+    """One chart yields a handful of setups a day, which feels broken.
+
+    The other seven arrive on the same socket and are read at the same bar
+    against the same gates — the count was simply ignoring them, and the
+    answer to "too few calls" is more charts rather than weaker standards.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "r"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        app = OverlayApp(config)
+        app.vm.asset = "EUR/USD OTC"
+        return app
+
+    def _rows(self, *specs):
+        return [
+            {"asset": a, "score": s, "actionable": act, "direction": d}
+            for a, s, act, d in specs
+        ]
+
+    def _live(self, actionable=True):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(actionable=actionable)
+
+    def test_setups_elsewhere_are_counted(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = self._rows(
+                ("EUR/USD OTC", 80.0, True, "CALL"),
+                ("GBP/USD OTC", 84.0, True, "PUT"),
+                ("USD/JPY OTC", 44.0, False, "WAIT"),
+            )
+            assert app.vm._take_now(self._live())["take_now"] == 2
+        finally:
+            app.shutdown()
+
+    def test_the_open_chart_is_not_counted_twice(self, tmp_path):
+        """It appears in the sweep as well as being the live signal."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = self._rows(("EUR/USD OTC", 80.0, True, "CALL"))
+            assert app.vm._take_now(self._live())["take_now"] == 1
+        finally:
+            app.shutdown()
+
+    def test_the_pairs_are_named(self, tmp_path):
+        """A count with nowhere to go is a count nobody can act on."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = self._rows(("GBP/USD OTC", 84.0, True, "PUT"))
+            label = app.vm._take_now(self._live(False))["take_label"]
+            assert "GBP/USD" in label and label.startswith("1")
+        finally:
+            app.shutdown()
+
+    def test_nothing_anywhere_still_reads_zero_trades(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = self._rows(("GBP/USD OTC", 40.0, False, "WAIT"))
+            assert app.vm._take_now(self._live(False))["take_label"] == "0 trades"
+        finally:
+            app.shutdown()
+
+
+class TestASetupYouCannotSeeSpeaksUp:
+    """A tab turning green only helps somebody already watching the tab row.
+
+    The reason for reading eight charts is that the pair worth trading finds
+    the user rather than the other way round, and that needs a noise.
+    """
+
+    def _app(self, tmp_path):
+        return TestEveryWatchedChartCounts()._app(tmp_path)
+
+    def _listen(self, app):
+        heard: list[str] = []
+        app.engine.alerts.add_notifier(
+            type("N", (), {"name": "t", "send": lambda s, a: heard.append(a.title)})()
+        )
+        return heard
+
+    def _sweep(self, app, rows):
+        app._watch_results.put(list(rows))
+        app._collect_watchlist()
+
+    def _rows(self, *specs):
+        return TestEveryWatchedChartCounts()._rows(*specs)
+
+    def test_it_announces_a_setup_on_another_chart(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            self._sweep(app, self._rows(("GBP/USD OTC", 84.0, True, "PUT")))
+            assert any("GBP/USD OTC" in title for title in heard)
+        finally:
+            app.shutdown()
+
+    def test_it_says_nothing_about_the_chart_already_on_screen(self, tmp_path):
+        """That one has the whole panel describing it."""
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            self._sweep(app, self._rows(("EUR/USD OTC", 84.0, True, "CALL")))
+            assert heard == []
+        finally:
+            app.shutdown()
+
+    def test_a_standing_setup_is_announced_once(self, tmp_path):
+        """Every fifteen seconds for as long as it holds is not an alert."""
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            rows = self._rows(("GBP/USD OTC", 84.0, True, "PUT"))
+            for _ in range(4):
+                self._sweep(app, rows)
+            assert len(heard) == 1
+        finally:
+            app.shutdown()
+
+    def test_a_setup_that_goes_and_returns_is_announced_again(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            live = self._rows(("GBP/USD OTC", 84.0, True, "PUT"))
+            gone = self._rows(("GBP/USD OTC", 40.0, False, "WAIT"))
+            self._sweep(app, live)
+            self._sweep(app, gone)
+            app.engine.alerts._last_sent.clear()  # past the cooldown
+            self._sweep(app, live)
+            assert len(heard) == 2
+        finally:
+            app.shutdown()
+
+    def test_the_cooldown_applies_the_same_as_anywhere_else(self, tmp_path):
+        """Eight charts must not become eight times the interruptions."""
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            self._sweep(app, self._rows(("GBP/USD OTC", 84.0, True, "PUT")))
+            app._announced.clear()  # as if it had lapsed and returned
+            self._sweep(app, self._rows(("GBP/USD OTC", 84.0, True, "PUT")))
+            assert len(heard) == 1  # the manager's cooldown held it
+        finally:
+            app.shutdown()
+
+    def test_alerts_switched_off_stay_off(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            heard = self._listen(app)
+            app.engine.alerts.settings.enabled = False
+            self._sweep(app, self._rows(("GBP/USD OTC", 84.0, True, "PUT")))
+            assert heard == []
+        finally:
+            app.shutdown()
+
+
+class TestAKindAddedLaterIsNotSilentlyOff:
+    """Nothing exposes the notify list for editing.
+
+    So a settings file written before a kind existed cannot have deliberately
+    excluded it — it simply predates it. Leaving it off would make the feature
+    look broken on every install that has ever saved its settings.
+    """
+
+    def test_an_older_settings_file_still_gets_it(self):
+        from poa.alerts.manager import AlertSettings
+
+        settings = AlertSettings.from_config(
+            {"notify_on": ["BUY_SIGNAL", "SELL_SIGNAL", "TREND_REVERSAL"]}
+        )
+        assert "WATCHLIST" in settings.notify_on
+
+    def test_what_was_already_chosen_is_kept(self):
+        from poa.alerts.manager import AlertSettings
+
+        settings = AlertSettings.from_config({"notify_on": ["BUY_SIGNAL"]})
+        assert "BUY_SIGNAL" in settings.notify_on
+        assert "SELL_SIGNAL" not in settings.notify_on
+
+    def test_it_is_on_by_default(self):
+        from poa.alerts.manager import AlertSettings
+
+        assert "WATCHLIST" in AlertSettings().notify_on

@@ -99,15 +99,19 @@ class OverlayPanel:
         sans = ["Inter", "Segoe UI", "Helvetica Neue", "DejaVu Sans", "Arial"]
         mono = ["JetBrains Mono", "Consolas", "Menlo", "DejaVu Sans Mono", "Courier"]
 
+        # A type scale rather than nine independent guesses. The old 7pt
+        # captions were below what most people read comfortably on a 1080p
+        # screen at arm's length, and this panel is meant to be glanced at
+        # from across a desk rather than studied.
         self.f_title = pick(sans, 11, "bold")
-        self.f_label = pick(sans, 7)
-        self.f_body = pick(sans, 9)
-        self.f_small = pick(sans, 8)
+        self.f_label = pick(sans, 8)
+        self.f_body = pick(sans, 10)
+        self.f_small = pick(sans, 9)
         self.f_verdict = pick(sans, 30, "bold")
         self.f_arrow = pick(sans, 15)
-        self.f_mono = pick(mono, 9)
-        self.f_mono_big = pick(mono, 11, "bold")
-        self.f_badge = pick(sans, 7, "bold")
+        self.f_mono = pick(mono, 10)
+        self.f_mono_big = pick(mono, 12, "bold")
+        self.f_badge = pick(sans, 8, "bold")
 
     # -- construction -------------------------------------------------------
 
@@ -215,8 +219,35 @@ class OverlayPanel:
             entry.insert(0, text)
 
     def _build_tiles(self, parent: tk.Widget) -> None:
-        row = self._section(parent, pady=(8, 4))
-        for key, caption in (("pair", "PAIR"), ("payout", "PAYOUT"), ("time", "TIME")):
+        # The pair gets its own row. Three equal tiles across 320px left it
+        # nine characters wide, and "GBP/USD OTC" is eleven — so the one field
+        # naming what is being analysed was the one field being cut off.
+        top = self._section(parent, pady=(8, 0))
+        pair_tile = tk.Frame(top, bg=COLORS["raised"], highlightthickness=1)
+        pair_tile.configure(highlightbackground=COLORS["border"])
+        pair_tile.pack(fill="x", padx=2)
+
+        pair_row = tk.Frame(pair_tile, bg=COLORS["raised"])
+        pair_row.pack(fill="x", padx=8, pady=6)
+        tk.Label(
+            pair_row, text="PAIR", font=self.f_label,
+            bg=COLORS["raised"], fg=COLORS["faint"],
+        ).pack(side="left")
+        # Editable, so a chart switch the source cannot name can be corrected
+        # by hand — and, on the feed, so typing a watched pair reads it.
+        self._widgets["tile_pair"] = self._entry(
+            pair_row, width=14, on_commit=self.on_asset
+        )
+        self._widgets["tile_pair"].pack(side="left", padx=(8, 0))
+        self._widgets["price"] = tk.Label(
+            pair_row, text="--", font=self.f_mono_big,
+            bg=COLORS["raised"], fg=COLORS["text"],
+        )
+        self._widgets["price"].pack(side="right")
+
+        # Then the three numbers that qualify it, small and side by side.
+        row = self._section(parent, pady=(4, 4))
+        for key, caption in (("payout", "PAYOUT"), ("time", "EXPIRY"), ("chart", "CHART")):
             tile = tk.Frame(row, bg=COLORS["raised"], highlightthickness=1)
             tile.configure(highlightbackground=COLORS["border"])
             tile.pack(side="left", fill="both", expand=True, padx=2)
@@ -224,40 +255,24 @@ class OverlayPanel:
                 tile, text=caption, font=self.f_label,
                 bg=COLORS["raised"], fg=COLORS["faint"],
             ).pack(anchor="w", padx=6, pady=(4, 0))
-            if key == "pair":
-                # Editable: GateKeeper cannot read the pair's name off the
-                # screen, so when the user switches charts on the platform
-                # they rename it here and the analysis restarts.
-                value = self._entry(tile, width=9, on_commit=self.on_asset)
-                value.pack(anchor="w", padx=4, pady=(0, 5))
-            elif key == "payout":
+            if key == "payout":
                 # Editable, and it matters more than it looks. Break-even is
                 # 52.1% at a 92% payout and 55.6% at 80%, so a stale number
                 # here moves the bar that every measurement in this panel is
                 # judged against — quietly, and in the flattering direction.
-                value = self._entry(tile, width=9, on_commit=self._commit_payout)
+                value = self._entry(tile, width=6, on_commit=self._commit_payout)
                 value.pack(anchor="w", padx=4, pady=(0, 5))
             else:
+                # The chart timeframe is shown apart from the trade duration on
+                # purpose: confusing the two is the single most consequential
+                # mistake available here, and putting them side by side under
+                # different words is what stops it.
                 value = tk.Label(
                     tile, text="--", font=self.f_mono,
                     bg=COLORS["raised"], fg=COLORS["text"],
                 )
                 value.pack(anchor="w", padx=6, pady=(0, 5))
             self._widgets[f"tile_{key}"] = value
-
-        # Chart timeframe is shown apart from the trade duration on purpose:
-        # confusing the two is the single most consequential mistake here.
-        chart_row = self._section(parent, pady=(0, 4))
-        self._widgets["tile_chart"] = tk.Label(
-            chart_row, text="chart --", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        )
-        self._widgets["tile_chart"].pack(side="left", padx=2)
-        self._widgets["price"] = tk.Label(
-            chart_row, text="--", font=self.f_mono,
-            bg=COLORS["panel"], fg=COLORS["dim"],
-        )
-        self._widgets["price"].pack(side="right", padx=2)
 
     def _build_watchlist(self, parent: tk.Widget) -> None:
         """Tabs for every chart the feed is carrying.
@@ -807,7 +822,7 @@ class OverlayPanel:
         self._set_entry(w["tile_pair"], tiles["pair"])
         self._set_entry(w["tile_payout"], tiles["payout"])
         w["tile_time"].configure(text=tiles["time"])
-        w["tile_chart"].configure(text=f"chart {tiles['chart']}")
+        w["tile_chart"].configure(text=tiles["chart"])
         w["price"].configure(text=data["price"])
 
         verdict = data["verdict"]

@@ -130,6 +130,9 @@ class OverlayApp:
 
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
+        # Watched charts already announced, so a setup that stands for several
+        # sweeps is called once rather than every fifteen seconds.
+        self._announced: set[str] = set()
 
         # Verdicts for every chart the socket carries, not just the open one.
         self._watch_results: queue.Queue[Any] = queue.Queue()
@@ -623,6 +626,42 @@ class OverlayApp:
         # worth looking at, and colour can change without anything moving.
         rows.sort(key=lambda r: str(r["asset"]))
         self.vm.watchlist = rows
+        self._announce_watchlist(rows)
+
+    def _announce_watchlist(self, rows: Any) -> None:
+        """Say something when a chart nobody is looking at has a setup.
+
+        A tab turning green only helps somebody already watching the tab row.
+        The reason for reading eight charts is that the pair worth trading
+        finds the user rather than the other way round, and that needs a
+        noise, once, on the transition into being tradeable — not on every
+        sweep while it stays that way.
+        """
+        live = {
+            str(row["asset"])
+            for row in rows
+            if row.get("actionable") and row.get("asset") != self.vm.asset
+        }
+        fresh = live - self._announced
+        # Forget the ones that have gone, so the same pair setting up again
+        # later is worth announcing again.
+        self._announced = live
+
+        for row in rows:
+            asset = str(row.get("asset", ""))
+            if asset not in fresh:
+                continue
+            direction = str(row.get("direction", ""))
+            self.engine.emit_alert(
+                kind="watchlist",
+                title=f"{asset} — {direction}",
+                body=(
+                    f"{direction} setup on {asset} at "
+                    f"{float(row.get('score') or 0):.0f}/100. "
+                    "Click its tab to read it."
+                ),
+                confidence=float(row.get("score") or 0.0),
+            )
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""

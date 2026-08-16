@@ -337,3 +337,67 @@ class TestTheMarketDirectionIsVisible:
         )
         assert panel._widgets["trend_label"].cget("text") == "--"
         assert panel._trend_views == []
+
+
+class TestThePairIsNotCutOff:
+    """The one field naming what is being analysed was the one being cut.
+
+    Three equal tiles across a 320px panel left the pair nine characters
+    wide. "GBP/USD OTC" is eleven, so it rendered as "GBP/USD O" — on the
+    field whose entire job is saying which market this is.
+    """
+
+    def test_the_field_holds_the_longest_ordinary_pair_name(self, panel_module):
+        panel = _panel(panel_module)
+        longest = "GBP/USD OTC"
+        assert panel._widgets["tile_pair"].kw["width"] >= len(longest)
+
+    def test_the_pair_has_a_row_to_itself(self, panel_module):
+        """Sharing one with the payout and the expiry is what squeezed it."""
+        panel = _panel(panel_module)
+        pair_row = panel._widgets["tile_pair"].parent
+        siblings = {type(child).__name__ for child in pair_row.children}
+        # A caption, the field and the price — no other tiles competing.
+        assert len(pair_row.children) == 3
+        assert "Entry" in siblings
+
+    def test_the_expiry_and_the_chart_are_named_apart(self, panel_module):
+        """Confusing the two is the most consequential mistake available.
+
+        A 5-minute chart read as 1-minute would suggest expirations five times
+        too short, so they are never given the same word.
+        """
+        panel = _panel(panel_module)
+        panel.refresh()
+        captions = [
+            child.cget("text")
+            for tile in (panel._widgets["tile_time"].parent,
+                         panel._widgets["tile_chart"].parent)
+            for child in tile.children
+            if child.cget("text") in ("EXPIRY", "CHART")
+        ]
+        assert sorted(captions) == ["CHART", "EXPIRY"]
+
+
+class TestItIsReadableAcrossADesk:
+    def test_no_type_is_smaller_than_eight_point(self, panel_module):
+        """7pt captions are below comfortable reading on a 1080p screen."""
+        panel = _panel(panel_module)
+        sizes = [
+            font["size"]
+            for name, font in vars(panel).items()
+            if name.startswith("f_") and isinstance(font, dict)
+        ]
+        assert sizes and min(sizes) >= 8
+
+    def test_the_text_tones_are_distinguishable(self, panel_module):
+        """"Important", "supporting" and "aside" have to differ at a glance."""
+        from poa.overlay.viewmodel import COLORS
+
+        def luminance(hex_colour):
+            r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        text, dim, faint = (luminance(COLORS[k]) for k in ("text", "dim", "faint"))
+        assert text > dim > faint
+        assert text - dim > 20 and dim - faint > 20

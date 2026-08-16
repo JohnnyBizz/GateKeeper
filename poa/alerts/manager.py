@@ -26,6 +26,9 @@ log = get_logger(__name__)
 
 ALERT_KINDS: tuple[str, ...] = (
     "BUY_SIGNAL",
+    # A setup on one of the other charts being watched. Same bar, same gates —
+    # a chart nobody is looking at is still a chart being read.
+    "WATCHLIST",
     "SELL_SIGNAL",
     "SETUP_INVALIDATED",
     "SETUP_WEAKENING",
@@ -37,6 +40,7 @@ ALERT_KINDS: tuple[str, ...] = (
 
 _EMOJI = {
     "BUY_SIGNAL": "\U0001f7e2",
+    "WATCHLIST": "\U0001f440",
     "SELL_SIGNAL": "\U0001f534",
     "SETUP_INVALIDATED": "\U0001f534",
     "SETUP_WEAKENING": "⚠️",
@@ -45,6 +49,22 @@ _EMOJI = {
     "CONFLICTING_SIGNALS": "⚠️",
     "DATA_QUALITY": "⚠️",
 }
+
+
+# Alert kinds that postdate saved configuration files. Nothing exposes the
+# notify list for editing, so a config written before one of these existed
+# cannot have deliberately excluded it — it simply predates it. Silently
+# leaving such a kind off would make a new feature look broken on every
+# install that has ever saved its settings.
+_ADDED_LATER = ("WATCHLIST",)
+
+
+def _with_new_kinds(kinds: Iterable[Any]) -> tuple[str, ...]:
+    chosen = [str(kind).upper() for kind in kinds]
+    for kind in _ADDED_LATER:
+        if kind not in chosen:
+            chosen.append(kind)
+    return tuple(chosen)
 
 
 @dataclass
@@ -72,7 +92,7 @@ class AlertSettings:
                 section.get("cooldown_seconds", defaults.cooldown_seconds)
             ),
             min_confidence=float(section.get("min_confidence", defaults.min_confidence)),
-            notify_on=tuple(str(k).upper() for k in kinds),
+            notify_on=_with_new_kinds(kinds),
         )
 
 
@@ -139,6 +159,50 @@ class AlertManager:
             self.recent.append(alert)
             sent.append(alert)
         return sent
+
+    def announce(
+        self,
+        kind: str,
+        title: str,
+        body: str,
+        confidence: float = 0.0,
+        asset: str = "",
+        now: datetime | None = None,
+    ) -> Alert | None:
+        """Raise an alert that did not come from tracking one signal.
+
+        A setup on a chart the user is not looking at has no tracked change to
+        describe it — nothing was followed, because nothing was on screen. It
+        still deserves the same noise, and the same restraint: the enabled
+        switch, the notify list and the cooldown all apply exactly as they do
+        to a signal on the open chart, so watching eight charts cannot turn
+        into eight times the interruptions.
+        """
+        if not self.settings.enabled:
+            return None
+        if kind.upper() not in self.settings.notify_on:
+            return None
+
+        moment = now or utcnow()
+        fingerprint = f"{kind}|{asset}|{int(confidence // 5) * 5}"
+        last = self._last_sent.get(fingerprint)
+        if last is not None and moment - last < timedelta(
+            seconds=self.settings.cooldown_seconds
+        ):
+            return None
+
+        alert = Alert(
+            kind=kind.upper(),
+            title=title,
+            body=body,
+            emoji=_EMOJI.get(kind.upper(), "\U0001f440"),
+            confidence=float(confidence),
+            timestamp=moment.isoformat(),
+        )
+        self._last_sent[fingerprint] = moment
+        self._dispatch(alert)
+        self.recent.append(alert)
+        return alert
 
     def _dispatch(self, alert: Alert) -> None:
         for notifier in self.notifiers:

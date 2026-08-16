@@ -411,6 +411,36 @@ class AnalysisEngine:
             log.debug("watchlist evaluation failed for %s: %s", asset, exc)
             return None
 
+    def emit_alert(
+        self, kind: str, title: str, body: str, confidence: float = 0.0
+    ) -> None:
+        """Raise an alert that did not come from tracking one signal.
+
+        The watchlist reads charts nobody has open, so there is no tracked
+        change behind those setups — nothing was followed, because nothing was
+        on screen. They still deserve the same noise, and go through the same
+        manager so the cooldown and the notify list apply.
+        """
+        try:
+            alert = self.alerts.announce(
+                kind=kind, title=title, body=body, confidence=confidence, asset=title
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not raise %s: %s", kind, exc)
+            return
+        if alert is None:
+            return
+        try:
+            self.journal.record_alert(
+                kind=alert.kind,
+                title=alert.title,
+                body=alert.body,
+                confidence=alert.confidence,
+                signal_id=None,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not file the alert: %s", exc)
+
     def latest_series(self) -> Series | None:
         """The candles behind the current signal, or None before the first read."""
         with self._lock:

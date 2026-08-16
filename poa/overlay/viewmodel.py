@@ -38,20 +38,25 @@ class ScanState(str, Enum):
 
 
 # Colours the panel paints with, kept here so tests can assert on them.
+# One palette, and every surface in the panel comes from it. The greys step
+# evenly from the window background up to the raised tiles so that depth reads
+# as depth rather than as three unrelated shades of navy, and the text tones
+# are spaced far enough apart that "important", "supporting" and "aside" are
+# distinguishable at a glance instead of on inspection.
 COLORS = {
     "call": "#22c55e",
-    "put": "#ef4444",
-    "wait": "#eab308",
-    "no_trade": "#dc2626",
+    "put": "#f43f5e",
+    "wait": "#f59e0b",
+    "no_trade": "#e11d48",
     "neutral": "#64748b",
-    "text": "#e2e8f0",
-    "dim": "#94a3b8",
-    "faint": "#64748b",
-    "bg": "#0b0f16",
-    "panel": "#121826",
-    "raised": "#1b2333",
-    "border": "#26304a",
-    "accent": "#3b82f6",
+    "text": "#f1f5f9",
+    "dim": "#a8b4c8",
+    "faint": "#6b7a92",
+    "bg": "#0a0e15",
+    "panel": "#111826",
+    "raised": "#1a2333",
+    "border": "#2a3450",
+    "accent": "#60a5fa",
 }
 
 # The chart on screen plus the eight the feed keeps behind it.
@@ -250,12 +255,12 @@ class OverlayViewModel:
                 "state": signal.state.value,
                 "actionable": signal.actionable,
                 "blanked": False,
-                # One chart, one setup: the count is 0 or 1, and it is spelled
-                # out because "NO TRADE" and "WAIT" both mean zero while
-                # looking nothing alike, and because a number is what you can
-                # glance at without reading a word.
-                "take_now": 1 if signal.actionable else 0,
-                "take_label": "1 trade" if signal.actionable else "0 trades",
+                # Every chart being watched, not only the one on screen. The
+                # count used to be 0 or 1 because one chart yields at most one
+                # setup — but eight charts are being read at the same bar, and
+                # counting only the open one reported a tenth of what was
+                # actually available while the rest sat unmentioned in a tab.
+                **self._take_now(signal),
             }
 
         risk = self.risk
@@ -395,6 +400,36 @@ class OverlayViewModel:
             "ready": True,
             "beats": beats,
         }
+
+    def _take_now(self, signal: Signal) -> dict[str, Any]:
+        """How many setups are live right now, across everything being read.
+
+        The bar is not lowered to get this number up. Eight charts arrive on
+        the same socket and are evaluated against the same gates at the same
+        moment; the count was simply ignoring seven of them. One chart yields
+        a handful of setups in a day, which is a rate that makes the tool feel
+        broken — and the fix is more charts, not weaker standards.
+
+        The open chart is counted from its own live signal rather than from
+        the watchlist sweep, because that one is re-read every couple of
+        seconds while the sweep runs every fifteen.
+        """
+        here = 1 if signal.actionable else 0
+        elsewhere = [
+            row
+            for row in self.watchlist
+            if row.get("actionable") and row.get("asset") != self.asset
+        ]
+        total = here + len(elsewhere)
+        label = f"{total} trade{'' if total == 1 else 's'}"
+        if elsewhere:
+            # Name them: a count with nowhere to go is a count nobody can act
+            # on, and the whole point is that the pair finds the user.
+            names = ", ".join(
+                str(row.get("asset", "")).replace(" OTC", "") for row in elsewhere[:3]
+            )
+            label = f"{total} — {names}" if not here else f"{total} — here, {names}"
+        return {"take_now": total, "take_label": label}
 
     def _taught(self) -> str:
         """What the WIN/LOSS buttons have taught the record so far.

@@ -369,8 +369,27 @@ the two are never conflated), the **watchlist tabs**, the big **SIGNAL** box,
 pattern, **duration fit** and the engine's suggested expiration, **Scan /
 Reset**, a session WIN/LOSS tally, and a risk block.
 
-**TAKE NOW** is the count of setups that pass every gate at this moment — `0
-trades` or `1 trade`, because one chart yields at most one setup. It exists
+**TAKE NOW** is the count of setups that pass every gate at this moment,
+**across every chart being watched** — `3 — here, AUD/CAD, GBP/USD`. It used
+to be 0 or 1, because one chart yields at most one setup, and that is exactly
+the problem: one chart produces a handful of setups in a day, which is a rate
+that makes the tool feel broken. The other seven arrive on the same socket and
+are read at the same bar against the same gates; counting only the open one
+reported a fraction of what was actually available while the rest sat
+unmentioned in a tab. The answer to "too few calls" is more charts, not weaker
+standards.
+
+A setup on a chart you are **not** looking at also raises an alert, because a
+tab quietly turning green only helps somebody already watching the tab row:
+
+```
+👀 GBP/USD OTC — PUT
+PUT setup on GBP/USD OTC at 84/100. Click its tab to read it.
+```
+
+Once, on the transition into being tradeable — not on every fifteen-second
+sweep for as long as it holds — and through the same cooldown as every other
+alert, so watching eight charts cannot become eight times the interruptions. It exists
 because WAIT and NO TRADE both mean zero while looking nothing alike, and a
 number is readable at a glance from across the desk. Under the session tally,
 **how many setups have been called since the session started** answers the

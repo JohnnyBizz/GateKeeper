@@ -231,6 +231,11 @@ DEFAULTS: dict[str, Any] = {
         "notify_on": [
             "BUY_SIGNAL",
             "SELL_SIGNAL",
+            # A setup on one of the other charts being watched. One chart
+            # yields a handful of setups a day; the other seven are read at
+            # the same bar and against the same gates, and saying nothing
+            # about them was throwing most of the tool's output away.
+            "WATCHLIST",
             "SETUP_INVALIDATED",
             "TREND_REVERSAL",
             "HIGH_VOLATILITY",
