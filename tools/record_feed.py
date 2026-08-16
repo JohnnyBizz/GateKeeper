@@ -202,15 +202,26 @@ def main() -> int:
             print(f"\n{len(paths)} chart(s) written to {folder}  ({total:.1f} MB)")
             for path in sorted(paths):
                 print(f"   {path.name}")
-            print(
-                "\nSEND THE CANDLES FOLDER. It is the market data, it is small,"
-                "\nand it holds no account information of any kind — only prices."
-            )
         else:
             print(
                 "\nNo chart had enough candles to export. A longer recording,"
                 "\nwith a chart left open on the platform, is what this needs."
             )
+
+        # Both files are worth having and they answer different questions, so
+        # both get named. The summary says what the platform sends, which is
+        # what fixes how GateKeeper reads it; the candles are the market
+        # itself, which is what the engine gets measured against. A run of any
+        # length produces both — there is no reason to mention only one.
+        print("\nTWO THINGS TO SEND, and they are for different jobs:")
+        if paths:
+            print(f"\n  1. {folder}")
+            print("     The market — prices and timestamps, nothing else.")
+            print("     This is what the engine gets measured against.")
+        print(f"\n  {2 if paths else 1}. {summary_path}")
+        print("     What the platform sends, and in what shape.")
+        print("     This is what fixes how GateKeeper reads it.")
+        _reveal(summary_path)
         _pause()
         return 0
     else:
