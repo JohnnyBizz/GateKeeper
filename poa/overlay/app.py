@@ -978,7 +978,72 @@ class OverlayApp:
         self.vm.scan.reset()
 
     def _adjust(self, wins: int, losses: int) -> None:
+        """A trade the user took, and how it went.
+
+        The tally moves either way. A trade *added* also gets filed, because
+        the record only ever learned from calls the tool made — and the verdict
+        is WAIT most of the time, so the trades that carry the information it
+        is missing are precisely the ones it never saw: what actually happens
+        at scores it currently refuses.
+        """
         self.vm.session.adjust(wins, losses)
+        if wins > 0 or losses > 0:
+            self._file_manual_outcome(won=wins > 0)
+
+    def _file_manual_outcome(self, won: bool) -> None:
+        """Teach the record from a trade the user placed themselves.
+
+        Filed against the direction the *score* was computed for, not the
+        verdict — the verdict is usually WAIT, which is not a direction, while
+        the score always describes one specific case being argued for or
+        against. That is also the number the calibration is keyed on, so the
+        pair stays coherent: this score, on this side, settled this way.
+
+        Which assumes the trade went the way the panel was leaning. That is
+        what the MARKET line is now showing at the moment the button is
+        pressed, so it is a visible assumption rather than a hidden one — and
+        a trade taken against it is a trade this cannot learn from correctly.
+        """
+        signal = self.vm.signal
+        score = getattr(signal, "score", None) if signal is not None else None
+        direction = getattr(score, "direction", None)
+        name = getattr(direction, "value", None)
+        if name not in ("CALL", "PUT"):
+            # Nothing scored — during a scan, or before the first read. The
+            # tally still moves; there is simply nothing to attribute.
+            log.debug("no scored direction to file this outcome against")
+            return
+
+        regime = ""
+        mtf = getattr(signal, "mtf", None)
+        if mtf is not None:
+            regime = str(getattr(mtf.current.regime.regime, "name", "") or "")
+
+        try:
+            self.engine.journal.record_manual(
+                asset=self.vm.asset,
+                chart_timeframe=self.vm.chart_timeframe,
+                trade_duration=self.engine.trade_duration,
+                direction=name,
+                direction_confidence=float(signal.direction_confidence),
+                duration_confidence=float(signal.duration_confidence),
+                won=won,
+                market_regime=regime,
+                source=getattr(self.engine.source, "name", None),
+                price=getattr(signal, "price", None),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("could not file the manual outcome: %s", exc)
+            return
+
+        log.info(
+            "filed a manual %s on %s at %.0f",
+            "win" if won else "loss",
+            name,
+            float(signal.direction_confidence),
+        )
+        # The record has changed, so what it recommends may have too.
+        self._proof_at = None
 
     def _set_asset(self, asset: str) -> None:
         """A pair was picked — from a watchlist tab, or typed into the box.

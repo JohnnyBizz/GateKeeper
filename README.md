@@ -383,6 +383,50 @@ journal outcomes never write into it. (`overlay.session_manual: false` hands
 it back to the journal, but then two things are writing one column and neither
 number means much.)
 
+### The WIN/LOSS buttons are how it learns
+
+Pressing **WIN +** or **LOSS +** does not only move a counter. It files the
+trade into the same record the gates are tuned from — the score that was on
+screen, how well the expiry fitted, the market regime, the hour, and how it
+turned out.
+
+This matters more than it sounds. The record used to learn **only from calls
+the tool made**, and the verdict is WAIT most of the time — so the trades
+carrying the information it was missing, the ones that answer *what actually
+happens at scores it currently refuses*, were exactly the ones it never saw.
+Three winners on a chart it declined to call taught it nothing at all.
+
+Now they teach it directly. Twenty-four trades settling at 67% on setups
+scoring 72, against a gate sitting at 75, is the evidence that opens that gate
+— and it is evidence that could not come from anywhere else, because the tool
+was refusing to generate it.
+
+The panel says where that stands, under the tally:
+
+```
+7 of your trades recorded — 13 more and they outrank the replay.
+Learning from your 24 settled trades on this chart.
+```
+
+At twenty, your own trades **replace** the replay rather than joining it. They
+are a better experiment: what actually happened, on this account, at this
+broker, with the delay between the panel lighting up and the button being
+pressed already baked in. None of that can be reproduced in a backtest.
+
+Two things worth knowing:
+
+* **It assumes you traded the way the panel was leaning.** The verdict is
+  usually WAIT, which is not a direction, so the trade is filed against the
+  direction the *score* was computed for — the case being argued. The MARKET
+  line shows you that direction at the moment you press the button, so it is a
+  visible assumption rather than a hidden one. A trade taken against the lean
+  is one this cannot learn from correctly.
+* **Correcting a miscount teaches nothing.** The **−** buttons only fix the
+  tally; taking a win back is not a report of a trade, so nothing is filed.
+
+Records are scoped like every other one: this pair, this chart timeframe, this
+expiry, this data source. A demo run stays out of a live record.
+
 The **RISK header folds the block away** — click it, and the panel remembers
 across restarts. It is the tallest section and the one that changes least once
 a stake is set.

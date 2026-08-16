@@ -1006,3 +1006,105 @@ class TestTheGateStillMovesOnAMarginalChart:
             {55.0: (18, 42), 65.0: (24, 36), 75.0: (33, 27), 85.0: (22, 18)}
         )
         assert calibration.recommended_duration_threshold() is not None
+
+
+class TestTradesYouTookYourselfTeachIt:
+    """The record only ever learned from calls the tool made.
+
+    The verdict is WAIT most of the time, so the trades that carry the
+    information it is missing — what actually happens at scores it currently
+    refuses — were exactly the ones it never saw. Three winners on a chart it
+    declined to call taught it nothing at all.
+    """
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _fill(self, journal, n=24, won=lambda i: i % 3 != 0, score=72.0):
+        for i in range(n):
+            journal.record_manual(
+                asset="EUR/USD OTC",
+                chart_timeframe=60,
+                trade_duration=180,
+                direction="CALL",
+                direction_confidence=score,
+                duration_confidence=88.0,
+                won=won(i),
+                market_regime="STRONG_UPTREND",
+                source="feed",
+            )
+
+    def _read(self, journal):
+        return journal.calibration_records(
+            asset="EUR/USD OTC", source="feed",
+            chart_timeframe=60, trade_duration=180,
+        )
+
+    def test_a_hand_entered_outcome_reaches_the_calibration(self, tmp_path):
+        journal = self._journal(tmp_path)
+        self._fill(journal)
+        records = self._read(journal)
+        assert len(records) == 24
+        assert records[0].score == 72.0
+        assert records[0].direction == "CALL"
+
+    def test_the_expiry_fit_survives_the_round_trip(self, tmp_path):
+        """It was being dropped, so the expiry table was built from zeros.
+
+        Real trades outrank replayed ones and replace them outright at twenty.
+        Reading back every column but this one meant the expiry gate then
+        tuned itself against a column that said nothing.
+        """
+        journal = self._journal(tmp_path)
+        self._fill(journal)
+        assert self._read(journal)[0].duration_score == 88.0
+
+    def test_wins_at_a_refused_score_open_the_gate(self, tmp_path):
+        """The whole point. Setups scoring 72 were being refused at a gate of
+        75; twenty-four of them settling at 67% is the evidence that says so.
+        """
+        from poa.backtesting.calibration import build_calibration
+
+        journal = self._journal(tmp_path)
+        self._fill(journal)
+        calibration = build_calibration(self._read(journal), payout=0.92)
+        threshold, bucket = calibration.recommended_threshold()
+        assert threshold <= 72
+        assert bucket.win_rate is not None and bucket.win_rate > calibration.breakeven
+
+    def test_losses_at_a_score_close_it_again(self, tmp_path):
+        """It has to be able to learn the other way, or it is not learning."""
+        from poa.backtesting.calibration import build_calibration
+
+        journal = self._journal(tmp_path)
+        self._fill(journal, won=lambda i: i % 4 == 0)  # 25%
+        calibration = build_calibration(self._read(journal), payout=0.92)
+        assert calibration.recommended_threshold() is None
+
+    def test_they_are_scoped_like_every_other_record(self, tmp_path):
+        """A record from another pair or another expiry is another experiment."""
+        journal = self._journal(tmp_path)
+        self._fill(journal, n=5)
+        assert journal.calibration_records(asset="GBP/USD OTC") == []
+        assert journal.calibration_records(
+            asset="EUR/USD OTC", trade_duration=300
+        ) == []
+
+    def test_a_demo_run_stays_out_of_a_live_record(self, tmp_path):
+        journal = self._journal(tmp_path)
+        self._fill(journal, n=5)
+        assert journal.calibration_records(asset="EUR/USD OTC", source="demo") == []
+
+    def test_they_are_marked_as_hand_entered(self, tmp_path):
+        """Indistinguishable to the calibration, still tellable apart.
+
+        It is real money on a real chart either way — which of us pressed the
+        button does not change what the market did next — but anything that
+        needs the difference can still find it.
+        """
+        journal = self._journal(tmp_path)
+        self._fill(journal, n=3)
+        rows = journal.recent(limit=5)
+        assert rows and all(row["notes"] == "manual" for row in rows)

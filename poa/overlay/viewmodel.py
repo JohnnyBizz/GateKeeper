@@ -284,6 +284,7 @@ class OverlayViewModel:
                 **self.session.to_dict(self.payout),
                 "calls": self.calls_this_session,
                 "manual": self.session_manual,
+                "taught": self._taught(),
             },
             "risk": {
                 **risk.to_dict(),
@@ -394,6 +395,28 @@ class OverlayViewModel:
             "ready": True,
             "beats": beats,
         }
+
+    def _taught(self) -> str:
+        """What the WIN/LOSS buttons have taught the record so far.
+
+        Without this the buttons move a counter and appear to do nothing else,
+        and the one loop that makes the tool better is invisible for exactly as
+        long as it takes to fill — which is when the encouragement to keep
+        filling it would be worth something.
+        """
+        calibration = getattr(self.proof, "calibration", None)
+        if calibration is None:
+            return ""
+        settled = int(getattr(calibration, "real_available", 0) or 0)
+        if settled <= 0:
+            return ""
+        if getattr(calibration, "from_real_trades", False):
+            return f"Learning from your {settled} settled trades on this chart."
+        needed = int(getattr(calibration, "min_sample", 20)) - settled
+        return (
+            f"{settled} of your trades recorded — {needed} more and they "
+            "outrank the replay."
+        )
 
     def _trend(self, scanning: bool) -> dict[str, Any]:
         """Which way the market is going — separately from whether to trade it.

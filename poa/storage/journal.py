@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -185,6 +186,65 @@ class Journal:
             )
             self._connection.commit()
         return signal.id
+
+    def record_manual(
+        self,
+        *,
+        asset: str,
+        chart_timeframe: int,
+        trade_duration: int,
+        direction: str,
+        direction_confidence: float,
+        duration_confidence: float,
+        won: bool,
+        market_regime: str = "",
+        source: str | None = None,
+        price: float | None = None,
+        timestamp: datetime | None = None,
+    ) -> str:
+        """File a trade the user took themselves, already settled.
+
+        The record only ever learned from calls it made. A trade taken off the
+        panel's reading but not on its say-so — which is most of them, since
+        the verdict is usually WAIT — taught it nothing at all, and those are
+        the trades that carry the information it is missing: what happens at
+        scores it currently refuses.
+
+        Written as a settled row so it is indistinguishable to the calibration
+        from a signal that was called and followed. It is real money on a real
+        chart either way; which of us pressed the button does not change what
+        the market did next. ``notes`` marks where it came from, so the two can
+        still be told apart by anything that needs to.
+        """
+        stamp = (timestamp or utcnow()).isoformat()
+        row = {
+            "id": f"manual-{uuid.uuid4()}",
+            "timestamp": stamp,
+            "asset": asset,
+            "chart_timeframe": int(chart_timeframe),
+            "trade_duration": int(trade_duration),
+            "direction": direction,
+            "state": "SETTLED",
+            "direction_confidence": float(direction_confidence),
+            "duration_confidence": float(duration_confidence),
+            "overall_confidence": float(direction_confidence),
+            "setup_quality": "MANUAL",
+            "price": price,
+            "market_regime": market_regime,
+            "source": source,
+            "outcome": "win" if won else "loss",
+            "outcome_at": stamp,
+            "reason": "Taken manually; outcome entered by hand.",
+            "notes": "manual",
+        }
+        columns = ", ".join(row)
+        placeholders = ", ".join(f":{key}" for key in row)
+        with self._lock:
+            self._connection.execute(
+                f"INSERT INTO signals ({columns}) VALUES ({placeholders})", row
+            )
+            self._connection.commit()
+        return row["id"]
 
     def record_alert(
         self,
@@ -410,8 +470,9 @@ class Journal:
         from ..backtesting.calibration import Record
 
         query = (
-            "SELECT direction, direction_confidence, market_regime, outcome, "
-            "timestamp FROM signals WHERE outcome IN ('win', 'loss') "
+            "SELECT direction, direction_confidence, duration_confidence, "
+            "market_regime, outcome, timestamp FROM signals "
+            "WHERE outcome IN ('win', 'loss') "
             "AND direction IN ('CALL', 'PUT')"
         )
         params: list[Any] = []
@@ -442,6 +503,11 @@ class Journal:
             records.append(
                 Record(
                     score=float(row["direction_confidence"] or 0.0),
+                    # Carried through, or the expiry table would be built
+                    # entirely from zeros the moment real trades take over
+                    # from the replay — and the expiry gate would then tune
+                    # itself against a column that says nothing.
+                    duration_score=float(row["duration_confidence"] or 0.0),
                     won=row["outcome"] == "win",
                     regime=str(row["market_regime"] or ""),
                     hour=hour,

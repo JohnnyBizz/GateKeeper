@@ -1616,3 +1616,173 @@ class TestTheTrendReadout:
         from poa.overlay.viewmodel import OverlayViewModel
 
         assert "trend" in OverlayViewModel().render()
+
+
+class TestTheWinLossButtonsTeachIt:
+    """Pressing WIN is the only moment the tool learns what a refused setup
+    was actually worth. Before this the buttons moved a counter and nothing
+    else, so a trade taken off the panel's reading — which is most of them,
+    since the verdict is usually WAIT — vanished."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def _signal(self, app, direction="CALL", score=72.0):
+        """A gated signal: WAIT on the panel, still scored for a direction."""
+        from types import SimpleNamespace
+        from poa.models import Direction
+
+        app.vm.asset = "EUR/USD OTC"
+        app.vm.chart_timeframe = 60
+        app.vm.signal = SimpleNamespace(
+            score=SimpleNamespace(direction=Direction[direction]),
+            direction_confidence=score,
+            duration_confidence=88.0,
+            price=1.19280,
+            mtf=None,
+        )
+
+    def _filed(self, app):
+        return app.engine.journal.calibration_records(
+            asset="EUR/USD OTC",
+            source=getattr(app.engine.source, "name", None),
+            chart_timeframe=60,
+            trade_duration=app.engine.trade_duration,
+        )
+
+    def test_a_win_is_filed(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            self._signal(app)
+            app._adjust(1, 0)
+            filed = self._filed(app)
+            assert len(filed) == 1
+            assert filed[0].won is True
+            assert filed[0].score == 72.0
+            assert filed[0].duration_score == 88.0
+        finally:
+            app.shutdown()
+
+    def test_a_loss_is_filed(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            self._signal(app)
+            app._adjust(0, 1)
+            filed = self._filed(app)
+            assert len(filed) == 1 and filed[0].won is False
+        finally:
+            app.shutdown()
+
+    def test_it_is_filed_under_the_scored_direction_not_the_verdict(self, tmp_path):
+        """WAIT is not a direction. The score always describes one.
+
+        The verdict is what the gates decided; the score is the case that was
+        being argued, and it is what the calibration is keyed on. Filing under
+        the verdict would key a number to a side it was never computed for.
+        """
+        app = self._app(tmp_path)
+        try:
+            self._signal(app, direction="PUT")
+            app._adjust(1, 0)
+            assert self._filed(app)[0].direction == "PUT"
+        finally:
+            app.shutdown()
+
+    def test_correcting_the_tally_downward_files_nothing(self, tmp_path):
+        """Taking a win back is fixing a miscount, not reporting a trade."""
+        app = self._app(tmp_path)
+        try:
+            self._signal(app)
+            app._adjust(-1, 0)
+            assert self._filed(app) == []
+        finally:
+            app.shutdown()
+
+    def test_nothing_is_invented_when_nothing_was_scored(self, tmp_path):
+        """Mid-scan, or before the first read. The tally still moves."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.signal = None
+            app._adjust(1, 0)
+            assert self._filed(app) == []
+            assert app.vm.session.wins == 1
+        finally:
+            app.shutdown()
+
+    def test_the_tally_still_moves_either_way(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            self._signal(app)
+            app._adjust(1, 0)
+            app._adjust(0, 1)
+            assert (app.vm.session.wins, app.vm.session.losses) == (1, 1)
+        finally:
+            app.shutdown()
+
+    def test_the_record_is_re_read_after_a_trade_is_filed(self, tmp_path):
+        """A new outcome may change what the record recommends, and the
+        measurement is what turns that into a moved gate."""
+        app = self._app(tmp_path)
+        try:
+            self._signal(app)
+            app._proof_at = "not none"
+            app._adjust(1, 0)
+            assert app._proof_at is None
+        finally:
+            app.shutdown()
+
+
+class TestTheLearningLoopIsVisible:
+    """A button that appears to do nothing is a button nobody presses.
+
+    The WIN/LOSS buttons are the only way the tool learns what a refused setup
+    was worth, and until twenty of them exist nothing else on the panel
+    changes — which is exactly the stretch where knowing it is filling up is
+    worth something.
+    """
+
+    def _vm(self, available, taken_over=False):
+        from types import SimpleNamespace
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.proof = SimpleNamespace(
+            calibration=SimpleNamespace(
+                real_available=available,
+                from_real_trades=taken_over,
+                min_sample=20,
+            )
+        )
+        return vm
+
+    def test_it_counts_up_and_says_what_is_left(self):
+        assert self._vm(7)._taught() == (
+            "7 of your trades recorded — 13 more and they outrank the replay."
+        )
+
+    def test_it_says_so_when_they_take_over(self):
+        assert self._vm(24, taken_over=True)._taught() == (
+            "Learning from your 24 settled trades on this chart."
+        )
+
+    def test_it_is_silent_before_the_first_one(self):
+        assert self._vm(0)._taught() == ""
+
+    def test_it_is_silent_before_the_first_measurement(self):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        assert OverlayViewModel()._taught() == ""
+
+    def test_the_panel_is_given_it_to_draw(self):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        assert "taught" in OverlayViewModel().render()["session"]

@@ -586,6 +586,16 @@ class OverlayPanel:
         )
         self._widgets["session_calls"].pack(anchor="w", padx=2)
 
+        # What the WIN/LOSS buttons have taught it. Without this the buttons
+        # move a counter and appear to do nothing else, and the one loop that
+        # makes the tool better is invisible while it is filling up.
+        self._widgets["session_taught"] = tk.Label(
+            wrap, text="", font=self.f_label,
+            bg=COLORS["panel"], fg=COLORS["accent"],
+            wraplength=PANEL_WIDTH - 28, justify="left",
+        )
+        self._widgets["session_taught"].pack(anchor="w", padx=2)
+
         # The measured record of this engine on this chart's own history — the
         # one line on the panel that is a fact rather than a forecast.
         tk.Label(
@@ -879,6 +889,7 @@ class OverlayPanel:
                 else "No setups called yet this session"
             )
         )
+        w["session_taught"].configure(text=session.get("taught", ""))
 
         calibration = data["calibration"]
         w["calibration"].configure(
