@@ -479,6 +479,34 @@ little history to aggregate a higher timeframe, or an entry timeframe equal to
 the chart itself, the stack is one view counted twice — and a copy of a view
 agreeing with the view it copies is not agreement.
 
+### TRADING PAUSED — the brakes
+
+Position sizing is arithmetic right up until a losing run, at which point it
+stops being arithmetic and starts being a decision made badly. Two limits are
+set in advance, because the day one is reached is the day it will be argued
+with:
+
+```
+⏸  TRADING PAUSED — 4 losses in a row. The limit set here was 4.
+⏸  TRADING PAUSED — Down 12.0% of the balance today. The limit set here was 10%.
+```
+
+`risk.max_losses_in_a_row` (default 4) and `risk.max_daily_loss_percent`
+(default 10). Either at zero switches that limit off.
+
+Losses are counted **in order**, which is the whole point: a session at eight
+wins and four losses reads healthily right up until the four were the last
+four. Four spread across a good afternoon is not a losing run; four in a row
+is. Wins offset what the day has cost, so down and then back up does not trip
+it.
+
+The stake is never raised after a loss, and nothing here ever suggests trading
+larger to recover — that is martingale by another name, and there is a test
+asserting the recommended stake after three losses is no larger than before
+them. The pause is a statement, not an enforcement: nothing is locked, because
+nothing here can place or prevent a trade. It says so where the stake would
+otherwise be, and leaves the decision where it belongs.
+
 ### Eight charts at once
 
 The platform's socket carries **every instrument you have open, all the time** —

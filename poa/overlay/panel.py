@@ -611,6 +611,14 @@ class OverlayPanel:
         )
         self._widgets["session_taught"].pack(anchor="w", padx=2)
 
+        # A limit that is reached quietly is a limit that gets argued with.
+        self._widgets["paused"] = tk.Label(
+            wrap, text="", font=self.f_badge,
+            bg=COLORS["panel"], fg=COLORS["no_trade"],
+            wraplength=PANEL_WIDTH - 28, justify="left",
+        )
+        self._widgets["paused"].pack(anchor="w", padx=2, pady=(4, 0))
+
         # The measured record of this engine on this chart's own history — the
         # one line on the panel that is a fact rather than a forecast.
         tk.Label(
@@ -905,6 +913,14 @@ class OverlayPanel:
             )
         )
         w["session_taught"].configure(text=session.get("taught", ""))
+        risk_block = data["risk"]
+        w["paused"].configure(
+            text=(
+                f"⏸  TRADING PAUSED — {risk_block.get('paused_reason', '')}"
+                if risk_block.get("paused")
+                else ""
+            )
+        )
 
         calibration = data["calibration"]
         w["calibration"].configure(

@@ -185,6 +185,9 @@ class OverlayViewModel:
     # Every chart the feed is carrying, with its own verdict. The socket
     # delivers them whether or not they are being looked at.
     watchlist: list[Any] = field(default_factory=list)
+    # The brakes. Zero disables either one.
+    max_losses_in_a_row: int = 0
+    max_daily_loss_percent: float = 0.0
 
     # ------------------------------------------------------------------
 
@@ -197,6 +200,9 @@ class OverlayViewModel:
             observed_win_rate=self.session.win_rate,
             stake_override=self.stake_override,
             observed_sample=self.session.total,
+            session=self.session,
+            max_losses_in_a_row=self.max_losses_in_a_row,
+            max_daily_loss_percent=self.max_daily_loss_percent,
         )
 
     def render(self) -> dict[str, Any]:

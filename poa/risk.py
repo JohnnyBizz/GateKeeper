@@ -50,6 +50,11 @@ class RiskAssessment:
     expected_value_at: dict[str, float]
     trades_to_ruin: int
     warnings: list[str] = field(default_factory=list)
+    # Set when a configured limit has been reached. The panel says so loudly
+    # and stops recommending a stake, because the point of a limit is that it
+    # is reached on the day you are least inclined to respect it.
+    paused: bool = False
+    paused_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +69,8 @@ class RiskAssessment:
             "expected_value_at": {k: round(v, 4) for k, v in self.expected_value_at.items()},
             "trades_to_ruin": self.trades_to_ruin,
             "warnings": list(self.warnings),
+            "paused": self.paused,
+            "paused_reason": self.paused_reason,
         }
 
 
@@ -75,6 +82,9 @@ def assess_risk(
     observed_win_rate: float | None = None,
     stake_override: float | None = None,
     observed_sample: int = 0,
+    session: "SessionStats | None" = None,
+    max_losses_in_a_row: int = 0,
+    max_daily_loss_percent: float = 0.0,
 ) -> RiskAssessment:
     """Size a stake and report what it needs to achieve to be worth placing.
 
@@ -82,6 +92,11 @@ def assess_risk(
     on, instead of deriving it from a percentage. The percentage is then
     computed *backwards* from the stake so the risk warnings still fire — a
     typed stake of a quarter of the balance is still a quarter of the balance.
+
+    ``max_losses_in_a_row`` and ``max_daily_loss_percent`` are the brakes. Both
+    are off at zero, and neither ever raises a stake or suggests recovering a
+    loss — a limit that can be argued with is not a limit, and the argument
+    always arrives on the day it should not be listened to.
     """
     balance = max(0.0, float(balance))
     payout = max(0.0, float(payout))
@@ -93,6 +108,26 @@ def assess_risk(
         risk_percent = max(0.0, min(100.0, float(risk_percent)))
         stake = balance * risk_percent / 100.0
     breakeven = breakeven_win_rate(payout)
+
+    # The brakes, before anything else is said about sizing.
+    paused, paused_reason = False, ""
+    if session is not None:
+        streak = session.losing_streak
+        if max_losses_in_a_row > 0 and streak >= max_losses_in_a_row:
+            paused = True
+            paused_reason = (
+                f"{streak} losses in a row. The limit set here was "
+                f"{max_losses_in_a_row}."
+            )
+        elif max_daily_loss_percent > 0 and balance > 0:
+            # What the session has actually cost, at the stake being used.
+            lost = (session.losses * stake) - (session.wins * stake * payout)
+            if lost > 0 and (lost / balance * 100.0) >= max_daily_loss_percent:
+                paused = True
+                paused_reason = (
+                    f"Down {lost / balance * 100.0:.1f}% of the balance today. "
+                    f"The limit set here was {max_daily_loss_percent:.0f}%."
+                )
 
     # Expected value at a few reference win rates, so the break-even number is
     # concrete rather than abstract.
@@ -152,6 +187,8 @@ def assess_risk(
         expected_value_at=reference,
         trades_to_ruin=trades_to_ruin,
         warnings=warnings,
+        paused=paused,
+        paused_reason=paused_reason,
     )
 
 
@@ -171,6 +208,28 @@ class SessionStats:
     auto_losses: int = 0
     manual_wins: int = 0
     manual_losses: int = 0
+    # Outcomes in the order they happened, newest last. The tallies alone
+    # cannot say whether four losses were spread across an afternoon or arrived
+    # one after another, and those are not the same afternoon.
+    sequence: list[bool] = field(default_factory=list)
+
+    def record(self, won: bool) -> None:
+        """Note an outcome, in order."""
+        self.sequence.append(bool(won))
+
+    @property
+    def losing_streak(self) -> int:
+        """Losses since the last win.
+
+        The number that matters during a bad run. A session at eight wins and
+        four losses reads healthily right up until the four were the last four.
+        """
+        streak = 0
+        for won in reversed(self.sequence):
+            if won:
+                break
+            streak += 1
+        return streak
 
     @property
     def wins(self) -> int:

@@ -312,3 +312,120 @@ class TestStakeOverride:
         risk = assess_risk(0.0, 2.0, 0.92, stake_override=50.0)
         assert risk.stake == pytest.approx(50.0)
         assert risk.trades_to_ruin == 0
+
+
+class TestTheBrakes:
+    """Spec §21 asks for a maximum daily loss, a consecutive-loss warning and
+    a paused state. None of it existed: the risk block sized a stake and had
+    nothing to say about a losing run.
+
+    A limit is worth having precisely because the day it is reached is the day
+    it will be argued with, so it is set in advance and stated plainly.
+    """
+
+    def _session(self, outcomes):
+        from poa.risk import SessionStats
+
+        session = SessionStats()
+        for won in outcomes:
+            session.record(won)
+            if won:
+                session.manual_wins += 1
+            else:
+                session.manual_losses += 1
+        return session
+
+    def test_losses_in_a_row_are_counted_in_order(self):
+        """Four losses across a good afternoon is not a losing run."""
+        assert self._session([False, False, True, False]).losing_streak == 1
+        assert self._session([True, False, False, False]).losing_streak == 3
+
+    def test_a_win_ends_the_run(self):
+        assert self._session([False, False, True]).losing_streak == 0
+
+    def test_nothing_yet_is_not_a_losing_run(self):
+        from poa.risk import SessionStats
+
+        assert SessionStats().losing_streak == 0
+
+    def test_the_run_limit_pauses(self):
+        from poa.risk import assess_risk
+
+        risk = assess_risk(
+            1000, 2, 0.92,
+            session=self._session([False] * 4),
+            max_losses_in_a_row=4,
+        )
+        assert risk.paused
+        assert "4 losses in a row" in risk.paused_reason
+
+    def test_one_short_of_the_limit_does_not(self):
+        from poa.risk import assess_risk
+
+        risk = assess_risk(
+            1000, 2, 0.92,
+            session=self._session([False] * 3),
+            max_losses_in_a_row=4,
+        )
+        assert not risk.paused
+
+    def test_the_daily_loss_limit_pauses(self):
+        from poa.risk import assess_risk
+
+        # Six losses at 2% of a 1000 balance is 120, or 12% down.
+        risk = assess_risk(
+            1000, 2, 0.92,
+            session=self._session([False] * 6),
+            max_daily_loss_percent=10.0,
+        )
+        assert risk.paused
+        assert "%" in risk.paused_reason
+
+    def test_wins_offset_what_the_day_has_cost(self):
+        """Down and then back up is not down."""
+        from poa.risk import assess_risk
+
+        risk = assess_risk(
+            1000, 2, 0.92,
+            session=self._session([False] * 6 + [True] * 8),
+            max_daily_loss_percent=10.0,
+        )
+        assert not risk.paused
+
+    def test_both_limits_are_off_at_zero(self):
+        from poa.risk import assess_risk
+
+        risk = assess_risk(
+            1000, 2, 0.92,
+            session=self._session([False] * 20),
+            max_losses_in_a_row=0,
+            max_daily_loss_percent=0.0,
+        )
+        assert not risk.paused
+
+    def test_no_session_means_no_opinion(self):
+        from poa.risk import assess_risk
+
+        assert not assess_risk(1000, 2, 0.92, max_losses_in_a_row=1).paused
+
+    def test_it_never_suggests_trading_larger_to_recover(self):
+        """Martingale by another name is the one thing this must not do."""
+        from poa.risk import assess_risk
+
+        calm = assess_risk(1000, 2, 0.92, session=self._session([True]))
+        losing = assess_risk(
+            1000, 2, 0.92, session=self._session([False] * 3),
+            max_losses_in_a_row=4,
+        )
+        assert losing.stake <= calm.stake
+
+    def test_the_panel_is_told(self):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel(max_losses_in_a_row=3)
+        for _ in range(3):
+            vm.session.record(False)
+            vm.session.manual_losses += 1
+        block = vm.render()["risk"]
+        assert block["paused"] is True
+        assert block["paused_reason"]

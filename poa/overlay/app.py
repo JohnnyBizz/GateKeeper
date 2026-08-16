@@ -99,6 +99,10 @@ class OverlayApp:
             source=str(self.config.get("capture.source", "screen")),
             session_manual=bool(self.config.get("overlay.session_manual", True)),
             risk_collapsed=bool(self.config.get("overlay.risk_collapsed", False)),
+            max_losses_in_a_row=int(self.config.get("risk.max_losses_in_a_row", 0)),
+            max_daily_loss_percent=float(
+                self.config.get("risk.max_daily_loss_percent", 0.0)
+            ),
         )
         self.vm.scan.duration = float(self.config.get("overlay.scan_seconds", 2.4))
 
@@ -1159,6 +1163,10 @@ class OverlayApp:
         """
         self.vm.session.adjust(wins, losses)
         if wins > 0 or losses > 0:
+            # In order, so a losing *run* can be told from four losses spread
+            # across a good afternoon. Only additions: taking a win back is
+            # fixing a miscount, not reporting a trade that happened.
+            self.vm.session.record(won=wins > 0)
             self._file_manual_outcome(won=wins > 0)
 
     def _file_manual_outcome(self, won: bool) -> None:

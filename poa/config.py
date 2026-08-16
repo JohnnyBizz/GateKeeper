@@ -186,6 +186,11 @@ DEFAULTS: dict[str, Any] = {
         "payouts": {},
     },
     "risk": {
+        # The brakes. Both off at zero. A losing run is when position sizing
+        # stops being arithmetic and starts being a decision made badly, which
+        # is exactly when a limit set in advance is worth having.
+        "max_losses_in_a_row": 4,
+        "max_daily_loss_percent": 10.0,
         "balance": 1000.0,
         "risk_percent": 2.0,
     },
