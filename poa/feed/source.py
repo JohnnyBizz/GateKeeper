@@ -458,7 +458,9 @@ class FeedChartSource(ChartSource):
             key = (tick.symbol, length)
             builder = self._fast.get(key)
             if builder is None:
-                if len(self._fast) >= MAX_FAST_CHARTS:
+                if len(self._fast) >= MAX_FAST_CHARTS and not self._make_fast_room(
+                    tick.symbol
+                ):
                     continue
                 builder = CandleBuilder(
                     period_seconds=length,
@@ -467,6 +469,42 @@ class FeedChartSource(ChartSource):
                 )
                 self._fast[key] = builder
             builder.add(tick)
+
+    def _make_fast_room(self, wanted: str) -> bool:
+        """Free a slot for ``wanted`` by dropping a pair nobody is following.
+
+        Lock held. Without this the cap was first-come-for-the-session: the
+        socket carries far more instruments than anyone trades, so whichever
+        six ticked first held every slot, and the chart the user opened
+        afterwards got no sub-minute candles at all — silently, and for the
+        rest of the session. The seconds timeframes are where most of the
+        setups are, so the pair being looked at was the one going without.
+
+        Dropped in order of how little is known to want them: instruments
+        nobody is following at all, then ones outside the user's own tabs. The
+        open chart is never dropped, and neither is the pair asking.
+        """
+        followed = {asset for asset, _period in self._charts}
+        keep = {wanted} | ({self._asset} if self._asset else set())
+        symbols = {symbol for symbol, _length in self._fast} - keep
+
+        for candidates in (
+            symbols - followed - self._workspace,
+            symbols - self._workspace,
+            symbols,
+        ):
+            if candidates:
+                victim = sorted(candidates)[0]
+                self._forget_symbol_fast(victim)
+                log.debug("dropped derived charts for %s to make room for %s",
+                          victim, wanted)
+                return True
+        return False
+
+    def _forget_symbol_fast(self, symbol: str) -> None:
+        """Drop every derived chart for one instrument. Lock held."""
+        for key in [k for k in self._fast if k[0] == symbol]:
+            del self._fast[key]
 
     def _watchable(self) -> set[str] | None:
         """The instruments worth building candles for. Lock held.
@@ -542,6 +580,7 @@ class FeedChartSource(ChartSource):
         self._asset_rank = rank
         self._asset_seen = time.monotonic()
         self._streaming.clear()
+        self._prune_fast(int(period))
 
         existing = self._charts.get(key)
         if existing is not None:
@@ -556,6 +595,27 @@ class FeedChartSource(ChartSource):
             period_seconds=int(period), max_candles=self.max_candles, symbol=asset
         )
         self._forget_oldest_charts()
+
+    def _prune_fast(self, period: int) -> None:
+        """Drop derived candles at or above the open chart's own length.
+
+        ``_add_fast`` only builds *below* the open chart, so a builder at or
+        above it is one left over from when the chart was longer — and it stops
+        being fed the moment the chart shortens to meet it. Two things go wrong
+        if it stays. It collides with the real chart at that length, so the
+        watchlist carries the same chart twice and counts its setup twice. And
+        the copy that stopped being fed keeps answering, minutes out of date,
+        as though it were current.
+
+        Dropped rather than kept, because a builder that resumes after a gap
+        would present candles either side of that gap as contiguous, which is
+        the one failure worse than not having them.
+        """
+        stale = [key for key in self._fast if key[1] >= period]
+        for key in stale:
+            del self._fast[key]
+        if stale:
+            log.debug("dropped %d derived charts at or above %ss", len(stale), period)
 
     def _forget_oldest_charts(self) -> None:
         """Bound what is remembered. Lock held.
@@ -581,6 +641,15 @@ class FeedChartSource(ChartSource):
             self._charts.pop(oldest, None)
             self._history_by_chart.pop(oldest, None)
             self._visited.discard(oldest)
+            # The derived sub-minute charts go with it, unless the instrument
+            # is still being followed at some other length. Left behind they
+            # would hold slots for a pair nothing is watching, and — worse —
+            # let a focus on the dropped chart quietly resurrect it by
+            # aggregating candles that have stopped arriving.
+            if oldest[0] != self._asset and not any(
+                asset == oldest[0] for asset, _period in self._charts
+            ):
+                self._forget_symbol_fast(oldest[0])
 
     def resync(self) -> str:
         """Forget the chart and ask the page to announce it again.
@@ -602,13 +671,19 @@ class FeedChartSource(ChartSource):
             self._focus = None
         return "Re-reading the chart from the platform…"
 
-    def focus(self, asset: str | None) -> bool:
+    def focus(self, asset: str | None, timeframe: int | None = None) -> bool:
         """Read one of the other watched charts instead of the open one.
 
         Every instrument on the watchlist is already being built from the same
         stream, so switching between them changes nothing on the platform:
         nothing is clicked, no chart is opened, no order is placed. It only
         picks which of the charts already in hand the panel reads.
+
+        A chart is a pair *and* a length, and the timeframe is part of the ask
+        for that reason. Without it, clicking the tab labelled ``EUR/USD
+        15SEC`` handed back whatever length that pair happened to be followed
+        at — so the panel read one minute under a label promising fifteen
+        seconds, which is the one mistake a watchlist must not make.
 
         Passing the chart that is actually open on the platform — or None —
         goes back to following it.
@@ -625,9 +700,9 @@ class FeedChartSource(ChartSource):
                 self._focus = None
                 return changed
 
-            match = self._resolve(wanted, open_key)
+            match = self._resolve(wanted, timeframe, open_key)
             if match is None:
-                log.info("no watched chart called %s", wanted)
+                log.info("no watched chart called %s at %ss", wanted, timeframe)
                 return False
             if match == open_key:
                 changed = self._focus is not None
@@ -635,27 +710,88 @@ class FeedChartSource(ChartSource):
                 return changed
             if match == self._focus:
                 return False
-            log.info("reading %s from the watchlist", match[0])
+            log.info("reading %s at %ss from the watchlist", match[0], match[1])
             self._focus = match
             return True
 
-    def _resolve(
-        self, wanted: str, open_key: tuple[str, int] | None
-    ) -> tuple[str, int] | None:
-        """Find a watched chart by name. Lock held.
+    def _held_for(self, symbol: str) -> dict[int, CandleBuilder]:
+        """Every length this instrument is held at, best source first.
+
+        Lock held. The open chart wins over a remembered one, and a remembered
+        one over a derived sub-minute one, so a length held twice resolves to
+        the builder with the most behind it.
+        """
+        held: dict[int, CandleBuilder] = {}
+        if self._asset == symbol:
+            held[int(self._period or 60)] = self._builder
+        for (sym, period), builder in self._charts.items():
+            if sym == symbol:
+                held.setdefault(int(period), builder)
+        for (sym, period), builder in self._fast.items():
+            if sym == symbol:
+                held.setdefault(int(period), builder)
+        return held
+
+    def _symbol_named(self, wanted: str) -> str | None:
+        """The raw symbol behind a name. Lock held.
 
         The name may arrive in either form — the raw ``EURUSD_otc`` off the
         wire or the ``EUR/USD OTC`` the panel shows — so both are compared.
         """
         target = wanted.upper().replace(" ", "")
-        candidates = list(self._charts)
-        if open_key is not None:
-            candidates.insert(0, open_key)
-        for key in candidates:
-            symbol = key[0]
+        symbols = [self._asset] if self._asset else []
+        symbols += [key[0] for key in self._charts] + [key[0] for key in self._fast]
+        for symbol in symbols:
+            if symbol is None:
+                continue
             for name in (symbol, display_symbol(symbol)):
                 if name.upper().replace(" ", "") == target:
-                    return key
+                    return symbol
+        return None
+
+    def _resolve(
+        self,
+        wanted: str,
+        timeframe: int | None,
+        open_key: tuple[str, int] | None,
+    ) -> tuple[str, int] | None:
+        """Find a watched chart by name and length. Lock held."""
+        symbol = self._symbol_named(wanted)
+        if symbol is None:
+            return None
+        held = self._held_for(symbol)
+        period = int(timeframe) if timeframe else None
+
+        if period is None:
+            # No length asked for: the open chart if this is it, else the
+            # longest held, which is the one with the most history behind it.
+            if open_key is not None and open_key[0] == symbol:
+                return open_key
+            return (symbol, max(held)) if held else None
+        if period in held:
+            return (symbol, period)
+        # Not held at that length but derivable from one that is. The watchlist
+        # offers resampled timeframes, and a tab that can be seen has to be a
+        # tab that can be opened.
+        if any(period > base and period % base == 0 for base in held):
+            return (symbol, period)
+        return None
+
+    def _series_for(self, key: tuple[str, int]) -> Series | None:
+        """The candles for a watched chart, aggregating if needed. Lock held."""
+        symbol, period = key[0], int(key[1])
+        held = self._held_for(symbol)
+        builder = held.get(period)
+        if builder is not None:
+            return builder.series()
+
+        # Longest base first: fewer aggregation steps and more history behind
+        # each resulting candle.
+        for base in sorted(held, reverse=True):
+            if period > base and period % base == 0:
+                from ..analysis.resample import resample
+
+                return resample(held[base].series(), period)
         return None
 
     # -- the engine's view --------------------------------------------------
@@ -681,13 +817,13 @@ class FeedChartSource(ChartSource):
             # for the chart actually open.
             focused = False
             if self._focus is not None and self._focus != (asset, period):
-                builder = self._charts.get(self._focus)
-                if builder is None:
+                watched = self._series_for(self._focus)
+                if watched is None:
                     # It aged out of what is remembered; stop pretending.
                     self._focus = None
                 else:
-                    asset, period = self._focus[0], self._focus[1]
-                    series = builder.series()
+                    asset, period = self._focus[0], int(self._focus[1])
+                    series = watched
                     focused = True
 
         issues: list[str] = []
@@ -805,20 +941,32 @@ class FeedChartSource(ChartSource):
         """
         with self._lock:
             out: list[tuple[str, int, Series]] = []
+            # One row per chart, first writer wins. The order below is the
+            # order of trustworthiness — the chart actually open, then the ones
+            # followed from the stream, then the derived sub-minute ones — so a
+            # collision resolves to the better-fed builder. ``_prune_fast``
+            # stops the collision arising; this makes a second one impossible
+            # to turn into two rows, two tabs and two counted trades.
+            seen: set[tuple[str, int]] = set()
+
+            def offer(symbol: str, period: int, builder: Any) -> None:
+                name = display_symbol(symbol)
+                key = (name, int(period))
+                if key in seen:
+                    log.debug("two builders for %s at %ss; keeping the first",
+                              name, period)
+                    return
+                seen.add(key)
+                out.append((name, int(period), builder.series()))
+
             if self._asset is not None:
-                out.append(
-                    (
-                        display_symbol(self._asset),
-                        int(self._period or 60),
-                        self._builder.series(),
-                    )
-                )
+                offer(self._asset, int(self._period or 60), self._builder)
             for (asset, period), builder in self._charts.items():
                 if asset == self._asset and period == (self._period or 60):
                     continue
-                out.append((display_symbol(asset), period, builder.series()))
+                offer(asset, period, builder)
             for (asset, period), builder in self._fast.items():
-                out.append((display_symbol(asset), period, builder.series()))
+                offer(asset, period, builder)
         return out
 
     def describe(self) -> dict[str, Any]:

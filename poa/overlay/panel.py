@@ -30,7 +30,7 @@ class OverlayPanel:
         on_scan: Callable[[], None] | None = None,
         on_reset: Callable[[], None] | None = None,
         on_adjust: Callable[[int, int], None] | None = None,
-        on_asset: Callable[[str], None] | None = None,
+        on_asset: Callable[..., None] | None = None,
         on_stake: Callable[[float | None], None] | None = None,
         on_balance: Callable[[float], None] | None = None,
         on_settings: Callable[[], None] | None = None,
@@ -45,7 +45,7 @@ class OverlayPanel:
         self.on_scan = on_scan or (lambda: None)
         self.on_reset = on_reset or (lambda: None)
         self.on_adjust = on_adjust or (lambda w, l: None)
-        self.on_asset = on_asset or (lambda a: None)
+        self.on_asset = on_asset or (lambda a, tf=None: None)
         self.on_stake = on_stake or (lambda s: None)
         self.on_balance = on_balance or (lambda b: None)
         self.on_settings = on_settings or (lambda: None)
@@ -335,9 +335,15 @@ class OverlayPanel:
                     row=index // 2, column=index % 2,
                     sticky="ew", padx=1, pady=1,
                 )
+                # The timeframe goes with the name. A chart is a pair *and* a
+                # length, and a tab that sends only the pair opens whichever
+                # length that pair happens to be followed at — so the panel
+                # read one minute under a tab labelled fifteen seconds.
                 tab.bind(
                     "<Button-1>",
-                    lambda _e, name=row["asset"]: self.on_asset(name),
+                    lambda _e, name=row["asset"], tf=row.get("timeframe"): (
+                        self.on_asset(name, tf)
+                    ),
                 )
                 self._watch_tabs.append(tab)
             self._watch_signature = signature

@@ -1487,13 +1487,15 @@ class TestSwappingBetweenWatchedCharts:
         app = self._app(tmp_path)
         try:
             picked = []
-            app.engine.source.focus = lambda name: (picked.append(name) or True)
+            app.engine.source.focus = lambda name, tf=None: (
+                picked.append((name, tf)) or True
+            )
             app.vm.asset = "EUR/USD OTC"
             app.vm.signal = object()
 
             app._set_asset("GBP/USD OTC")
 
-            assert picked == ["GBP/USD OTC"]
+            assert picked == [("GBP/USD OTC", None)]
             # The source names the chart on the next poll; until then the old
             # verdict is cleared rather than shown under a new name.
             assert app.vm.signal is None

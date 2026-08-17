@@ -1163,11 +1163,97 @@ class TestPickingAWatchedChart:
         assert capture.meta["feed"]["history_loaded"] is False
 
     def test_a_forgotten_chart_releases_the_pick(self):
+        """Focus must not outlive the candles behind it.
+
+        Forgotten the way the app actually forgets, which drops the
+        instrument's derived sub-minute charts along with it. Left behind,
+        those would let the pick quietly survive by aggregating a stream that
+        has stopped arriving — a chart still named on the panel, still scored,
+        and frozen at whatever minute it was dropped.
+        """
         source = self._source()
         source.focus("GBP/USD OTC")
-        source._charts.clear()
+        for key in [k for k in source._charts if k[0] == "GBPUSD_otc"]:
+            del source._charts[key]
+        source._forget_symbol_fast("GBPUSD_otc")
+
         assert source.capture().asset == "EUR/USD OTC"
         assert source._focus is None
+
+    def test_a_pick_survives_while_the_pair_is_still_being_fed(self):
+        """Dropping the minute chart does not blind the fifteen-second one."""
+        source = self._source()
+        assert source.focus("GBP/USD OTC", 15) is True
+        for key in [k for k in source._charts if k[0] == "GBPUSD_otc"]:
+            del source._charts[key]
+
+        capture = source.capture()
+        assert capture.asset == "GBP/USD OTC"
+        assert capture.timeframe_seconds == 15
+
+
+class TestATabOpensWhatItSays:
+    """A chart is a pair *and* a length.
+
+    ``focus`` took only a pair, so clicking the tab labelled ``EUR/USD 15SEC``
+    handed back whichever length that pair happened to be followed at — the
+    panel then read one minute under a label promising fifteen seconds. Every
+    number on screen was right about a chart the user had not asked for.
+    """
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        for i in range(600):
+            t = 1_786_662_000 + i
+            source._handle("updateStream", [["EURUSD_otc", t, 1.10 + i * 0.0001]])
+            source._handle("updateStream", [["GBPUSD_otc", t, 100.0 + i * 0.001]])
+        return source
+
+    def test_every_tab_offered_can_be_opened(self):
+        source = self._source()
+        for asset, timeframe, _series in source.watched():
+            assert source.focus(asset, timeframe) is not None
+            capture = source.capture()
+            assert (capture.asset, capture.timeframe_seconds) == (asset, timeframe)
+
+    def test_a_sub_minute_tab_reads_that_length(self):
+        source = self._source()
+        assert source.focus("GBP/USD OTC", 15) is True
+        capture = source.capture()
+        assert capture.timeframe_seconds == 15
+        # And they are that pair's candles, not the one it replaced.
+        assert all(candle.close > 50 for candle in capture.series.candles)
+
+    def test_a_sub_minute_tab_of_the_open_pair_is_not_a_no_op(self):
+        """It resolved to the open chart and quietly did nothing at all."""
+        source = self._source()
+        assert source.focus("EUR/USD OTC", 5) is True
+        assert source.capture().timeframe_seconds == 5
+
+    def test_a_resampled_tab_opens_by_aggregating(self):
+        """The watchlist offers timeframes nothing is held at directly."""
+        source = self._source()
+        assert source.focus("GBP/USD OTC", 300) is True
+        capture = source.capture()
+        assert capture.timeframe_seconds == 300
+        assert capture.series is not None and len(capture.series) >= 1
+
+    def test_a_length_that_cannot_be_built_is_refused(self):
+        """Aggregation only works upwards, on whole multiples."""
+        source = self._source()
+        assert source.focus("GBP/USD OTC", 7) is False
+        assert source.capture().asset == "EUR/USD OTC"
+
+    def test_a_bare_pair_still_means_that_pair(self):
+        """Typing a name into the box has no timeframe to offer."""
+        source = self._source()
+        assert source.focus("GBP/USD OTC") is True
+        assert source.capture().asset == "GBP/USD OTC"
 
 
 class TestTheWatchlistIsTheUsersOwnCharts:

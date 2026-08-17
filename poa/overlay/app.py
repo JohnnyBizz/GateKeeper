@@ -1317,14 +1317,18 @@ class OverlayApp:
         # The record has changed, so what it recommends may have too.
         self._proof_at = None
 
-    def _set_asset(self, asset: str) -> None:
-        """A pair was picked — from a watchlist tab, or typed into the box.
+    def _set_asset(self, asset: str, timeframe: int | None = None) -> None:
+        """A chart was picked — from a watchlist tab, or typed into the box.
 
         On the feed this reads a chart already in hand rather than renaming the
         one being read: every watched instrument arrives on the same stream.
         Nothing is clicked on the platform to do it, and no order is placed.
         Where the source cannot name its own chart the old behaviour stands and
         the typed name is a label.
+
+        A tab knows its own length and sends it, because a chart is a pair and
+        a timeframe. Typing a bare pair into the box still means "that pair,
+        however it is being followed", which is what typing one should mean.
         """
         asset = asset.strip()
         if not asset:
@@ -1332,7 +1336,7 @@ class OverlayApp:
         pick = getattr(self.engine.source, "focus", None)
         if callable(pick):
             try:
-                if not pick(asset):
+                if not pick(asset, timeframe):
                     return
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not read %s: %s", asset, exc)

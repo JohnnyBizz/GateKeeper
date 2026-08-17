@@ -174,9 +174,11 @@ def _panel(panel_module, **kw):
     return panel_module.OverlayPanel(OverlayViewModel(), **kw)
 
 
-def _row(asset="EUR/USD OTC", score=60.0, actionable=False, active=False):
+def _row(asset="EUR/USD OTC", score=60.0, actionable=False, active=False,
+         timeframe=60):
     return {
         "asset": asset,
+        "timeframe": timeframe,
         "label": asset.replace(" OTC", ""),
         "score": score,
         "direction": "CALL" if actionable else "WAIT",
@@ -240,10 +242,23 @@ class TestTheWatchlistTabs:
     def test_a_click_sends_the_full_pair_name(self, panel_module):
         """Not the shortened label the tab shows."""
         picked = []
-        panel = _panel(panel_module, on_asset=picked.append)
+        panel = _panel(panel_module, on_asset=lambda a, tf=None: picked.append(a))
         panel._render_watchlist([_row("GBP/USD OTC"), _row("USD/JPY OTC")])
         panel._watch_tabs[1].binds["<Button-1>"](None)
         assert picked == ["USD/JPY OTC"]
+
+    def test_a_click_sends_the_timeframe_too(self, panel_module):
+        """A chart is a pair *and* a length. Sending only the pair opened
+        whichever length that pair happened to be followed at, so the panel
+        read one minute under a tab labelled fifteen seconds."""
+        picked = []
+        panel = _panel(panel_module, on_asset=lambda a, tf=None: picked.append((a, tf)))
+        panel._render_watchlist(
+            [_row("GBP/USD OTC", timeframe=15), _row("USD/JPY OTC", timeframe=300)]
+        )
+        panel._watch_tabs[0].binds["<Button-1>"](None)
+        panel._watch_tabs[1].binds["<Button-1>"](None)
+        assert picked == [("GBP/USD OTC", 15), ("USD/JPY OTC", 300)]
 
     def test_only_a_chart_with_a_setup_is_coloured(self, panel_module):
         panel = _panel(panel_module)
