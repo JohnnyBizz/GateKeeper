@@ -71,6 +71,13 @@ FAST_MAX_CANDLES = 600
 # message we rank highly.
 ASSET_STALE_SECONDS = 25.0
 
+# How far behind the rest of the market a chart may fall before it is no
+# longer worth offering. The socket carries every instrument, so the newest
+# tick anywhere is the clock; a chart whose own last candle is several bars
+# behind it has stopped trading, and a verdict on candles that old is a
+# verdict about a market that has moved on without it.
+STALE_CHART_PERIODS = 3
+
 # How long to wait for the page to say what it is showing before asking it to
 # reload. Attaching to a tab that loaded its chart minutes ago means the whole
 # bootstrap — the symbol, the period, the history — has already been and gone.
@@ -89,6 +96,40 @@ RANK_NONE = -1
 RANK_TICK_HISTORY = 0  # updateHistoryNewFast — sent for a subscribed asset
 RANK_HISTORY = 1  # loadHistoryPeriod(Fast) — history for the drawn chart
 RANK_DECLARED = 2  # changeSymbol / saveCharts — the page naming its own chart
+
+
+def _drop_stale(charts: list[tuple[str, int, Series]]) -> list[tuple[str, int, Series]]:
+    """Keep only the charts still keeping up with the market.
+
+    An instrument that stops trading keeps whatever candles it had, and those
+    candles keep scoring: the tab stays lit, the setup stays counted, and the
+    panel goes on offering a trade that was available an hour ago. Nothing
+    upstream notices, because the socket is busy — with everything else.
+
+    The newest tick anywhere is the clock, so a whole feed stalling puts every
+    chart equally behind and none is singled out. The first chart is the one
+    the platform has open and is always kept: it is what the rest of the panel
+    is about, and ``capture`` says separately when it has gone quiet.
+    """
+    if not charts:
+        return charts
+    stamps = [
+        series.candles[-1].timestamp for _n, _p, series in charts if len(series)
+    ]
+    if not stamps:
+        return charts
+    freshest = max(stamps)
+
+    kept = []
+    for index, (name, period, series) in enumerate(charts):
+        if index and len(series):
+            behind = (freshest - series.candles[-1].timestamp).total_seconds()
+            if behind > STALE_CHART_PERIODS * max(1, period):
+                log.debug("%s at %ss is %.0fs behind the market; not offering it",
+                          name, period, behind)
+                continue
+        kept.append((name, period, series))
+    return kept
 
 
 class FeedChartSource(ChartSource):
@@ -432,6 +473,7 @@ class FeedChartSource(ChartSource):
                             )
                             self._charts[key] = builder
                         builder.add(tick)
+                    self._advance_all(max(tick.timestamp for tick in ticks))
                     return
 
             # Last resort, and only while nothing is known: any message the
@@ -444,6 +486,22 @@ class FeedChartSource(ChartSource):
                 asset, period = parse_chart_request(payload)
                 if asset and period:
                     self._claim(asset, period, RANK_TICK_HISTORY)
+
+    def _advance_all(self, now: float) -> None:
+        """Move every chart's clock on, not just the ones that ticked.
+
+        Lock held. An instrument only closes a bar when its own next tick
+        arrives, so the quiet ones sat on a bar that never ended and a series
+        with buckets missing from the middle. The socket carries the whole
+        market, so any tick is evidence that time has passed for all of it —
+        and the timestamp comes from the platform rather than this machine,
+        because that is the clock the candles are bucketed by.
+        """
+        for builder in self._charts.values():
+            builder.advance(now)
+        for builder in self._fast.values():
+            builder.advance(now)
+        self._builder.advance(now)
 
     def _add_fast(self, tick: Any, period: int) -> None:
         """Build the candle lengths below the open chart's. Lock held.
@@ -810,6 +868,16 @@ class FeedChartSource(ChartSource):
             silent_for = (
                 time.monotonic() - self._last_message if self._last_message else None
             )
+            # How long *this instrument* has been quiet, which is a different
+            # question from whether the socket is alive. The socket carries the
+            # whole market, so it stays busy while the pair on screen stops
+            # dead — and the panel went on reporting LIVE FEED at full
+            # confidence over a chart that had not moved for an hour.
+            quiet_for = (
+                time.monotonic() - self._asset_seen
+                if asset is not None and self._asset_seen
+                else None
+            )
 
             # A chart picked off the watchlist is read in place of the open
             # one. It is built from the same stream, so it is as current; what
@@ -857,6 +925,16 @@ class FeedChartSource(ChartSource):
             issues.append(
                 f"No prices for {silent_for:.0f}s — the chart may have been "
                 "closed, or the connection dropped."
+            )
+            confidence = 25.0
+        elif not focused and quiet_for is not None and quiet_for > max(
+            STALE_AFTER_SECONDS, STALE_CHART_PERIODS * period
+        ):
+            # The feed is fine; this instrument is not trading. Said plainly,
+            # because every number below it describes a chart that has stopped.
+            issues.append(
+                f"{display_symbol(asset)} has not traded for {quiet_for:.0f}s "
+                "— the reading below is as old as that."
             )
             confidence = 25.0
 
@@ -967,7 +1045,7 @@ class FeedChartSource(ChartSource):
                 offer(asset, period, builder)
             for (asset, period), builder in self._fast.items():
                 offer(asset, period, builder)
-        return out
+        return _drop_stale(out)
 
     def describe(self) -> dict[str, Any]:
         with self._lock:

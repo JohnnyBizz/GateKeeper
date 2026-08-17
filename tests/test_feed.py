@@ -301,6 +301,203 @@ class TestCandleBuilder:
         assert builder.forming.high == 1.15
 
 
+class TestAnInstrumentThatGoesQuiet:
+    """A tick-built bar only closes when the *next* tick arrives.
+
+    So a pair that stops trading skipped every bucket it was silent for, and
+    the series handed the indicators 22:44 and 23:25 as consecutive minutes —
+    a forty-minute quiet spell read as one bar's move, on exactly the charts
+    the watchlist builds from ticks alone.
+    """
+
+    def _quiet_for(self, minutes, period=60, run=40):
+        from poa.feed.ticks import CandleBuilder, Tick
+
+        builder = CandleBuilder(period_seconds=period, symbol="AUDCAD_otc")
+        start = 1_786_662_000
+        for step in range(run * period):
+            builder.add(Tick("AUDCAD_otc", start + step, 1.10))
+        resumes = start + run * period + minutes * period
+        for step in range(10 * period):
+            builder.add(Tick("AUDCAD_otc", resumes + step, 1.20))
+        return builder.series()
+
+    def _holes(self, series, period=60):
+        stamps = [candle.timestamp for candle in series.candles]
+        return [
+            int((stamps[i + 1] - stamps[i]).total_seconds())
+            for i in range(len(stamps) - 1)
+            if (stamps[i + 1] - stamps[i]).total_seconds() != period
+        ]
+
+    def test_a_short_silence_is_drawn_flat(self):
+        """No ticks means no trades, which means the price did not change —
+        which is exactly what the platform draws."""
+        series = self._quiet_for(3)
+        assert self._holes(series) == []
+        flat = [c for c in series.candles if c.open == c.high == c.low == c.close]
+        assert len(flat) >= 3
+
+    def test_a_filled_bar_carries_the_last_traded_price(self):
+        series = self._quiet_for(3)
+        stamps = {c.timestamp: c for c in series.candles}
+        filled = [c for c in series.candles if c.volume == 0.0]
+        assert filled and all(c.close == 1.10 for c in filled)
+
+    def test_a_long_silence_is_left_as_a_gap(self):
+        """Past a point it is not a quiet market but a closed one, and
+        inventing that much calm is worse than admitting the break."""
+        from poa.feed.ticks import MAX_FLAT_FILL_BUCKETS
+
+        assert self._holes(self._quiet_for(MAX_FLAT_FILL_BUCKETS)) == []
+        assert self._holes(self._quiet_for(MAX_FLAT_FILL_BUCKETS + 1))
+
+    def test_a_gap_is_never_half_filled(self):
+        """Fabricated bars *and* a hole would be the worst of both answers."""
+        series = self._quiet_for(45)
+        assert not [c for c in series.candles if c.volume == 0.0]
+
+    def test_the_newest_bar_stops_being_hours_old(self):
+        """Without this the panel reads a bar from an hour ago as the one
+        currently forming, on any pair that has gone quiet."""
+        from poa.feed.ticks import CandleBuilder, Tick
+
+        builder = CandleBuilder(period_seconds=60, symbol="AUDCAD_otc")
+        start = 1_786_662_000
+        for step in range(600):
+            builder.add(Tick("AUDCAD_otc", start + step, 1.10))
+        assert builder.series().candles[-1].complete is False
+
+        # The socket carries the whole market, so another pair ticking is
+        # evidence that time has passed for this one too.
+        builder.advance(start + 600 + 8 * 60)
+        assert builder.series().candles[-1].complete is True
+
+    def test_advancing_invents_nothing(self):
+        """How long the silence will last is not known yet."""
+        from poa.feed.ticks import CandleBuilder, Tick
+
+        builder = CandleBuilder(period_seconds=60, symbol="AUDCAD_otc")
+        start = 1_786_662_000
+        for step in range(600):
+            builder.add(Tick("AUDCAD_otc", start + step, 1.10))
+        builder.advance(start + 600 + 40 * 60)
+        assert not [c for c in builder.settled if c.volume == 0.0]
+
+    def test_the_stream_closes_the_gap_after_an_advance(self):
+        """Advancing settles the stale bar; the tick that ends the silence is
+        what says how wide it was."""
+        from poa.feed.ticks import CandleBuilder, Tick
+
+        builder = CandleBuilder(period_seconds=60, symbol="AUDCAD_otc")
+        start = 1_786_662_000
+        for step in range(600):
+            builder.add(Tick("AUDCAD_otc", start + step, 1.10))
+        for step in range(0, 5 * 60, 30):
+            builder.advance(start + 600 + step)
+        builder.add(Tick("AUDCAD_otc", start + 600 + 5 * 60, 1.20))
+        assert self._holes(builder.series()) == []
+
+    def test_every_watched_chart_is_advanced_not_just_the_one_that_ticked(self):
+        """Read off the builder rather than the watchlist, which separately
+        declines to offer a chart that has fallen far behind."""
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        start = 1_786_662_000
+        for step in range(180):
+            source._handle("updateStream", [["EURUSD_otc", start + step, 1.10]])
+            source._handle("updateStream", [["GBPUSD_otc", start + step, 1.30]])
+        # Only one of them keeps trading, for two more bars.
+        for step in range(180, 320):
+            source._handle("updateStream", [["EURUSD_otc", start + step, 1.10]])
+
+        builder = source._charts[("GBPUSD_otc", 60)]
+        assert builder.settled[-1].complete is True
+        assert builder.forming is None
+
+
+class TestAChartThatHasStoppedTrading:
+    """Dead charts kept their candles, and their candles kept scoring.
+
+    The tab stayed lit, the setup stayed counted, and the panel went on
+    offering a trade that had been available an hour earlier. Nothing upstream
+    noticed, because the socket was busy — with everything else.
+    """
+
+    def _source(self, quiet_pair_stops_after=40):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._connected = True
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        start = 1_786_662_000
+        for step in range(quiet_pair_stops_after * 60):
+            source._handle("updateStream", [["EURUSD_otc", start + step, 1.10]])
+            source._handle("updateStream", [["GBPUSD_otc", start + step, 1.30]])
+        for step in range(quiet_pair_stops_after * 60, 130 * 60):
+            source._handle("updateStream", [["EURUSD_otc", start + step, 1.10]])
+        return source
+
+    def test_a_dead_chart_is_not_offered(self):
+        source = self._source()
+        assert not [a for a, _t, _s in source.watched() if a == "GBP/USD OTC"]
+
+    def test_the_live_charts_are_all_still_there(self):
+        source = self._source()
+        assert {t for a, t, _s in source.watched() if a == "EUR/USD OTC"} == {
+            5, 10, 15, 30, 60
+        }
+
+    def test_a_whole_feed_stalling_singles_nobody_out(self):
+        """The newest tick anywhere is the clock, so a stall puts every chart
+        equally behind — and dropping all of them would be wrong."""
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        start = 1_786_662_000
+        for step in range(40 * 60):
+            source._handle("updateStream", [["EURUSD_otc", start + step, 1.10]])
+            source._handle("updateStream", [["GBPUSD_otc", start + step, 1.30]])
+        # Nothing has ticked since, for anyone.
+        assert {a for a, _t, _s in source.watched()} == {"EUR/USD OTC", "GBP/USD OTC"}
+
+    def test_the_open_chart_is_kept_even_when_it_is_the_quiet_one(self):
+        """It is what the rest of the panel is about; capture says separately
+        that it has gone quiet."""
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "GBPUSD_otc", "period": 60}]
+        )
+        assert ("GBP/USD OTC", 60) in {(a, t) for a, t, _s in source.watched()}
+
+    def test_a_frozen_open_chart_is_reported(self):
+        """The socket carries the whole market, so it stays busy while the
+        pair on screen stops dead — and the panel reported LIVE FEED at full
+        confidence over a chart that had not moved for an hour."""
+        import time
+
+        source = self._source()
+        source._last_message = time.monotonic()
+
+        source._asset_seen = time.monotonic() - 2
+        assert source.capture().quality.confidence == 100.0
+
+        source._asset_seen = time.monotonic() - 400
+        quality = source.capture().quality
+        assert quality.confidence == 25.0
+        assert quality.ok is False
+        assert any("has not traded" in issue for issue in quality.issues)
+
+
 class TestTheFormingBarIsNotTreatedAsClosed:
     """The bar still building is not a shape yet, and must not be read as one.
 

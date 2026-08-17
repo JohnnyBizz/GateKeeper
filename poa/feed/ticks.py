@@ -19,10 +19,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from ..models import Candle, Series
+
+# How many silent buckets are filled flat before the silence is read as a
+# closed market rather than a quiet one. An instrument that has not traded for
+# thirty bars is not resting between ticks, and inventing thirty bars of calm
+# nobody observed would be worse than admitting the break.
+MAX_FLAT_FILL_BUCKETS = 30
 
 # EURUSD_otc, AUDCAD_otc, EURUSD, BTCUSD_otc — a six-letter pair, sometimes
 # with a suffix marking the platform's synthetic out-of-hours instruments.
@@ -121,15 +127,18 @@ class CandleBuilder:
 
         start = self._bucket(tick.timestamp)
         if self._open is None:
+            self._fill_silence(start)
             self._open = self._forming(start, tick.price, tick.price, tick.price)
             return
 
         if start > self._open.timestamp:
             # The bucket has rolled over, so the bar that was forming is now a
-            # closed bar and may be marked as one.
+            # closed bar and may be marked as one — along with any buckets
+            # between the two, which this instrument was simply silent for.
             self._closed.append(replace(self._open, complete=True))
-            if len(self._closed) > self.max_candles:
-                del self._closed[: len(self._closed) - self.max_candles]
+            self._open = None
+            self._trim()
+            self._fill_silence(start)
             self._open = self._forming(start, tick.price, tick.price, tick.price)
             return
         if start < self._open.timestamp:
@@ -164,6 +173,70 @@ class CandleBuilder:
     def extend(self, ticks: Iterable[Tick]) -> None:
         for tick in ticks:
             self.add(tick)
+
+    def _trim(self) -> None:
+        if len(self._closed) > self.max_candles:
+            del self._closed[: len(self._closed) - self.max_candles]
+
+    def _fill_silence(self, start: datetime) -> None:
+        """Draw the buckets this instrument was silent for, up to ``start``.
+
+        No ticks means no trades, which on a live feed means the price did not
+        change: the platform draws those buckets flat at the last price, and so
+        does this. Leaving them out is what put 22:44 and 23:25 into the series
+        as consecutive minutes, so that every indicator read a forty-minute
+        quiet spell as one bar's move.
+
+        Past a point the silence is not a quiet market but a closed one, and
+        inventing that much calm nobody observed is worse than admitting the
+        break — so beyond the bound the gap is left as a gap. The whole run is
+        filled or none of it, because a partial fill would fabricate bars and
+        still leave the hole.
+
+        Called only where the size of the gap is known exactly, which is when
+        a real tick arrives to close it.
+        """
+        if not self._closed:
+            return
+        period = max(1, int(self.period_seconds))
+        last = self._closed[-1]
+        missing = int((start - last.timestamp).total_seconds()) // period - 1
+        if missing < 1 or missing > MAX_FLAT_FILL_BUCKETS:
+            return
+
+        close = last.close
+        timestamp = last.timestamp
+        for _ in range(missing):
+            timestamp = timestamp + timedelta(seconds=period)
+            self._closed.append(
+                Candle(timestamp, close, close, close, close,
+                       volume=0.0, complete=True)
+            )
+        self._trim()
+
+    def advance(self, now: float) -> None:
+        """Move this instrument's clock on without a tick of its own.
+
+        A tick-built bar only closes when the *next* tick arrives, so an
+        instrument that stops trading leaves its newest bar forming for as long
+        as the quiet lasts — and the panel reads an hour-old bar as the current
+        one. The socket carries the whole market, so a tick on any instrument
+        is evidence that time has passed for all of them.
+
+        This only settles the bar that has ended. Nothing is drawn for the
+        silence itself, because how long it will last is not yet known and a
+        gap half-filled is the worst of both answers; ``_fill_silence`` closes
+        it when a tick finally arrives to say how wide it was.
+
+        ``now`` comes from the stream rather than the local clock, because the
+        platform's time is the one the candles are bucketed by.
+        """
+        if self._open is None:
+            return
+        if self._bucket(now) > self._open.timestamp:
+            self._closed.append(replace(self._open, complete=True))
+            self._open = None
+            self._trim()
 
     def seed(self, candles: Iterable[Candle]) -> None:
         """Backfill settled candles from the platform's history message.
