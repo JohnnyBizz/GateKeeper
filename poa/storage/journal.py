@@ -473,7 +473,14 @@ class Journal:
             "SELECT direction, direction_confidence, duration_confidence, "
             "market_regime, outcome, timestamp FROM signals "
             "WHERE outcome IN ('win', 'loss') "
-            "AND direction IN ('CALL', 'PUT')"
+            "AND direction IN ('CALL', 'PUT') "
+            # A trade with no score is one nothing could attribute: the
+            # platform settled it, but no call of ours was live on that
+            # instrument when it opened. The outcome is real and stays in the
+            # journal; what it must not do is teach the score bands, because
+            # the score it would teach them with is a zero standing in for
+            # "unknown" — and this record outranks the replay and holds a veto.
+            "AND direction_confidence > 0"
         )
         params: list[Any] = []
         for column, value in (

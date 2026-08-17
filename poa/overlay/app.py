@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -60,6 +61,15 @@ MAX_REMEMBERED_CHARTS = 8
 # read once every three bars, and two setups in three are over before
 # anything looks. Charts whose newest candle has not moved are skipped, so
 # a fast sweep costs no more than the charts that actually changed.
+# How far back a settled trade may reach to find the call that motivated it.
+# Long enough to cover reading the panel and pressing the platform's button,
+# short enough that an unrelated call from earlier cannot be mistaken for it.
+CALL_MATCH_SECONDS = 180.0
+# Calls remembered per instrument. The open chart is re-read every couple of
+# seconds, so this is several minutes of them — comfortably more than the
+# window above, which is what decides whether a match is found.
+CALL_MEMORY = 400
+
 WATCH_SWEEP_SECONDS = 15.0
 MIN_WATCH_SWEEP_SECONDS = 4.0
 
@@ -137,6 +147,12 @@ class OverlayApp:
         self._proof_at: Any | None = None
         # What each chart last measured, so switching away and back is free.
         self._measured: dict[tuple[Any, ...], tuple[Any, int, Any]] = {}
+
+        # What each instrument was being called at, and when. A trade the
+        # platform settles names its own instrument and the moment it opened,
+        # and this is what lets that be matched to the call it was taken on
+        # rather than to whatever the panel happens to be showing now.
+        self._calls: dict[str, deque] = {}
 
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
@@ -243,6 +259,25 @@ class OverlayApp:
         if actionable and not self._was_actionable:
             self.vm.calls_this_session += 1
         self._was_actionable = actionable
+
+        # Note what this chart is calling, so a trade the platform settles
+        # later can be matched to the call it was taken on rather than to
+        # whatever happens to be on screen by then.
+        score = getattr(signal, "score", None) if signal is not None else None
+        named = getattr(getattr(score, "direction", None), "value", None)
+        if named in ("CALL", "PUT"):
+            regime = ""
+            mtf = getattr(signal, "mtf", None)
+            if mtf is not None:
+                regime = str(getattr(mtf.current.regime.regime, "name", "") or "")
+            self._remember_call(
+                self.vm.asset,
+                self.vm.chart_timeframe,
+                named,
+                float(getattr(signal, "direction_confidence", 0.0) or 0.0),
+                float(getattr(signal, "duration_confidence", 0.0) or 0.0),
+                regime,
+            )
 
         self._follow_recommended_expiry(signal)
 
@@ -751,12 +786,22 @@ class OverlayApp:
                             or signal
                         )
 
+                # The direction the *score* argues for, which is what a trade
+                # on this chart would be matched against later. The verdict is
+                # usually WAIT, and WAIT is not a side.
+                argued = getattr(
+                    getattr(getattr(signal, "score", None), "direction", None),
+                    "value",
+                    "",
+                )
                 row = {
                     "asset": asset,
                     "timeframe": timeframe,
                     "expiry": expiry,
                     "direction": signal.direction.value,
+                    "argued": str(argued or ""),
                     "score": round(signal.direction_confidence, 0),
+                    "duration_score": round(signal.duration_confidence, 0),
                     "actionable": bool(signal.actionable),
                     "candles": len(series),
                 }
@@ -781,6 +826,20 @@ class OverlayApp:
         # worth looking at, and colour can change without anything moving.
         rows.sort(key=lambda r: str(r["asset"]))
         self.vm.watchlist = rows
+        # The watched charts are called too, and they are the ones most likely
+        # to be traded from a tab rather than from the panel — so they need
+        # remembering just as much as the chart on screen.
+        here = (self.vm.asset, int(self.vm.chart_timeframe))
+        for row in rows:
+            if (str(row["asset"]), int(row.get("timeframe") or 0)) == here:
+                continue
+            self._remember_call(
+                str(row["asset"]),
+                int(row.get("timeframe") or 0),
+                str(row.get("argued") or ""),
+                float(row.get("score") or 0.0),
+                float(row.get("duration_score") or 0.0),
+            )
         self._announce_watchlist(rows)
 
     def _announce_watchlist(self, rows: Any) -> None:
@@ -1214,6 +1273,67 @@ class OverlayApp:
             self.vm.session.record(won=wins > 0)
             self._file_manual_outcome(won=wins > 0)
 
+    def _remember_call(
+        self,
+        asset: str,
+        timeframe: int,
+        direction: str,
+        direction_confidence: float,
+        duration_confidence: float,
+        regime: str = "",
+    ) -> None:
+        """Note what this chart was saying, so a trade on it can be matched.
+
+        The platform settles trades for whichever instrument the user actually
+        traded, at whatever moment they pressed the button. Without a record of
+        what each chart was calling and when, there was nothing to attribute
+        such a trade to except the panel's current state — which is a different
+        instrument as often as not.
+        """
+        if direction not in ("CALL", "PUT") or not asset:
+            return
+        history = self._calls.setdefault(asset, deque(maxlen=CALL_MEMORY))
+        history.append(
+            {
+                "at": utcnow().timestamp(),
+                "timeframe": int(timeframe),
+                "direction": direction,
+                "direction_confidence": float(direction_confidence),
+                "duration_confidence": float(duration_confidence),
+                "regime": regime,
+            }
+        )
+
+    def _call_for(self, asset: str, opened_at: Any, direction: str) -> dict | None:
+        """The call this trade was most likely taken on, or None.
+
+        None is a real answer and the important one. A trade nobody can
+        attribute has no score, and inventing one for it would teach the
+        record that a number it never produced settled the way this trade did
+        — on the very evidence that outranks everything else and holds a veto.
+        """
+        history = self._calls.get(asset)
+        if not history or not opened_at:
+            return None
+        try:
+            opened = float(opened_at)
+        except (TypeError, ValueError):
+            return None
+
+        best = None
+        for entry in history:
+            # A call made after the trade opened did not motivate it, and one
+            # made long before it is a different moment in the session.
+            if not 0.0 <= opened - entry["at"] <= CALL_MATCH_SECONDS:
+                continue
+            # A trade taken the other way is not this call's outcome. Filing it
+            # as one would teach the record backwards.
+            if entry["direction"] != direction:
+                continue
+            if best is None or entry["at"] > best["at"]:
+                best = entry
+        return best
+
     def _collect_real_trades(self) -> None:
         """Learn from trades the platform says the user actually placed.
 
@@ -1235,18 +1355,32 @@ class OverlayApp:
         for trade in trades:
             self.vm.session.record(won=trade["won"])
             self.vm.session.adjust(wins=int(trade["won"]), losses=int(not trade["won"]))
+            asset = display_symbol(trade["asset"])
+            # Attributed to the call that was live on *this* instrument when
+            # the trade opened. It used to borrow the panel's current score and
+            # the open chart's timeframe, so a GBP/USD trade settling while
+            # EUR/USD was on screen was filed as EUR/USD's score having won or
+            # lost — straight into the record that outranks the replay and
+            # holds a veto over live setups.
+            call = self._call_for(asset, trade.get("opened_at"), trade["direction"])
             try:
                 self.engine.journal.record_manual(
-                    asset=display_symbol(trade["asset"]),
-                    chart_timeframe=self.vm.chart_timeframe,
+                    asset=asset,
+                    chart_timeframe=int(
+                        call["timeframe"] if call else self.vm.chart_timeframe
+                    ),
                     trade_duration=int(trade.get("duration") or self.engine.trade_duration),
                     direction=trade["direction"],
-                    direction_confidence=float(self.vm.signal.direction_confidence)
-                    if self.vm.signal is not None
-                    else 0.0,
-                    duration_confidence=float(self.vm.signal.duration_confidence)
-                    if self.vm.signal is not None
-                    else 0.0,
+                    # Zero means "nobody knows what this scored". The record
+                    # keeps the trade; the calibration declines to learn a
+                    # score from it, which is the honest half of the answer.
+                    direction_confidence=float(
+                        call["direction_confidence"] if call else 0.0
+                    ),
+                    duration_confidence=float(
+                        call["duration_confidence"] if call else 0.0
+                    ),
+                    market_regime=str(call["regime"]) if call else "",
                     won=trade["won"],
                     source=getattr(self.engine.source, "name", None),
                     price=trade.get("open_price"),
@@ -1255,9 +1389,12 @@ class OverlayApp:
                 log.warning("could not file a settled trade: %s", exc)
                 continue
             log.info(
-                "recorded a real %s on %s",
+                "recorded a real %s on %s (%s)",
                 "win" if trade["won"] else "loss",
                 trade["asset"],
+                f"score {call['direction_confidence']:.0f}"
+                if call
+                else "no call to attribute it to",
             )
         if trades:
             self._proof_at = None

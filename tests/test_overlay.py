@@ -2464,23 +2464,33 @@ class TestLearningFromRealTrades:
         app.vm.asset, app.vm.chart_timeframe = "USD/JPY OTC", 60
         return app
 
-    def _trade(self, won=True, direction="PUT"):
+    def _trade(self, won=True, direction="PUT", asset="USDJPY_otc"):
+        from poa.models import utcnow
+
         return {
-            "asset": "USDJPY_otc", "direction": direction, "won": won,
+            "asset": asset, "direction": direction, "won": won,
             "open_price": 158.611, "close_price": 158.597,
-            "payout": 0.88, "duration": 180, "opened_at": 1786923484,
+            "payout": 0.88, "duration": 180,
+            # Just now, so it can reach the call it was taken on.
+            "opened_at": utcnow().timestamp(),
         }
 
-    def _filed(self, app):
+    def _called(self, app, direction="PUT", score=72.0, asset="USD/JPY OTC",
+                timeframe=60):
+        """What the panel was saying on that chart when the trade was placed."""
+        app._remember_call(asset, timeframe, direction, score, 65.0, "TRENDING")
+
+    def _filed(self, app, timeframe=60):
         return app.engine.journal.calibration_records(
             asset="USD/JPY OTC",
             source=getattr(app.engine.source, "name", None),
-            chart_timeframe=60, trade_duration=180,
+            chart_timeframe=timeframe, trade_duration=180,
         )
 
     def test_a_settled_trade_reaches_the_record(self, tmp_path):
         app = self._app(tmp_path)
         try:
+            self._called(app, "PUT")
             app.engine.source.take_settled = lambda: [self._trade()]
             app._collect_real_trades()
             filed = self._filed(app)
@@ -2494,11 +2504,85 @@ class TestLearningFromRealTrades:
         This does not have to assume anything."""
         app = self._app(tmp_path)
         try:
+            self._called(app, "CALL")
             app.engine.source.take_settled = lambda: [
                 self._trade(direction="CALL", won=False)
             ]
             app._collect_real_trades()
             assert self._filed(app)[0].direction == "CALL"
+        finally:
+            app.shutdown()
+
+    def test_the_score_comes_from_the_traded_chart_not_the_open_one(self, tmp_path):
+        """It used to take whatever the panel was showing at the moment the
+        trade settled — a different instrument as often as not. A GBP/USD
+        trade was then filed as EUR/USD's current score having won or lost,
+        straight into the record that outranks the replay and holds a veto."""
+        app = self._app(tmp_path)
+        try:
+            # The panel is on USD/JPY. The trade is on GBP/USD.
+            self._called(app, "PUT", score=31.0)
+            self._called(app, "CALL", score=84.0, asset="GBP/USD OTC", timeframe=15)
+
+            app.engine.source.take_settled = lambda: [
+                self._trade(direction="CALL", won=True, asset="GBPUSD_otc")
+            ]
+            app._collect_real_trades()
+
+            filed = app.engine.journal.calibration_records(
+                asset="GBP/USD OTC",
+                source=getattr(app.engine.source, "name", None),
+                chart_timeframe=15, trade_duration=180,
+            )
+            assert len(filed) == 1
+            assert filed[0].score == 84.0
+            # And nothing was filed against the chart that merely happened to
+            # be on screen.
+            assert self._filed(app) == []
+        finally:
+            app.shutdown()
+
+    def test_a_trade_nobody_called_teaches_the_score_nothing(self, tmp_path):
+        """The outcome is real and stays in the journal. What it must not do
+        is teach a score, because the score it would teach is a stand-in for
+        "nobody knows"."""
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: [self._trade()]
+            app._collect_real_trades()
+
+            assert self._filed(app) == []
+            assert app.engine.journal.recent(limit=5)
+            assert (app.vm.session.wins, app.vm.session.losses) == (1, 0)
+        finally:
+            app.shutdown()
+
+    def test_a_trade_taken_against_the_call_is_not_that_calls_outcome(self, tmp_path):
+        """Filing it as one would teach the record backwards."""
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "CALL", score=84.0)
+            app.engine.source.take_settled = lambda: [
+                self._trade(direction="PUT", won=False)
+            ]
+            app._collect_real_trades()
+            assert self._filed(app) == []
+        finally:
+            app.shutdown()
+
+    def test_a_call_from_long_before_the_trade_is_not_matched(self, tmp_path):
+        """A call from earlier in the session is a different moment."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "PUT", score=84.0)
+            stale = utcnow().timestamp() - 3600
+            app._calls["USD/JPY OTC"][0]["at"] = stale
+
+            app.engine.source.take_settled = lambda: [self._trade()]
+            app._collect_real_trades()
+            assert self._filed(app) == []
         finally:
             app.shutdown()
 
