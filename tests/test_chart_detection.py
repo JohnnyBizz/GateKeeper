@@ -253,6 +253,37 @@ class TestValidation:
         quality = validate_series(flat, min_candles=60)
         assert any("no range" in issue or "not moved" in issue for issue in quality.issues)
 
+    def test_one_long_break_is_flagged_however_rare_it_is(self):
+        """The regularity test cannot see it: forty missing minutes among four
+        hundred one-minute candles leaves the spacing 99.75% regular. And it is
+        precisely the case that misleads everything downstream, because the
+        bars either side of the break are read as consecutive."""
+        from dataclasses import replace
+        from datetime import timedelta
+
+        from poa.models import Series
+
+        healthy = trending_series(400)
+        skip = timedelta(seconds=healthy.timeframe_seconds * 41)
+        holed = Series(
+            [
+                candle if index < 200 else replace(
+                    candle, timestamp=candle.timestamp + skip
+                )
+                for index, candle in enumerate(healthy.candles)
+            ],
+            healthy.timeframe_seconds,
+            healthy.symbol,
+        )
+
+        quality = validate_series(holed, min_candles=60)
+        assert any("missing in one break" in issue for issue in quality.issues)
+        assert quality.confidence < validate_series(healthy, min_candles=60).confidence
+
+    def test_a_contiguous_series_is_not_accused_of_a_break(self):
+        quality = validate_series(trending_series(400), min_candles=60)
+        assert not any("missing in one break" in issue for issue in quality.issues)
+
     def test_an_implausible_jump_is_flagged(self):
         closes = [1.08 + 0.00001 * i for i in range(120)]
         closes[60] = 5.0  # a misread candle, not a real gap

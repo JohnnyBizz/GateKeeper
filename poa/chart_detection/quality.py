@@ -105,6 +105,20 @@ def validate_series(
                 issues.append(
                     "Candle spacing is irregular; some candles may be missing."
                 )
+            # One long break is invisible to the test above — forty missing
+            # minutes among four hundred one-minute candles still leaves
+            # regularity at 99.75% — and it is exactly the case that misleads
+            # everything downstream, because the indicators read the bars
+            # either side of the break as consecutive and the whole quiet
+            # spell as a single bar's move.
+            biggest = max(gaps)
+            if common and biggest >= common * 3:
+                skipped = biggest // common - 1
+                confidence -= min(20.0, 4.0 * skipped)
+                issues.append(
+                    f"{skipped} candles are missing in one break — the bars "
+                    "either side of it are not consecutive."
+                )
             if expected_timeframe and common != expected_timeframe:
                 confidence -= 15.0
                 issues.append(

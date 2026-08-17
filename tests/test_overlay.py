@@ -2144,6 +2144,75 @@ class TestAKindAddedLaterIsNotSilentlyOff:
         assert "WATCHLIST" in AlertSettings().notify_on
 
 
+class TestACachedVerdictAnswersTheQuestionThatWasAsked:
+    """Re-using a verdict while nothing has closed is what makes sweeping
+    eight charts affordable. But the question is more than the chart: which
+    chart is open decides whether a row carries the user's expiry or the one
+    the engine picks for it, and the expiry setting decides what was asked of
+    every chart. Neither moves the candles, so the cache went on answering the
+    old question for as long as the bar took to close — up to fifteen minutes.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "reports"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("market.scan_timeframes", False)
+        app = OverlayApp(config)
+        app.vm.asset, app.vm.chart_timeframe = "EUR/USD OTC", 60
+        return app
+
+    def _charts(self):
+        return [("EUR/USD OTC", 60, pullback_trend(400, direction=1))]
+
+    def _sweep(self, app):
+        app._watch_worker(self._charts())
+        return app._watch_results.get_nowait()
+
+    def test_changing_the_expiry_re_reads_rather_than_re_using(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            first = self._sweep(app)
+            assert first and first[0]["expiry"] == app.engine.trade_duration
+
+            app.engine.update_settings({"trade_duration": 300})
+            second = self._sweep(app)
+            assert second and second[0]["expiry"] == 300
+        finally:
+            app.shutdown()
+
+    def test_switching_the_open_chart_re_reads_rather_than_re_using(self, tmp_path):
+        """The chart just opened must carry the user's expiry, not the
+        recommendation it was given while it was somebody else's tab."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.asset = "GBP/USD OTC"      # EUR/USD is a watched tab
+            self._sweep(app)
+
+            app.vm.asset = "EUR/USD OTC"      # now it is the open chart
+            rows = self._sweep(app)
+            assert rows and rows[0]["expiry"] == app.engine.trade_duration
+        finally:
+            app.shutdown()
+
+    def test_an_unchanged_question_still_re_uses_the_answer(self, tmp_path):
+        """The saving is the whole point of the cache."""
+        app = self._app(tmp_path)
+        try:
+            first = self._sweep(app)
+            second = self._sweep(app)
+            assert second and second[0] is first[0]
+        finally:
+            app.shutdown()
+
+
 class TestTheSamePairAtSeveralTimeframes:
     """A setup is a statement about a timeframe as much as about a pair.
 

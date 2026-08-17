@@ -166,6 +166,10 @@ class OverlayApp:
         # charts affordable at all.
         self._read_at: dict[tuple[str, int], Any] = {}
         self._read_was: dict[tuple[str, int], dict[str, Any]] = {}
+        # What was being asked when those answers were cached. When the
+        # question changes the answers are stale even though the candles have
+        # not moved, so both are dropped.
+        self._read_ctx: Any = None
 
         # Verdicts for every chart the socket carries, not just the open one.
         self._watch_results: queue.Queue[Any] = queue.Queue()
@@ -743,6 +747,21 @@ class OverlayApp:
             # hundred milliseconds. On the UI thread that is a visible stutter
             # every fifteen seconds, so it happens here.
             here = (self.vm.asset, int(self.vm.chart_timeframe))
+            # A cached verdict is only good while the question is unchanged,
+            # and the question is more than the chart. Which chart is open
+            # decides whether a row carries the user's expiry or the one the
+            # engine picks for it; the expiry setting decides what was asked
+            # of every chart; and a measurement arriving changes what the gates
+            # allow. None of those move the candles, so without this the
+            # cache would answer the old question for as long as the bar took
+            # to close — up to fifteen minutes of expiry advice for a chart the
+            # user had already switched away from.
+            context = (here, int(self.engine.trade_duration), tuple(sorted(measured)))
+            if context != self._read_ctx:
+                self._read_at.clear()
+                self._read_was.clear()
+                self._read_ctx = context
+
             for asset, timeframe, series in self._with_other_timeframes(charts):
                 key = (asset, timeframe)
 

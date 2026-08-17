@@ -175,8 +175,13 @@ class AlertManager:
         describe it — nothing was followed, because nothing was on screen. It
         still deserves the same noise, and the same restraint: the enabled
         switch, the notify list and the cooldown all apply exactly as they do
-        to a signal on the open chart, so watching eight charts cannot turn
-        into eight times the interruptions.
+        to a signal on the open chart.
+
+        The cooldown is per chart and per direction rather than one queue for
+        the whole watchlist, so eight charts setting up at once do raise eight
+        alerts. That is the point of reading eight charts; what it must not do
+        is repeat one that is merely still standing, and the caller keys that
+        off the transition into being tradeable.
         """
         if not self.settings.enabled:
             return None
