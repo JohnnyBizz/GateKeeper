@@ -479,6 +479,31 @@ class TestAChartThatHasStoppedTrading:
         )
         assert ("GBP/USD OTC", 60) in {(a, t) for a, t, _s in source.watched()}
 
+    def test_a_frozen_watched_chart_is_reported_too(self):
+        """The open instrument's own clock says nothing about a watched one,
+        so its silence is measured against the freshest candle anywhere."""
+        import time
+
+        source = self._source()
+        source._last_message = time.monotonic()
+        source._asset_seen = time.monotonic()
+
+        assert source.focus("GBP/USD OTC", 60) is True
+        quality = source.capture().quality
+        assert quality.confidence == 25.0
+        assert any("has not traded" in issue for issue in quality.issues)
+
+    def test_a_live_watched_chart_is_not_accused_of_being_frozen(self):
+        import time
+
+        source = self._source()
+        source._last_message = time.monotonic()
+        source._asset_seen = time.monotonic()
+
+        assert source.focus("EUR/USD OTC", 15) is True
+        quality = source.capture().quality
+        assert not any("has not traded" in issue for issue in quality.issues)
+
     def test_a_frozen_open_chart_is_reported(self):
         """The socket carries the whole market, so it stays busy while the
         pair on screen stops dead — and the panel reported LIVE FEED at full

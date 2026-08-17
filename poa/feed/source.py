@@ -835,6 +835,25 @@ class FeedChartSource(ChartSource):
             return (symbol, period)
         return None
 
+    def _lag_behind(self, series: Series) -> float | None:
+        """How far behind the market this chart's newest candle is. Lock held.
+
+        The socket carries every instrument, so the freshest candle anywhere is
+        the clock. Used for charts other than the one the platform has open,
+        whose own silence nothing else was watching.
+        """
+        if not len(series):
+            return None
+        newest = None
+        for builder in (self._builder, *self._charts.values(), *self._fast.values()):
+            candles = builder.settled
+            latest = builder.forming or (candles[-1] if candles else None)
+            if latest is not None and (newest is None or latest.timestamp > newest):
+                newest = latest.timestamp
+        if newest is None:
+            return None
+        return max(0.0, (newest - series.candles[-1].timestamp).total_seconds())
+
     def _series_for(self, key: tuple[str, int]) -> Series | None:
         """The candles for a watched chart, aggregating if needed. Lock held."""
         symbol, period = key[0], int(key[1])
@@ -893,6 +912,11 @@ class FeedChartSource(ChartSource):
                     asset, period = self._focus[0], int(self._focus[1])
                     series = watched
                     focused = True
+                    # ``_asset_seen`` follows the instrument the platform has
+                    # open, which is not this one, so the silence of a watched
+                    # chart has to be measured against the market instead: the
+                    # freshest candle anywhere is the clock.
+                    quiet_for = self._lag_behind(series)
 
         issues: list[str] = []
         confidence = 100.0
@@ -927,7 +951,7 @@ class FeedChartSource(ChartSource):
                 "closed, or the connection dropped."
             )
             confidence = 25.0
-        elif not focused and quiet_for is not None and quiet_for > max(
+        elif quiet_for is not None and quiet_for > max(
             STALE_AFTER_SECONDS, STALE_CHART_PERIODS * period
         ):
             # The feed is fine; this instrument is not trading. Said plainly,
