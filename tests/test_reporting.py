@@ -48,6 +48,33 @@ def _report(calls=(), manual=(), stake=1.0, payout=0.92, **kw):
     )
 
 
+class TestATradeNobodyCalledHasNoScore:
+    """Zero is the marker for "nobody could attribute this trade", not a
+    score of nought. Printed as a number it reads as the assistant having
+    rated the trade zero out of a hundred and then been proved right or wrong
+    by it — a claim about the engine that nothing supports."""
+
+    def test_an_unattributed_trade_shows_a_dash(self):
+        text = build_report(_report(manual=[_call(5, score=0.0, outcome="loss")]))
+        row = [line for line in text.splitlines() if "EUR/USD OTC" in line][-1]
+        assert "—" in row
+        assert " 0 " not in row
+
+    def test_an_attributed_trade_still_shows_its_score(self):
+        text = build_report(_report(manual=[_call(5, score=81.0)]))
+        row = [line for line in text.splitlines() if "EUR/USD OTC" in line][-1]
+        assert "81" in row
+
+    def test_the_column_says_what_a_dash_means(self):
+        text = build_report(_report(manual=[_call(5, score=0.0)]))
+        assert "nothing of ours was live on it" in text
+
+    def test_the_outcome_is_still_counted(self):
+        """The trade is real. Only the score is unknown."""
+        text = build_report(_report(manual=[_call(5, score=0.0, outcome="loss")]))
+        assert "1 recorded" in text and "LOSS" in text
+
+
 class TestItNeverReadsAsThoughMoneyMoved:
     """The assistant places no trades and never has.
 

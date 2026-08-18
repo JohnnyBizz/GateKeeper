@@ -233,18 +233,27 @@ def _manual_section(report: SessionReport) -> list[str]:
         return []
     lines = _heading("TRADES YOU PLACED", f"{len(report.manual)} recorded")
     lines += [
-        "Entered by hand on the panel, and folded into the record the gates",
-        "are tuned from. These are the trades the assistant did not call —",
-        "which is what makes them worth having.",
+        "Entered by hand, or settled by the platform on the account being",
+        "watched, and folded into the record the gates are tuned from.",
+        "",
+        "SCORE is what the assistant was calling that chart at the moment the",
+        "trade opened. A dash means nothing of ours was live on it then, so",
+        "there is no score to report and none is invented — the outcome still",
+        "counts, but it teaches the score bands nothing.",
         "",
         f"{'TIME':<6}{'PAIR':<14}{'DIR':<6}{'SCORE':>6}{'RESULT':>10}",
     ]
     for trade in report.manual:
+        # Zero is the marker for "nobody could attribute this", not a score of
+        # nought. Printed as a number it reads as the assistant having rated
+        # the trade zero out of a hundred and then been proved right or wrong
+        # by it — which is a claim about the engine that nothing supports.
+        score = float(trade.get("overall_confidence") or 0)
         lines.append(
             f"{_clock(trade.get('timestamp')):<6}"
             f"{str(trade.get('asset', ''))[:13]:<14}"
             f"{str(trade.get('direction', '')):<6}"
-            f"{float(trade.get('overall_confidence') or 0):>6.0f}"
+            f"{(f'{score:.0f}' if score > 0 else '—'):>6}"
             f"{str(trade.get('outcome') or '').upper():>10}"
         )
     return lines
