@@ -67,54 +67,76 @@ async def record(
     frames: list[Frame] = []
     summary = Summary()
     sockets: list[str] = []
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + seconds
+    attempts = 0
 
-    async with websockets.connect(
-        target.websocket_url, max_size=32 * 1024 * 1024, ping_interval=None
-    ) as connection:
-        await connection.send(json.dumps({"id": 1, "method": "Network.enable"}))
+    # Reconnect until the time is up. A three-hour capture is worth far more
+    # than a thirty-minute one, and over three hours a DevTools socket
+    # dropping at least once is close to certain — the page reloads, the
+    # network hiccups, the platform reconnects on its own. Stopping at the
+    # first of those turned "record for three hours" into "record until
+    # something twitches", and the user would only find out afterwards.
+    #
+    # Nothing already captured is at risk: frames are written to disk as they
+    # arrive, so a reconnection resumes rather than restarts.
+    while loop.time() < deadline and len(frames) < max_frames:
+        try:
+            async with websockets.connect(
+                target.websocket_url, max_size=32 * 1024 * 1024, ping_interval=None
+            ) as connection:
+                await connection.send(json.dumps({"id": 1, "method": "Network.enable"}))
+                if attempts:
+                    log.info("reconnected to the page, still recording")
 
-        deadline = asyncio.get_event_loop().time() + seconds
-        while asyncio.get_event_loop().time() < deadline and len(frames) < max_frames:
-            remaining = deadline - asyncio.get_event_loop().time()
-            try:
-                raw = await asyncio.wait_for(connection.recv(), timeout=max(remaining, 0.1))
-            except asyncio.TimeoutError:
-                break
-            except Exception as exc:  # pragma: no cover - socket closed early
-                log.warning("devtools connection ended: %s", exc)
-                break
+                while loop.time() < deadline and len(frames) < max_frames:
+                    remaining = deadline - loop.time()
+                    raw = await asyncio.wait_for(
+                        connection.recv(), timeout=max(remaining, 0.1)
+                    )
 
-            try:
-                message = json.loads(raw)
-            except ValueError:  # pragma: no cover - malformed
-                continue
+                    try:
+                        message = json.loads(raw)
+                    except ValueError:  # pragma: no cover - malformed
+                        continue
 
-            method = message.get("method")
-            params = message.get("params") or {}
+                    method = message.get("method")
+                    params = message.get("params") or {}
 
-            if method == "Network.webSocketCreated":
-                url = str(params.get("url", ""))
-                if url and url not in sockets:
-                    sockets.append(url)
-                continue
+                    if method == "Network.webSocketCreated":
+                        url = str(params.get("url", ""))
+                        if url and url not in sockets:
+                            sockets.append(url)
+                        continue
 
-            if method not in (
-                "Network.webSocketFrameReceived",
-                "Network.webSocketFrameSent",
-            ):
-                continue
+                    if method not in (
+                        "Network.webSocketFrameReceived",
+                        "Network.webSocketFrameSent",
+                    ):
+                        continue
 
-            response = params.get("response") or {}
-            frame = decode_frame(
-                str(response.get("payloadData", "")),
-                direction="in" if method.endswith("Received") else "out",
-                opcode=int(response.get("opcode", 1)),
-            )
-            if on_frame is None:
-                frames.append(frame)
-            else:
-                on_frame(frame)
-            summary.add(frame)
+                    response = params.get("response") or {}
+                    frame = decode_frame(
+                        str(response.get("payloadData", "")),
+                        direction="in" if method.endswith("Received") else "out",
+                        opcode=int(response.get("opcode", 1)),
+                    )
+                    if on_frame is None:
+                        frames.append(frame)
+                    else:
+                        on_frame(frame)
+                    summary.add(frame)
+        except asyncio.TimeoutError:
+            # Nothing arrived before the deadline: the run is simply over.
+            break
+        except Exception as exc:  # pragma: no cover - socket churn
+            log.warning("devtools connection ended: %s", exc)
+
+        if loop.time() >= deadline or len(frames) >= max_frames:
+            break
+        attempts += 1
+        # The tab may be mid-reload. Waiting a moment beats hammering it.
+        await asyncio.sleep(min(2.0, max(0.1, deadline - loop.time())))
 
     return Capture(frames=frames, summary=summary, sockets=sockets)
 

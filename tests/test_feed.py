@@ -1833,6 +1833,67 @@ class TestRecordingLongEnoughToMatter:
             ))
         return out
 
+    def test_a_dropped_connection_does_not_end_a_long_recording(self, tmp_path):
+        """Over three hours a DevTools socket dropping at least once is close
+        to certain — the page reloads, the network hiccups, the platform
+        reconnects on its own. Stopping at the first of those turned "record
+        for three hours" into "record until something twitches", and the user
+        would only find out afterwards."""
+        import asyncio
+        import json
+        import types
+
+        from poa.feed import recorder
+
+        batches = [self._frames(20), self._frames(20, with_symbol=False)]
+        opened = []
+
+        class Dropping:
+            def __init__(self):
+                self.queued = list(batches[len(opened)]) if len(opened) < len(batches) else []
+                opened.append(1)
+                self.first = len(opened) == 1
+
+            async def send(self, _m):
+                return None
+
+            async def recv(self):
+                if self.queued:
+                    return self.queued.pop(0)
+                if self.first:
+                    # The socket dies mid-run, exactly once.
+                    raise ConnectionResetError("devtools went away")
+                await asyncio.sleep(10)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        original = recorder.websockets
+        recorder.websockets = types.SimpleNamespace(connect=lambda *a, **k: Dropping())
+        written = []
+        try:
+            with (tmp_path / "out.jsonl").open("w", encoding="utf-8") as sink:
+                def keep(frame):
+                    sink.write(json.dumps(frame.to_dict(), default=str) + "\n")
+                    written.append(1)
+
+                asyncio.run(recorder.record(
+                    types.SimpleNamespace(websocket_url="ws://x", url="http://x"),
+                    seconds=4.0, max_frames=10 ** 9, on_frame=keep,
+                ))
+        finally:
+            recorder.websockets = original
+
+        assert len(opened) > 1, "it never reconnected"
+        # Everything from before the drop is still on disk, and the frames
+        # from after it were captured too.
+        assert len(written) > len(batches[0]), (
+            f"only {len(written)} frames kept; the run stopped at the drop"
+        )
+
     def test_it_records_past_the_old_ceiling(self, tmp_path):
         _path, written, _capture = self._run(tmp_path, self._frames(5000))
         assert written > 4000
