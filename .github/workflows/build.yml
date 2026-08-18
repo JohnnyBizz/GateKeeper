@@ -78,15 +78,23 @@ jobs:
       # sends so the format can be read off a sample rather than guessed at.
       - name: Build the feed recorder
         run: pyinstaller recordfeed.spec --noconfirm
+      # Kept briefly on purpose. A build runs on every push and the executable
+      # is a large artifact, so at the default ninety days the account's whole
+      # artifact allowance fills up and *every* upload starts failing — which
+      # is what happened: the tests passed, the exe built, and it simply could
+      # not be stored. Long enough to download the build that prompted it,
+      # short enough that the allowance keeps clearing itself.
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: GateKeeper-windows
           path: dist/GateKeeper.exe
           if-no-files-found: error
+          retention-days: 7
       - name: Upload the feed recorder
         uses: actions/upload-artifact@v4
         with:
           name: RecordFeed-windows
           path: dist/RecordFeed.exe
           if-no-files-found: error
+          retention-days: 7

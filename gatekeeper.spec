@@ -31,19 +31,31 @@ analysis = Analysis(
         ("config.example.yaml", "."),
         ("data/sample_eurusd_m1.csv", "data"),
     ] + tesseract_datas,
-    # PIL.ImageTk is imported inside a function, so that a headless run never
-    # pays for it and an install without tkinter still starts. A bundler that
-    # trusts top-level imports would leave it out — which the overlay would
-    # discover on its very first repaint, as a crash on the user's machine and
-    # nowhere else. Named here so that cannot happen.
+    # Every poa module, less the dashboard: collecting them all is what finds
+    # the ones imported inside functions, but it would also drag the web
+    # server in, and this executable has no way to start it.
+    #
+    # PIL.ImageTk is named for the opposite reason. It too is imported inside
+    # a function — so a headless run never pays for it, and an install without
+    # tkinter still starts — but a bundler trusting top-level imports would
+    # leave it out, and the overlay would discover that on its very first
+    # repaint, as a crash on the user's machine and nowhere else.
     hiddenimports=(
-        collect_submodules("poa") + ["PIL.ImageTk", "PIL._tkinter_finder"]
+        [m for m in collect_submodules("poa") if not m.startswith("poa.server")]
+        + ["PIL.ImageTk", "PIL._tkinter_finder"]
     ),
     hookspath=[],
     runtime_hooks=[],
-    # Trim the parts of the scientific stack that are never imported; without
-    # this the bundle roughly doubles in size for no benefit.
-    excludes=["matplotlib", "scipy", "pandas.tests", "notebook", "IPython"],
+    # Everything the packaged app cannot reach. It is the overlay: the
+    # dashboard has its own entry point that a double-clicked executable never
+    # runs, so the whole web stack rode along unused — as did pandas, which
+    # nothing in the project imports at all. Without this the bundle roughly
+    # doubles for no benefit, on a file downloaded by hand after every change.
+    excludes=[
+        "matplotlib", "scipy", "notebook", "IPython",
+        "pandas", "fastapi", "uvicorn", "starlette", "httpx", "httpcore",
+        "poa.server",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
