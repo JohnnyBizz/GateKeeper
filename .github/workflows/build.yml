@@ -33,6 +33,11 @@ jobs:
   windows-exe:
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: read
+      # Needed to delete previous builds' artifacts. Without it the allowance
+      # fills and every upload fails, including builds with nothing wrong.
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -84,6 +89,54 @@ jobs:
       # is what happened: the tests passed, the exe built, and it simply could
       # not be stored. Long enough to download the build that prompted it,
       # short enough that the allowance keeps clearing itself.
+      # Clear the previous builds before adding another. A build runs on every
+      # push and the executable is large, so without this the account's whole
+      # artifact allowance fills up and *every* upload starts failing — the
+      # tests pass, the exe builds, and it simply cannot be stored. Retention
+      # alone does not fix it, because artifacts already uploaded keep their
+      # original ninety-day expiry.
+      #
+      # One previous build of each is kept, so there is always something
+      # downloadable even if this run turns out to be broken. Never allowed to
+      # fail the build: a tidying step that blocks a good executable from
+      # reaching anyone would be worse than the mess it cleans up.
+      - name: Make room for this build
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const KEEP = 1;
+            const all = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const groups = {};
+            for (const a of all) {
+              if (a.expired) continue;
+              (groups[a.name] ||= []).push(a);
+            }
+            let removed = 0, freed = 0;
+            for (const [name, list] of Object.entries(groups)) {
+              list.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              for (const old of list.slice(KEEP)) {
+                try {
+                  await github.rest.actions.deleteArtifact({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    artifact_id: old.id,
+                  });
+                  removed++;
+                  freed += old.size_in_bytes;
+                } catch (error) {
+                  core.warning(`could not delete ${name} #${old.id}: ${error.message}`);
+                }
+              }
+            }
+            core.info(
+              `removed ${removed} old artifact(s), freeing ` +
+              `${(freed / 1e9).toFixed(2)} GB`
+            );
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
