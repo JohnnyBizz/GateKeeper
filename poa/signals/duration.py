@@ -299,6 +299,25 @@ def _score_duration(
 
     total = snr_score + horizon_score + resolution_score + obstacle_score
 
+    # An expiration that far outlives the setup is not a slightly worse fit —
+    # it is a different trade, decided by whatever happens long after the thing
+    # being analysed has gone. The four terms above are added, and could not
+    # say that: signal-to-noise rewards length without limit, because the
+    # expected move grows with the horizon. On a fast chart, where the move
+    # over a few candles sits under the noise floor, that was enough for a
+    # thirty-minute expiration to outvote a flat zero for surviving the setup
+    # — and a five-second chart would recommend three hundred and sixty
+    # candles ahead, which is not a reading of anything on it.
+    #
+    # So overshoot scales the whole score rather than deducting from it. Half
+    # again past the expected lifetime is where it starts to bite, which
+    # leaves ordinary expiries on ordinary charts untouched.
+    if horizon_seconds > 0:
+        overshoot = seconds / horizon_seconds
+        if overshoot > 1.5:
+            total *= max(0.2, 1.5 / overshoot)
+            reasons.append("outlives the setup it was read from")
+
     # A market with no persistence should not score any duration highly.
     if persistence < 0.25:
         total *= 0.75

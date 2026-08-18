@@ -11,6 +11,7 @@ The central claims under test:
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 
@@ -271,6 +272,69 @@ class TestTimeframeAndDurationAreSeparate:
         assert signal.direction_confidence > 60
 
 
+def _quiet_walk(seed: int, *, n: int = 400, timeframe: int = 5) -> "Series":
+    """A drifting market whose few-candle moves sit under the noise floor.
+
+    What a fast synthetic pair looks like most of the time, and the condition
+    under which the longest expiration on the ladder used to win: the short
+    ones score near nothing for signal-to-noise, so anything longer beats them.
+    """
+    rng = random.Random(seed)
+    closes, price = [], 1.2374
+    for _ in range(n):
+        price += rng.gauss(0, 0.00012)
+        closes.append(price)
+    return build_series(closes, timeframe=timeframe, wick=0.00006)
+
+
+class TestAnExpiryNeverOutlivesTheSetupItWasReadFrom:
+    """The four duration terms are added, and signal-to-noise rewards length
+    without limit — the expected move grows with the horizon. On a quiet fast
+    chart, where a few candles of movement sit under the noise floor, the short
+    expiries score near nothing there and anything longer beats them. That was
+    enough for the longest rung on the ladder to outvote a flat zero for
+    surviving the setup: a five-second chart recommending thirty minutes, three
+    hundred and sixty candles ahead, which is not a reading of anything on it.
+
+    Exercised through the whole engine rather than the duration scorer alone,
+    because that is where it showed up — the timeframe stack the request builds
+    is part of the condition.
+    """
+
+    def _recommendations(self, timeframe, expiry, seeds=40):
+        engine = SignalEngine()
+        worst, actionable = 0.0, 0
+        for seed in range(seeds):
+            series = _quiet_walk(seed, timeframe=timeframe)
+            signal = engine.evaluate(SignalRequest(
+                series=series, asset="EUR/USD OTC", chart_timeframe=timeframe,
+                trade_duration=expiry, quality=good_quality(series),
+                settings=GateSettings(),
+            ))
+            if signal.actionable:
+                actionable += 1
+            if signal.duration is not None:
+                worst = max(worst, signal.duration.recommended_seconds / timeframe)
+        return worst, actionable
+
+    def test_a_fast_chart_stops_recommending_half_an_hour(self):
+        worst, _ = self._recommendations(5, 30)
+        assert worst <= 20, f"recommended {worst:.0f} candles ahead"
+
+    def test_no_timeframe_recommends_beyond_what_it_can_speak_to(self):
+        for timeframe, expiry in ((5, 30), (15, 60), (60, 180), (300, 900)):
+            worst, _ = self._recommendations(timeframe, expiry, seeds=20)
+            assert worst <= 20, (
+                f"{timeframe}s chart recommends {worst:.0f} candles ahead"
+            )
+
+    def test_the_cap_does_not_cost_call_volume(self):
+        """The user wants more calls, not fewer. Capping an expiry that never
+        should have been offered must not also refuse the ones that should."""
+        _, actionable = self._recommendations(60, 180)
+        assert actionable >= 1
+
+
 class TestDurationEngine:
     def _duration(self, series, direction, selected, timeframe=60):
         mtf = build_multi_timeframe(series, 5, 1)
@@ -293,6 +357,19 @@ class TestDurationEngine:
         result = self._duration(pullback_trend(400, direction=1), Direction.CALL, 77)
         assert result.selected_seconds == 77
         assert any(c.seconds == 77 for c in result.candidates)
+
+    def test_an_ordinary_expiry_on_an_ordinary_chart_is_untouched(self):
+        """The cap must not cost call volume on the timeframes that work."""
+        result = self._duration(pullback_trend(400, direction=1), Direction.CALL, 180)
+        three = next(c for c in result.candidates if c.seconds == 180)
+        assert three.score > 40
+
+    def test_the_reason_says_when_an_expiry_outlives_its_setup(self):
+        result = self._duration(
+            choppy_series(400, timeframe=5), Direction.CALL, 30, timeframe=5
+        )
+        longest = max(result.candidates, key=lambda c: c.seconds)
+        assert "outlives the setup" in longest.reason
 
     def test_sub_candle_durations_score_poorly(self):
         result = self._duration(pullback_trend(400, direction=1), Direction.CALL, 30)
