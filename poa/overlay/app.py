@@ -70,6 +70,11 @@ CALL_MATCH_SECONDS = 180.0
 # window above, which is what decides whether a match is found.
 CALL_MEMORY = 400
 
+# How many candles the panel's chart is handed. Enough for the sparkline to
+# show the session's shape and for the candle strip to show the structure the
+# analysis is naming; more would be drawn narrower than a pixel.
+CHART_BARS = 140
+
 WATCH_SWEEP_SECONDS = 15.0
 MIN_WATCH_SWEEP_SECONDS = 4.0
 
@@ -284,6 +289,20 @@ class OverlayApp:
             )
 
         self._follow_recommended_expiry(signal)
+
+        # The candles the panel draws. It scored a market it never showed: a
+        # number saying 82 and an arrow saying up are a claim, and the shape of
+        # the last stretch is what lets anyone judge whether the claim is
+        # plausible. Bounded here rather than in the panel, so the drawing
+        # layer is handed only what it will use.
+        try:
+            series = self.engine.latest_series()
+            self.vm.recent = (
+                series.tail(CHART_BARS) if series is not None and len(series) else None
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read the candles for the chart: %s", exc)
+            self.vm.recent = None
 
         if self.vm.scan.scanning:
             # Hold the incoming signal back until the scan window completes, so

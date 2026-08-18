@@ -49,14 +49,18 @@ COLORS = {
     "wait": "#f59e0b",
     "no_trade": "#e11d48",
     "neutral": "#64748b",
-    "text": "#f1f5f9",
-    "dim": "#a8b4c8",
-    "faint": "#6b7a92",
-    "bg": "#0a0e15",
-    "panel": "#111826",
-    "raised": "#1a2333",
-    "border": "#2a3450",
-    "accent": "#60a5fa",
+    "text": "#eef2f8",
+    "dim": "#9aa8bd",
+    "faint": "#5f6e85",
+    "bg": "#080b12",
+    "panel": "#0f1725",
+    "raised": "#16202f",
+    # The hairline between surfaces. Named for what it is rather than for the
+    # widget option it used to feed, now that surfaces are drawn rather than
+    # outlined; ``border`` stays as the old name for anything still asking.
+    "line": "#243044",
+    "border": "#243044",
+    "accent": "#6aa8ff",
 }
 
 # The chart on screen plus the eight the feed keeps behind it.
@@ -192,6 +196,11 @@ class OverlayViewModel:
     # grown to hold every true thing at once, which is a different job from
     # showing the one thing being decided.
     details_collapsed: bool = True
+    # The candles behind the verdict. The panel scored a market it never
+    # showed: a number saying 82 and an arrow saying up are a claim, and the
+    # shape of the last half hour is what lets anyone judge whether the claim
+    # is plausible. Typed loosely to keep this layer free of the models too.
+    recent: Any = None
     # Injected so the countdown can be tested without waiting for a minute.
     _now: Any = field(default=time.time, repr=False)
 
@@ -309,6 +318,7 @@ class OverlayViewModel:
                 "collapsed": self.risk_collapsed,
             },
             "entry": self._entry(scanning, signal),
+            "chart": self._chart(scanning),
             "details": self._details(),
             "watchlist": self._watchlist(),
             "lesson": self._lesson(),
@@ -469,13 +479,57 @@ class OverlayViewModel:
             }
 
         return {
-            "text": "WAIT FOR NEXT CANDLE",
+            # Reads as one phrase with the clock beside it: "NEXT CANDLE IN
+            # 0:23". The old wording repeated what the clock already said and
+            # left it nowhere to sit.
+            "text": "NEXT CANDLE IN",
             "detail": "No setup here yet — every chart is re-read as its bar closes.",
             "clock": clock,
             "seconds": remaining,
             "progress": elapsed,
             "urgent": False,
             "ready": False,
+        }
+
+    def _chart(self, scanning: bool) -> dict[str, Any]:
+        """The candles behind the verdict, ready to be drawn.
+
+        Reduced to plain numbers here rather than handed over as a Series, so
+        the drawing layer needs to know nothing about the models and this stays
+        testable without one.
+
+        The move over the window comes with them: a chart that has risen
+        through the session and a chart that has fallen to the same price look
+        alike at a glance and mean opposite things.
+
+        Not blanked during a scan, unlike the verdict. The blanking rule exists
+        so a stale *answer* cannot be read as a fresh one, and these are not an
+        answer — they are the observation everything else is derived from, and
+        they belong to whichever chart the panel is naming either way. Dropping
+        them for the two seconds a scan takes only made the window jump.
+        """
+        blank: dict[str, Any] = {
+            "closes": [], "bars": [], "change": None,
+            "change_label": "", "rising": None, "ready": False,
+        }
+        series = self.recent
+        candles = list(getattr(series, "candles", ()) or ())
+        if len(candles) < 2:
+            return blank
+
+        closes = [float(candle.close) for candle in candles]
+        first, last = closes[0], closes[-1]
+        change = ((last - first) / first * 100.0) if first else 0.0
+        return {
+            "closes": closes,
+            "bars": [
+                (float(c.open), float(c.high), float(c.low), float(c.close))
+                for c in candles
+            ],
+            "change": change,
+            "change_label": f"{change:+.3f}%",
+            "rising": change >= 0,
+            "ready": True,
         }
 
     def _details(self) -> dict[str, Any]:

@@ -349,9 +349,11 @@ class TestWhenToGetIn:
         assert entry["ready"] is True
         assert "3 MIN expiry" in entry["detail"]
 
-    def test_no_setup_says_wait_for_the_next_candle(self):
+    def test_no_setup_counts_down_to_the_next_candle(self):
+        """The headline reads as one phrase with the clock beside it."""
         entry = self._vm(into=30)._entry(False, _Actionable(False))
-        assert entry["text"] == "WAIT FOR NEXT CANDLE"
+        assert entry["text"] == "NEXT CANDLE IN"
+        assert entry["clock"] == "0:30"
         assert entry["ready"] is False
         assert entry["urgent"] is False
 

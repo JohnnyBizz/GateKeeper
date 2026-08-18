@@ -2,7 +2,17 @@
 
 Tkinter, on purpose: it ships with Python on Windows and macOS (and is one
 `apt install python3-tk` away on Linux), so the overlay adds no pip dependency
-to a tool the user is meant to be able to install and run in two commands.
+to a tool meant to install and run in two commands.
+
+Drawn on a single canvas rather than assembled out of widgets. Tk's widgets
+are why this looked its age — square corners, flat fills, no curve that is not
+a staircase — and none of that is a limit of Tk so much as of its *widgets*.
+A canvas will happily show an image, and :mod:`graphics` can draw anything, so
+every surface here is a rendered image with text placed over it. It also
+retires a whole class of bug: there is no packing order to get wrong.
+
+Only the fields that must accept typing are still real widgets, dropped onto
+the canvas where they are needed.
 
 This module only draws. Every decision about *what* to draw is made in
 ``viewmodel.py``, which is why the panel's behaviour can be tested without a
@@ -15,9 +25,17 @@ import tkinter as tk
 from tkinter import font as tkfont
 from typing import Any, Callable
 
+from . import graphics as gfx
 from .viewmodel import COLORS, OverlayViewModel
 
-PANEL_WIDTH = 320
+PANEL_WIDTH = 340
+PAD = 10           # the margin everything lines up against
+INNER = PANEL_WIDTH - PAD * 2
+
+# How many rendered images to keep. Every distinct size, colour and animation
+# frame is drawn once and then reused; without a bound, a long session would
+# accumulate one image per frame of every pulse.
+MAX_CACHED_IMAGES = 240
 
 
 class OverlayPanel:
@@ -57,164 +75,105 @@ class OverlayPanel:
         self.root = tk.Tk()
         self.root.title("GateKeeper")
         self.root.configure(bg=COLORS["bg"])
-        self.root.geometry(f"{PANEL_WIDTH}x680+{position[0]}+{position[1]}")
+        self.root.geometry(f"{PANEL_WIDTH}x700+{position[0]}+{position[1]}")
 
         # Frameless and always on top. Both are best-effort: some window
         # managers refuse one or the other, and a panel with a title bar is
         # still perfectly usable, so a refusal must not be fatal.
-        try:
-            self.root.overrideredirect(True)
-        except tk.TclError:
-            pass
-        try:
-            self.root.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        try:
-            self.root.attributes("-alpha", opacity)
-        except tk.TclError:
-            pass
+        for attempt in (
+            lambda: self.root.overrideredirect(True),
+            lambda: self.root.attributes("-topmost", True),
+            lambda: self.root.attributes("-alpha", opacity),
+        ):
+            try:
+                attempt()
+            except tk.TclError:
+                pass
 
         self._collapsed = False
         self._drag_origin = (0, 0)
-        self._widgets: dict[str, Any] = {}
-        self._dots: list[tk.Label] = []
-        # Where the pulse is in its cycle, advanced once per repaint. Urgency
-        # is the one thing on this panel worth animating: a number counting
-        # down in the corner is easy to miss, a breathing one is not.
+        self._window_origin = (0, 0)
+        self._entries: dict[str, tk.Entry] = {}
+        # Rendered images, kept alive: Tk holds only a weak claim on a
+        # PhotoImage, so an unreferenced one is collected and the canvas draws
+        # a blank where the picture was.
+        self._images: dict[Any, Any] = {}
+        self._height = 700
+        # Where the pulse is in its cycle, and how far the eased values have
+        # travelled toward their targets.
         self._pulse = 0
-        # The score bar eases toward its target rather than jumping, so a
-        # verdict that moves is visibly a change rather than a different panel.
         self._score_shown: float | None = None
 
         self._build_fonts()
         self._build()
 
-        # Size to the content rather than to a guessed height. Font metrics
-        # differ enough between platforms that any fixed number clips the
-        # footer somewhere, and the disclaimer is the first thing to go.
-        self._natural_height = self._fit_height(position)
-
     # -- fonts -------------------------------------------------------------
 
     def _build_fonts(self) -> None:
-        def pick(candidates: list[str], size: int, weight: str = "normal") -> tkfont.Font:
-            available = set(tkfont.families())
+        def pick(candidates: list[str], size: int, weight: str = "normal") -> Any:
+            try:
+                available = set(tkfont.families())
+            except tk.TclError:  # pragma: no cover - no display
+                available = set()
             for name in candidates:
                 if name in available:
                     return tkfont.Font(family=name, size=size, weight=weight)
             return tkfont.Font(size=size, weight=weight)
 
-        sans = ["Inter", "Segoe UI", "Helvetica Neue", "DejaVu Sans", "Arial"]
-        mono = ["JetBrains Mono", "Consolas", "Menlo", "DejaVu Sans Mono", "Courier"]
+        sans = ["Inter", "Segoe UI Variable", "Segoe UI", "SF Pro Text",
+                "Helvetica Neue", "DejaVu Sans", "Arial"]
+        mono = ["JetBrains Mono", "Cascadia Mono", "Consolas", "SF Mono",
+                "Menlo", "DejaVu Sans Mono", "Courier"]
 
-        # A type scale rather than nine independent guesses. The old 7pt
-        # captions were below what most people read comfortably on a 1080p
-        # screen at arm's length, and this panel is meant to be glanced at
-        # from across a desk rather than studied.
-        self.f_title = pick(sans, 11, "bold")
+        # A type scale rather than nine independent guesses, and nothing below
+        # eight point: this panel is meant to be glanced at from across a desk
+        # rather than studied.
+        self.f_brand = pick(sans, 12, "bold")
+        self.f_caption = pick(sans, 8, "bold")
         self.f_label = pick(sans, 8)
-        self.f_body = pick(sans, 10)
         self.f_small = pick(sans, 9)
-        self.f_verdict = pick(sans, 30, "bold")
-        self.f_arrow = pick(sans, 15)
+        self.f_body = pick(sans, 10)
+        self.f_pair = pick(sans, 14, "bold")
+        self.f_verdict = pick(sans, 27, "bold")
+        self.f_score = pick(sans, 20, "bold")
+        self.f_button = pick(sans, 11, "bold")
         self.f_mono = pick(mono, 10)
-        self.f_mono_big = pick(mono, 12, "bold")
-        self.f_badge = pick(sans, 8, "bold")
+        self.f_price = pick(mono, 15, "bold")
+        self.f_stat = pick(mono, 13, "bold")
 
     # -- construction -------------------------------------------------------
 
-    def _section(self, parent: tk.Widget, pady: tuple[int, int] = (0, 0)) -> tk.Frame:
-        frame = tk.Frame(parent, bg=COLORS["panel"])
-        frame.pack(fill="x", padx=8, pady=pady)
-        return frame
-
-    def _divider(self, parent: tk.Widget) -> None:
-        tk.Frame(parent, bg=COLORS["border"], height=1).pack(fill="x", padx=8, pady=4)
-
     def _build(self) -> None:
-        root = tk.Frame(self.root, bg=COLORS["panel"], highlightthickness=1)
-        root.configure(highlightbackground=COLORS["border"], highlightcolor=COLORS["border"])
-        root.pack(fill="both", expand=True, padx=1, pady=1)
-        self._widgets["root"] = root
-
-        self._build_header(root)
-        self._body = tk.Frame(root, bg=COLORS["panel"])
-        self._body.pack(fill="both", expand=True)
-
-        self._build_tiles(self._body)
-        self._build_watchlist(self._body)
-        self._build_verdict(self._body)
-        self._build_score(self._body)
-        self._build_buttons(self._body)
-        self._divider(self._body)
-        self._build_session(self._body)
-        self._divider(self._body)
-        self._build_details(self._body)
-        self._divider(self._body)
-        self._build_risk(self._body)
-        self._build_footer(self._body)
-
-    def _build_header(self, parent: tk.Widget) -> None:
-        header = tk.Frame(parent, bg=COLORS["raised"])
-        header.pack(fill="x")
-        # The header doubles as the drag handle, since the window is frameless.
-        for widget in (header,):
-            widget.bind("<Button-1>", self._drag_start)
-            widget.bind("<B1-Motion>", self._drag_move)
-
-        left = tk.Frame(header, bg=COLORS["raised"])
-        left.pack(side="left", padx=8, pady=6)
-        left.bind("<Button-1>", self._drag_start)
-        left.bind("<B1-Motion>", self._drag_move)
-
-        title = tk.Label(
-            left, text="◪ GATEKEEPER", font=self.f_title,
-            bg=COLORS["raised"], fg=COLORS["accent"],
+        self.c = tk.Canvas(
+            self.root, width=PANEL_WIDTH, height=self._height,
+            bg=COLORS["bg"], highlightthickness=0, bd=0,
         )
-        title.pack(side="left")
-        title.bind("<Button-1>", self._drag_start)
-        title.bind("<B1-Motion>", self._drag_move)
+        self.c.pack(fill="both", expand=True)
+        self.c.bind("<Button-1>", self._drag_start)
+        self.c.bind("<B1-Motion>", self._drag_move)
 
-        self._widgets["status"] = tk.Label(
-            left, text="OFFLINE", font=self.f_label,
-            bg=COLORS["raised"], fg=COLORS["put"],
-        )
-        self._widgets["status"].pack(side="left", padx=(8, 0))
+        for key, width, commit in (
+            ("pair", 13, lambda text: self.on_asset(text)),
+            ("payout", 5, self._commit_payout),
+            ("balance", 9, self._commit_balance),
+            ("stake", 9, self._commit_stake),
+        ):
+            self._entries[key] = self._text_field(width=width, on_commit=commit)
 
-        controls = tk.Frame(header, bg=COLORS["raised"])
-        controls.pack(side="right", padx=6)
-        self._icon_button(controls, "⚙", self.on_settings)
-        self._icon_button(controls, "–", self.toggle_collapse)
-        self._icon_button(controls, "✕", self._close)
-
-    def _icon_button(self, parent: tk.Widget, text: str, command) -> tk.Label:
-        label = tk.Label(
-            parent, text=text, font=self.f_body,
-            bg=COLORS["raised"], fg=COLORS["dim"], cursor="hand2", padx=6,
-        )
-        label.pack(side="left")
-        label.bind("<Button-1>", lambda _event: command())
-        label.bind("<Enter>", lambda _e, w=label: w.configure(fg=COLORS["text"]))
-        label.bind("<Leave>", lambda _e, w=label: w.configure(fg=COLORS["dim"]))
-        return label
-
-    def _text_field(
-        self, parent: tk.Widget, *, width: int, on_commit: Callable[[str], None]
-    ) -> tk.Entry:
+    def _text_field(self, *, width: int, on_commit: Callable[[str], None]) -> tk.Entry:
         """A themed Entry that commits on Enter or when focus leaves it."""
         entry = tk.Entry(
-            parent, font=self.f_mono, width=width,
+            self.c, font=self.f_mono, width=width, justify="left",
             bg=COLORS["raised"], fg=COLORS["text"],
-            insertbackground=COLORS["text"], relief="flat",
-            highlightthickness=1, highlightbackground=COLORS["border"],
+            insertbackground=COLORS["accent"], relief="flat",
+            highlightthickness=1, highlightbackground=COLORS["line"],
             highlightcolor=COLORS["accent"],
         )
 
         def commit(_event=None):
             on_commit(entry.get())
             # Give focus back to the window so the field stops swallowing keys.
-            self.root.focus_set()
+            self.c.focus_set()
 
         entry.bind("<Return>", commit)
         entry.bind("<FocusOut>", commit)
@@ -222,611 +181,546 @@ class OverlayPanel:
 
     @staticmethod
     def _set_entry(entry: tk.Entry, text: str) -> None:
-        """Update an entry's text — but never while the user is typing in it."""
-        if entry.focus_displayof() is entry:
+        """Update a field — but never while the user is typing in it."""
+        try:
+            if entry.focus_displayof() is entry:
+                return
+        except tk.TclError:  # pragma: no cover - window closing
             return
         if entry.get() != text:
             entry.delete(0, "end")
             entry.insert(0, text)
 
-    def _build_tiles(self, parent: tk.Widget) -> None:
-        # The pair gets its own row. Three equal tiles across 320px left it
-        # nine characters wide, and "GBP/USD OTC" is eleven — so the one field
-        # naming what is being analysed was the one field being cut off.
-        top = self._section(parent, pady=(8, 0))
-        pair_tile = tk.Frame(top, bg=COLORS["raised"], highlightthickness=1)
-        pair_tile.configure(highlightbackground=COLORS["border"])
-        pair_tile.pack(fill="x", padx=2)
+    # -- drawing helpers ----------------------------------------------------
 
-        pair_row = tk.Frame(pair_tile, bg=COLORS["raised"])
-        pair_row.pack(fill="x", padx=8, pady=6)
-        tk.Label(
-            pair_row, text="PAIR", font=self.f_label,
-            bg=COLORS["raised"], fg=COLORS["faint"],
-        ).pack(side="left")
-        # Editable, so a chart switch the source cannot name can be corrected
-        # by hand — and, on the feed, so typing a watched pair reads it.
-        self._widgets["tile_pair"] = self._text_field(
-            pair_row, width=14, on_commit=self.on_asset
-        )
-        self._widgets["tile_pair"].pack(side="left", padx=(8, 0))
-        self._widgets["price"] = tk.Label(
-            pair_row, text="--", font=self.f_mono_big,
-            bg=COLORS["raised"], fg=COLORS["text"],
-        )
-        self._widgets["price"].pack(side="right")
+    def _photo(self, key: Any, build: Callable[[], Any]) -> Any:
+        """A cached ``PhotoImage``, drawn once per distinct appearance.
 
-        # Then the three numbers that qualify it, small and side by side.
-        row = self._section(parent, pady=(4, 4))
-        for key, caption in (("payout", "PAYOUT"), ("time", "EXPIRY"), ("chart", "CHART")):
-            tile = tk.Frame(row, bg=COLORS["raised"], highlightthickness=1)
-            tile.configure(highlightbackground=COLORS["border"])
-            tile.pack(side="left", fill="both", expand=True, padx=2)
-            tk.Label(
-                tile, text=caption, font=self.f_label,
-                bg=COLORS["raised"], fg=COLORS["faint"],
-            ).pack(anchor="w", padx=6, pady=(4, 0))
-            if key == "payout":
-                # Editable, and it matters more than it looks. Break-even is
-                # 52.1% at a 92% payout and 55.6% at 80%, so a stale number
-                # here moves the bar that every measurement in this panel is
-                # judged against — quietly, and in the flattering direction.
-                value = self._text_field(tile, width=6, on_commit=self._commit_payout)
-                value.pack(anchor="w", padx=4, pady=(0, 5))
-            else:
-                # The chart timeframe is shown apart from the trade duration on
-                # purpose: confusing the two is the single most consequential
-                # mistake available here, and putting them side by side under
-                # different words is what stops it.
-                value = tk.Label(
-                    tile, text="--", font=self.f_mono,
-                    bg=COLORS["raised"], fg=COLORS["text"],
-                )
-                value.pack(anchor="w", padx=6, pady=(0, 5))
-            self._widgets[f"tile_{key}"] = value
-
-    def _build_watchlist(self, parent: tk.Widget) -> None:
-        """Tabs for every chart the feed is carrying.
-
-        The socket delivers every instrument whether or not it is being looked
-        at, so the only reason to read one at a time was that nothing kept the
-        rest. A tab lights up when its chart has a setup, which is the whole
-        point: the pair worth looking at finds you. Clicking one reads it —
-        nothing is clicked on the platform, and no order is placed.
-
-        Two to a row: eight of these side by side would run off a 320px panel.
+        Redrawing a blurred, supersampled card on every repaint would cost more
+        than the whole rest of the frame. Almost everything here is one of a
+        handful of appearances, so each is drawn once and shown thereafter.
         """
-        self._widgets["watchlist"] = tk.Frame(parent, bg=COLORS["panel"])
-        self._widgets["watchlist"].pack(fill="x", padx=8, pady=0)
-        self._widgets["watchlist"].columnconfigure(0, weight=1, uniform="watch")
-        self._widgets["watchlist"].columnconfigure(1, weight=1, uniform="watch")
-        self._watch_tabs: list[tk.Label] = []
+        found = self._images.get(key)
+        if found is None:
+            from PIL import ImageTk
 
-    def _render_watchlist(self, rows: list[dict[str, Any]]) -> None:
-        frame = self._widgets["watchlist"]
-        # Hidden by emptying it, never by pack_forget. Packing a widget again
-        # puts it at the *end* of its parent's order, so a row that was hidden
-        # once — which it always is, before the first sweep has run — would
-        # come back at the bottom of the panel instead of under the tiles.
-        # pack_configure keeps the place it was built in.
+            found = ImageTk.PhotoImage(build())
+            if len(self._images) >= MAX_CACHED_IMAGES:
+                self._images.pop(next(iter(self._images)), None)
+            self._images[key] = found
+        return found
+
+    def _image(self, x: int, y: int, key: Any, build, *, tags: str = "") -> None:
+        self.c.create_image(
+            x, y, image=self._photo(key, build), anchor="nw",
+            tags=tags or "frame",
+        )
+
+    def _card(
+        self, x: int, y: int, w: int, h: int, *, radius: int = 12,
+        fill: str = COLORS["panel"], fill_to: str | None = None,
+        border: str | None = None, glow: str | None = None,
+        glow_strength: float = 0.0, tags: str = "",
+    ) -> None:
+        """A rounded surface. Glowing ones are offset by their own halo."""
+        key = ("card", w, h, radius, fill, fill_to, border, glow,
+               round(glow_strength, 2))
+        pad = 12 if glow else 0
+        self._image(
+            x - pad, y - pad, key,
+            lambda: gfx.card(
+                w, h, radius=radius, fill=fill, fill_to=fill_to, border=border,
+                glow=glow, glow_strength=glow_strength,
+            ),
+            tags=tags,
+        )
+
+    def _text(
+        self, x: int, y: int, text: str, font: Any, fill: str,
+        anchor: str = "nw", tags: str = "",
+    ) -> None:
+        self.c.create_text(
+            x, y, text=text, font=font, fill=fill, anchor=anchor,
+            tags=tags or "frame",
+        )
+
+    def _clickable(self, tag: str, command: Callable[[], None]) -> None:
+        self.c.tag_bind(tag, "<Button-1>", lambda _e: command())
+
+    # -- rendering ----------------------------------------------------------
+
+    def refresh(self) -> None:
+        """Paint the current view model onto the canvas."""
+        self._pulse += 1
+        data = self.vm.render()
+
+        self.c.delete("frame")
+        y = self._draw_header(data)
+        y = self._draw_market(data, y)
+        y = self._draw_watchlist(data, y)
+        y = self._draw_signal(data, y)
+        y = self._draw_trend(data, y)
+        y = self._draw_chart(data, y)
+        y = self._draw_actions(data, y)
+        y = self._draw_session(data, y)
+        y = self._draw_details(data, y)
+        y = self._draw_risk(data, y)
+        y = self._draw_footer(data, y)
+        self._fit(y + PAD)
+
+    # -- sections -----------------------------------------------------------
+
+    def _draw_header(self, data: dict[str, Any]) -> int:
+        header = data["header"]
+        self._card(PAD, PAD, INNER, 38, radius=11, fill="#18233a",
+                   fill_to="#131c2e", border=COLORS["line"])
+        colour = header["status_color"]
+        self._image(PAD + 12, PAD + 14, ("dot", colour),
+                    lambda: gfx.pill(9, 9, color=colour, opacity=255))
+        self._text(PAD + 28, PAD + 19, "GATEKEEPER", self.f_brand,
+                   COLORS["text"], "w")
+
+        label = header["status"]
+        width = max(52, len(label) * 6 + 16)
+        self._image(PANEL_WIDTH - PAD - 62 - width, PAD + 11,
+                    ("pill", width, colour),
+                    lambda: gfx.pill(width, 16, color=colour))
+        self._text(PANEL_WIDTH - PAD - 62 - width // 2, PAD + 19, label,
+                   self.f_caption, colour, "center")
+
+        for index, (glyph, command, tag) in enumerate(
+            (("⚙", self.on_settings, "gear"),
+             ("–", self.toggle_collapse, "fold"),
+             ("✕", self._close, "shut"))
+        ):
+            self._text(PANEL_WIDTH - PAD - 46 + index * 16, PAD + 19, glyph,
+                       self.f_body, COLORS["faint"], "center", tags=f"frame {tag}")
+            self._clickable(tag, command)
+        return PAD + 38 + 8
+
+    def _draw_market(self, data: dict[str, Any], y: int) -> int:
+        """The pair, the price, and the shape of the session so far."""
+        tiles, chart = data["tiles"], data["chart"]
+        height = 104 if chart["ready"] else 60
+        self._card(PAD, y, INNER, height, radius=14, fill=COLORS["raised"],
+                   fill_to=COLORS["panel"], border=COLORS["line"])
+
+        self.c.create_window(
+            PAD + 12, y + 18, window=self._entries["pair"], anchor="w",
+            tags="frame",
+        )
+        self._entries["pair"].configure(font=self.f_pair, width=13)
+        self._set_entry(self._entries["pair"], tiles["pair"])
+
+        self._text(PAD + 12, y + 40,
+                   f"{tiles['chart']} CHART   ·   {tiles['time']} EXPIRY",
+                   self.f_label, COLORS["faint"], "w")
+
+        colour = (
+            COLORS["call"] if chart.get("rising") else COLORS["put"]
+        ) if chart["ready"] else COLORS["text"]
+        self._text(PANEL_WIDTH - PAD - 12, y + 18, data["price"],
+                   self.f_price, colour, "e")
+        if chart["ready"]:
+            self._text(PANEL_WIDTH - PAD - 12, y + 40, chart["change_label"],
+                       self.f_label, colour, "e")
+
+            closes = chart["closes"][-140:]
+            key = ("spark", colour, len(closes),
+                   round(closes[0], 6), round(closes[-1], 6))
+            self._image(
+                PAD + 12, y + 52, key,
+                lambda: gfx.sparkline(INNER - 24, 44, closes, color=colour),
+            )
+        return y + height + 8
+
+    def _draw_watchlist(self, data: dict[str, Any], y: int) -> int:
+        rows = data["watchlist"]
         if not rows:
-            for tab in self._watch_tabs:
-                tab.destroy()
-            self._watch_tabs = []
-            self._watch_signature = None
-            frame.pack_configure(pady=0)
-            return
-
-        frame.pack_configure(pady=(2, 0))
-        # Rebuild only when the set of charts changes; re-creating widgets on
-        # every repaint makes the row flicker and eats the click.
-        signature = [row["label"] for row in rows]
-        if signature != getattr(self, "_watch_signature", None):
-            for tab in self._watch_tabs:
-                tab.destroy()
-            self._watch_tabs = []
-            for index, row in enumerate(rows):
-                tab = tk.Label(
-                    frame, text=row["label"], font=self.f_label,
-                    bg=COLORS["raised"], fg=COLORS["dim"],
-                    cursor="hand2", padx=4, pady=2, anchor="w",
-                )
-                tab.grid(
-                    row=index // 2, column=index % 2,
-                    sticky="ew", padx=1, pady=1,
-                )
-                # The timeframe goes with the name. A chart is a pair *and* a
-                # length, and a tab that sends only the pair opens whichever
-                # length that pair happens to be followed at — so the panel
-                # read one minute under a tab labelled fifteen seconds.
-                tab.bind(
-                    "<Button-1>",
-                    lambda _e, name=row["asset"], tf=row.get("timeframe"): (
-                        self.on_asset(name, tf)
-                    ),
-                )
-                self._watch_tabs.append(tab)
-            self._watch_signature = signature
-
-        for tab, row in zip(self._watch_tabs, rows):
+            return y
+        width = (INNER - 6) // 2
+        for index, row in enumerate(rows):
+            x = PAD + (index % 2) * (width + 6)
+            top = y + (index // 2) * 30
+            tag = f"watch{index}"
+            active, colour = row["active"], row["color"]
+            self._card(x, top, width, 26, radius=8,
+                       fill="#1d2a40" if active else "#141d2b",
+                       border=colour if active else COLORS["line"], tags=f"frame {tag}")
+            self._text(x + 9, top + 13, row["label"], self.f_caption,
+                       COLORS["text"] if active else COLORS["dim"], "w",
+                       tags=f"frame {tag}")
             score = row["score"]
-            tab.configure(
-                text=(
-                    f"{row['label']} {score:.0f}" if score is not None else row["label"]
+            if score is not None:
+                self._text(x + width - 9, top + 13, f"{score:.0f}", self.f_mono,
+                           colour, "e", tags=f"frame {tag}")
+            self._clickable(
+                tag,
+                lambda name=row["asset"], tf=row.get("timeframe"): self.on_asset(
+                    name, tf
                 ),
-                fg=row["color"],
-                bg=COLORS["border"] if row["active"] else COLORS["raised"],
             )
+        return y + ((len(rows) + 1) // 2) * 30 + 8
 
-    def _build_verdict(self, parent: tk.Widget) -> None:
-        box = tk.Frame(parent, bg=COLORS["bg"], highlightthickness=1)
-        box.configure(highlightbackground=COLORS["border"])
-        box.pack(fill="x", padx=10, pady=4)
-        self._widgets["verdict_box"] = box
+    def _draw_signal(self, data: dict[str, Any], y: int) -> int:
+        verdict, entry = data["verdict"], data["entry"]
+        scanning = data["scan"]["scanning"]
+        colour = verdict["color"]
+        height = 214
 
-        tk.Label(
-            box, text="S I G N A L", font=self.f_label,
-            bg=COLORS["bg"], fg=COLORS["faint"],
-        ).pack(pady=(8, 0))
-
-        self._widgets["arrow"] = tk.Label(
-            box, text="", font=self.f_arrow, bg=COLORS["bg"], fg=COLORS["neutral"]
+        # The border breathes only while there is something to act on, so the
+        # movement means "this one" rather than "the app is running".
+        strength = 0.95 * self._pulse_phase() if verdict["actionable"] else 0.0
+        self._card(
+            PAD, y, INNER, height, radius=18, fill="#122033", fill_to="#0c1524",
+            border=colour if verdict["actionable"] else COLORS["line"],
+            glow=colour if verdict["actionable"] else None,
+            glow_strength=strength,
         )
-        self._widgets["arrow"].pack()
 
-        # The verdict and the scanning dots swap places, so they live in a slot
-        # of their own. Hiding one and showing the other by packing would
-        # otherwise send whichever came back to the *end* of the signal box —
-        # which is how BUY ended up printed underneath the market strip after
-        # the first scan, having started out above it.
-        slot = tk.Frame(box, bg=COLORS["bg"])
-        slot.pack(fill="x")
-        self._widgets["verdict_slot"] = slot
+        self._text(PAD + 16, y + 15, "SIGNAL", self.f_caption, COLORS["faint"], "w")
+        if verdict["state"] not in ("ACTIVE", "IDLE"):
+            self._text(PANEL_WIDTH - PAD - 16, y + 15, verdict["state"],
+                       self.f_caption, COLORS["wait"], "e")
+        elif verdict["actionable"]:
+            self._text(PANEL_WIDTH - PAD - 16, y + 15, "GATE PASSED",
+                       self.f_caption, colour, "e")
 
-        self._widgets["verdict"] = tk.Label(
-            slot, text="--", font=self.f_verdict, bg=COLORS["bg"], fg=COLORS["neutral"]
-        )
-        self._widgets["verdict"].pack(pady=(0, 2))
+        # The dial holds the score and nothing else; the arrow and the word sit
+        # beside it, so neither has to share the middle.
+        score = verdict["score"]
+        shown = self._ease_score(score)
+        self._image(PAD + 16, y + 34, ("gauge", round(shown or -1, 1), colour),
+                    lambda: gfx.arc_gauge(88, shown, color=colour,
+                                          track="#1c2739", thickness=7))
+        self._text(PAD + 60, y + 72, "--" if score is None else f"{score:.0f}",
+                   self.f_score, COLORS["text"], "center")
+        self._text(PAD + 60, y + 92, "/100", self.f_label, COLORS["faint"], "center")
 
-        # The scanning indicator occupies the same space the verdict does, so
-        # the panel does not jump between states.
-        dots = tk.Frame(slot, bg=COLORS["bg"])
-        self._widgets["dots_frame"] = dots
-        for _ in range(3):
-            dot = tk.Label(dots, text="●", font=self.f_arrow, bg=COLORS["bg"], fg=COLORS["faint"])
-            dot.pack(side="left", padx=4)
-            self._dots.append(dot)
-
-        self._widgets["state"] = tk.Label(
-            box, text="", font=self.f_label, bg=COLORS["bg"], fg=COLORS["faint"]
-        )
-        self._widgets["state"].pack(pady=(0, 4))
-
-        self._build_entry(box)
-        self._build_trend(box)
-
-    def _build_entry(self, parent: tk.Widget) -> None:
-        """When to get in, directly under what to do.
-
-        The verdict and its timing are one decision and belong in one box: a
-        BUY with no indication of how much of the candle is left is an
-        instruction with the timing filed somewhere else, and somewhere else is
-        where it got lost. The bar drains as the candle does, so the countdown
-        is something seen rather than read.
-        """
-        wrap = tk.Frame(parent, bg=COLORS["bg"])
-        wrap.pack(fill="x", padx=12, pady=(0, 6))
-        self._widgets["entry_wrap"] = wrap
-
-        row = tk.Frame(wrap, bg=COLORS["bg"])
-        row.pack(fill="x")
-        self._widgets["entry_text"] = tk.Label(
-            row, text="—", font=self.f_badge, bg=COLORS["bg"], fg=COLORS["faint"],
-        )
-        self._widgets["entry_text"].pack(side="left")
-        self._widgets["entry_clock"] = tk.Label(
-            row, text="", font=self.f_mono, bg=COLORS["bg"], fg=COLORS["faint"],
-        )
-        self._widgets["entry_clock"].pack(side="right")
-
-        self._widgets["entry_bar"] = tk.Canvas(
-            wrap, height=4, bg=COLORS["raised"], highlightthickness=0,
-        )
-        self._widgets["entry_bar"].pack(fill="x", pady=(3, 0))
-
-        self._widgets["entry_detail"] = tk.Label(
-            wrap, text="", font=self.f_label, bg=COLORS["bg"], fg=COLORS["faint"],
-            wraplength=PANEL_WIDTH - 44, justify="left",
-        )
-        self._widgets["entry_detail"].pack(anchor="w", pady=(3, 0))
-
-    def _render_entry(self, entry: dict[str, Any], color: str) -> None:
-        w = self._widgets
-        if entry["ready"]:
-            tone = self._pulse_toward(color) if entry["urgent"] else color
+        if scanning:
+            # A narrower face than the verdict's: "SCANNING" is eight
+            # characters where "BUY" is three, and at the verdict's size it
+            # ran off the edge of the panel.
+            self._text(PAD + 118, y + 58, "SCANNING", self.f_score,
+                       COLORS["dim"], "w")
+            phase = (self._pulse % 40) / 40.0
+            self._image(PAD + 118, y + 86, ("shimmer", round(phase, 2)),
+                        lambda: gfx.shimmer(INNER - 140, 5, phase,
+                                            color=COLORS["accent"]))
         else:
-            tone = COLORS["faint"]
-        w["entry_text"].configure(text=entry["text"], fg=tone)
-        w["entry_clock"].configure(
-            text=entry["clock"], fg=tone if entry["urgent"] else COLORS["dim"]
+            self._image(PAD + 118, y + 42,
+                        ("glyph", verdict["direction"], colour),
+                        lambda: gfx.direction_glyph(26, verdict["direction"], colour))
+            self._text(PAD + 152, y + 58, verdict["direction_label"],
+                       self.f_verdict, colour, "w")
+
+            badge, badge_colour = verdict["badge"], verdict["badge_color"]
+            if badge and badge != "--":
+                width = max(96, len(badge) * 7 + 26)
+                self._image(PAD + 118, y + 82, ("badge", width, badge_colour),
+                            lambda: gfx.pill(width, 18, color=badge_colour))
+                self._text(PAD + 118 + width // 2, y + 91, badge,
+                           self.f_caption, badge_colour, "center")
+
+            pattern = verdict["pattern"] or ""
+            if pattern and pattern != "--":
+                self._text(PAD + 118, y + 110, pattern[:34], self.f_label,
+                           COLORS["dim"], "w")
+
+        # When to get in, in its own inset. The ring is the countdown and
+        # carries no number: a clock face inside a 32px ring is a number
+        # fighting the shape drawn to replace it, and the ring loses.
+        self._card(PAD + 12, y + 140, INNER - 24, 54, radius=11,
+                   fill="#17223a", border=COLORS["line"])
+        ready, urgent = entry["ready"], entry["urgent"]
+        tone = (
+            self._pulse_toward(colour) if ready and urgent
+            else colour if ready else COLORS["faint"]
         )
-        w["entry_detail"].configure(text=entry["detail"])
-        self._draw_entry_bar(entry["progress"], tone)
+        left = max(0.0, min(1.0, 1.0 - entry["progress"]))
+        self._image(PAD + 24, y + 152, ("ring", round(left, 2), tone),
+                    lambda: gfx.countdown_ring(30, left, color=tone,
+                                               track="#1c2739", thickness=4))
+        text_x = PAD + 64
+        self._text(text_x, y + 158, entry["text"], self.f_button, tone, "w")
+        if entry["clock"]:
+            self._text(PANEL_WIDTH - PAD - 24, y + 158, entry["clock"],
+                       self.f_mono, tone, "e")
+        # Wrapped rather than cut: the line explains what the countdown is
+        # counting toward, and half of that explains nothing.
+        self.c.create_text(
+            text_x, y + 170, text=entry["detail"], font=self.f_label,
+            fill=COLORS["dim"], anchor="nw",
+            width=PANEL_WIDTH - PAD - 24 - text_x, tags="frame",
+        )
+        return y + height + 8
 
-    def _draw_entry_bar(self, progress: float, color: str) -> None:
-        """How much of the current candle is left, draining as it goes."""
-        canvas: tk.Canvas = self._widgets["entry_bar"]
-        canvas.delete("all")
-        width = canvas.winfo_width() or (PANEL_WIDTH - 44)
-        remaining = max(0.0, min(1.0, 1.0 - progress))
-        filled = int(width * remaining)
-        if filled > 0:
-            canvas.create_rectangle(0, 0, filled, 4, fill=color, outline="")
+    def _draw_trend(self, data: dict[str, Any], y: int) -> int:
+        trend = data["trend"]
+        if trend["blanked"]:
+            return y
+        self._card(PAD, y, INNER, 34, radius=10, fill=COLORS["panel"],
+                   border=COLORS["line"])
+        self._text(PAD + 14, y + 17, "MARKET", self.f_caption,
+                   COLORS["faint"], "w")
+        self._text(PAD + 72, y + 17, f"{trend['arrow']}  {trend['label']}",
+                   self.f_small, trend["color"], "w")
+        for index, view in enumerate(trend["views"][:3]):
+            x = PANEL_WIDTH - PAD - 142 + index * 46
+            self._text(x, y + 18, view["name"], self.f_label, COLORS["faint"], "w")
+            self._text(x + 32, y + 17, view["arrow"], self.f_caption,
+                       view["color"], "w")
+        return y + 34 + 8
 
-    def _build_trend(self, parent: tk.Widget) -> None:
-        """Which way the market is going, inside the signal box.
+    def _draw_chart(self, data: dict[str, Any], y: int) -> int:
+        """The candles the analysis is actually reading."""
+        chart = data["chart"]
+        bars = chart["bars"][-34:]
+        if len(bars) < 4:
+            return y
+        self._card(PAD, y, INNER, 88, radius=14, fill=COLORS["panel"],
+                   border=COLORS["line"])
+        self._text(PAD + 14, y + 13, f"LAST {len(bars)} CANDLES", self.f_label,
+                   COLORS["faint"], "w")
+        key = ("candles", len(bars), round(bars[0][0], 6), round(bars[-1][3], 6))
+        self._image(
+            PAD + 14, y + 24, key,
+            lambda: gfx.candles(
+                INNER - 28, 58,
+                [gfx.Bar(*bar) for bar in bars],
+                up=COLORS["call"], down=COLORS["put"],
+            ),
+        )
+        return y + 88 + 8
 
-        The verdict answers "act or not", and most of the time the answer is
-        not — which leaves the panel silent on the thing you can see plainly on
-        the chart. The lean was always in the analysis; it only ever came out
-        as prose in the risk block, where you had to read a paragraph to learn
-        the tool was reading the market as falling.
+    def _draw_actions(self, data: dict[str, Any], y: int) -> int:
+        scanning = data["scan"]["scanning"]
+        wide = INNER - 118
+        self._card(PAD, y, wide, 38, radius=11,
+                   fill="#243449" if scanning else "#1c8f4a",
+                   fill_to="#1b2739" if scanning else "#15803d",
+                   border=COLORS["line"] if scanning else "#2fbb66",
+                   tags="frame scan")
+        self._text(PAD + wide // 2, y + 19, "SCANNING…" if scanning else "SCAN",
+                   self.f_button, COLORS["dim"] if scanning else "#eafff2",
+                   "center", tags="frame scan")
+        self._clickable("scan", self._scan_clicked)
+
+        self._card(PAD + wide + 8, y, 110, 38, radius=11, fill=COLORS["raised"],
+                   border=COLORS["line"], tags="frame reset")
+        self._text(PAD + wide + 63, y + 19, "RESET", self.f_button,
+                   COLORS["dim"], "center", tags="frame reset")
+        self._clickable("reset", self.on_reset)
+        return y + 38 + 8
+
+    def _draw_session(self, data: dict[str, Any], y: int) -> int:
+        session, risk = data["session"], data["risk"]
+        width = (INNER - 12) // 3
+        cells = (
+            ("WINS", str(session["wins"]), COLORS["call"], (1, 0), "win"),
+            ("LOSSES", str(session["losses"]), COLORS["put"], (0, 1), "loss"),
+            ("CALLED", str(session.get("calls", 0)), COLORS["accent"], None, ""),
+        )
+        for index, (label, value, colour, delta, tag) in enumerate(cells):
+            x = PAD + index * (width + 6)
+            self._card(x, y, width, 52, radius=10, fill=COLORS["panel"],
+                       border=COLORS["line"])
+            self._text(x + width // 2, y + 12, label, self.f_label,
+                       COLORS["faint"], "center")
+            self._text(x + width // 2, y + 30, value, self.f_stat, colour, "center")
+            if delta is None:
+                continue
+            wins, losses = delta
+            for sign, symbol, offset in ((1, "+", -14), (-1, "−", 14)):
+                mark = f"{tag}{'up' if sign > 0 else 'dn'}"
+                self._text(x + width // 2 + offset, y + 44, symbol,
+                           self.f_caption, colour, "center", tags=f"frame {mark}")
+                self._clickable(
+                    mark,
+                    lambda w=wins * sign, l=losses * sign: self.on_adjust(w, l),
+                )
+        y += 52 + 6
+
+        if session["total"]:
+            rate = f"{session['win_rate_display']} of {session['total']} trades"
+            if not session["meaningful"]:
+                rate += "  (too few to read)"
+        else:
+            rate = "No trades recorded yet"
+        self._text(PAD + 2, y + 6, rate, self.f_label, COLORS["dim"], "w")
+        if risk.get("paused"):
+            self._text(PANEL_WIDTH - PAD - 2, y + 6, "⏸ PAUSED", self.f_caption,
+                       COLORS["no_trade"], "e")
+        return y + 20
+
+    def _draw_details(self, data: dict[str, Any], y: int) -> int:
+        details = data["details"]
+        collapsed = details["collapsed"]
+        self._text(PAD + 2, y + 8, ("▸ " if collapsed else "▾ ") + "EVIDENCE",
+                   self.f_caption, COLORS["faint"], "w", tags="frame evidence")
+        self._text(PANEL_WIDTH - PAD - 2, y + 8, details["summary"],
+                   self.f_label, COLORS["faint"], "e", tags="frame evidence")
+        self._clickable("evidence", self.on_toggle_details)
+        y += 22
+        if collapsed:
+            return y
+
+        lines: list[tuple[str, str]] = []
+        calibration = data["calibration"]
+        if calibration["text"]:
+            lines.append((calibration["text"], calibration["color"]))
+        proof = data["proof"]
+        lines.append((proof["text"], proof["color"]))
+        if data["lesson"]:
+            lines.append((data["lesson"], COLORS["wait"]))
+        for note in data["tuning"]:
+            lines.append((note, COLORS["accent"]))
+        if data["session"].get("taught"):
+            lines.append((data["session"]["taught"], COLORS["accent"]))
+        verdict = data["verdict"]
+        lines.append((f"Duration fit {verdict['duration_display']} · "
+                      f"suggested {verdict['recommended']}", COLORS["dim"]))
+
+        for text, colour in lines:
+            y = self._wrapped(PAD + 2, y, str(text), colour)
+        return y + 4
+
+    def _draw_risk(self, data: dict[str, Any], y: int) -> int:
+        risk = data["risk"]
+        collapsed = risk.get("collapsed")
+        self._text(PAD + 2, y + 8, ("▸ " if collapsed else "▾ ") + "RISK",
+                   self.f_caption, COLORS["faint"], "w", tags="frame riskhead")
+        percent = risk["risk_percent"]
+        self._text(PANEL_WIDTH - PAD - 2, y + 8,
+                   f"{percent:.1f}% of balance", self.f_label,
+                   COLORS["put"] if percent > 10
+                   else COLORS["wait"] if percent > 5 else COLORS["faint"], "e",
+                   tags="frame riskhead")
+        self._clickable("riskhead", self.on_toggle_risk)
+        y += 22
+        if collapsed:
+            return y
+
+        for key, label, value in (
+            ("balance", "Balance", f"{risk['balance']:.2f}"),
+            ("stake", "Stake", f"{risk['stake']:.2f}"),
+        ):
+            self._text(PAD + 2, y + 11, label, self.f_small, COLORS["dim"], "w")
+            self.c.create_window(PANEL_WIDTH - PAD - 4, y + 11,
+                                 window=self._entries[key], anchor="e",
+                                 tags="frame")
+            self._set_entry(self._entries[key], value)
+            y += 24
+
+        self._text(PAD + 2, y + 9, "Payout", self.f_small, COLORS["dim"], "w")
+        self.c.create_window(PANEL_WIDTH - PAD - 4, y + 9,
+                             window=self._entries["payout"], anchor="e",
+                             tags="frame")
+        self._set_entry(self._entries["payout"], data["tiles"]["payout"])
+        y += 24
+
+        for label, value in (
+            ("Win returns", f"+{risk['potential_profit']:.2f}"),
+            ("Break-even rate", f"{risk['breakeven_rate']:.1f}%"),
+        ):
+            self._text(PAD + 2, y + 8, label, self.f_small, COLORS["dim"], "w")
+            self._text(PANEL_WIDTH - PAD - 4, y + 8, value, self.f_mono,
+                       COLORS["text"], "e")
+            y += 18
+        return y + 4
+
+    def _draw_footer(self, data: dict[str, Any], y: int) -> int:
+        y = self._wrapped(PAD + 2, y + 4, data["reason"], COLORS["dim"])
+        warnings = list(data["warnings"]) + list(data["risk"].get("warnings", []))
+        for line in warnings[:4]:
+            y = self._wrapped(PAD + 2, y, f"⚠ {line}", COLORS["wait"])
+        self._text(PANEL_WIDTH // 2, y + 10,
+                   "Analysis only — not a trading recommendation.",
+                   self.f_label, COLORS["faint"], "center")
+        return y + 22
+
+    def _wrapped(self, x: int, y: int, text: str, colour: str) -> int:
+        """One block of wrapped prose, returning where the next thing starts."""
+        if not text:
+            return y
+        item = self.c.create_text(
+            x, y, text=text, font=self.f_label, fill=colour, anchor="nw",
+            width=INNER - 4, tags="frame",
+        )
+        try:
+            bounds = self.c.bbox(item)
+            return (bounds[3] + 3) if bounds else y + 14
+        except tk.TclError:  # pragma: no cover - window closing
+            return y + 14
+
+    # -- animation ----------------------------------------------------------
+
+    PULSE_FRAMES = 24  # about two seconds at the overlay's repaint rate
+
+    def _pulse_phase(self) -> float:
+        """0..1 and back again, so a pulse breathes rather than blinks."""
+        half = self.PULSE_FRAMES / 2
+        return abs(half - (self._pulse % self.PULSE_FRAMES)) / half
+
+    def _pulse_toward(self, colour: str, target: str | None = None) -> str:
+        return gfx.mix(colour, target or COLORS["text"], self._pulse_phase() * 0.55)
+
+    def _ease_score(self, score: float | None) -> float | None:
+        """Move the dial toward a new reading instead of snapping to it.
+
+        A quarter of the remaining distance per repaint settles in about a
+        third of a second — long enough to be seen moving, short enough that
+        the dial is never showing a number the panel is not.
         """
-        strip = tk.Frame(parent, bg=COLORS["raised"])
-        strip.pack(fill="x", padx=1, pady=(0, 1))
-        self._widgets["trend_strip"] = strip
+        if score is None:
+            self._score_shown = None
+            return None
+        target = max(0.0, min(100.0, float(score)))
+        if self._score_shown is None or abs(target - self._score_shown) < 0.5:
+            self._score_shown = target
+        else:
+            self._score_shown += (target - self._score_shown) * 0.25
+        return round(self._score_shown, 1)
 
-        tk.Label(
-            strip, text="MARKET", font=self.f_label,
-            bg=COLORS["raised"], fg=COLORS["faint"],
-        ).pack(side="left", padx=(8, 0))
+    # -- window -------------------------------------------------------------
 
-        self._widgets["trend_arrow"] = tk.Label(
-            strip, text="", font=self.f_body,
-            bg=COLORS["raised"], fg=COLORS["neutral"],
-        )
-        self._widgets["trend_arrow"].pack(side="left", padx=(6, 2))
+    def _fit(self, height: int) -> None:
+        """Grow or shrink the window to fit what was drawn, without jitter."""
+        if self._collapsed:
+            return
+        try:
+            wanted = max(320, int(height))
+            wanted = min(wanted, self.root.winfo_screenheight() - 60)
+            # A few pixels of slack stops a one-pixel text difference from
+            # resizing the window on every single repaint.
+            if abs(wanted - self._height) > 6:
+                self._height = wanted
+                self.root.geometry(f"{PANEL_WIDTH}x{wanted}")
+                self.c.configure(height=wanted)
+        except tk.TclError:  # pragma: no cover - window closing
+            pass
 
-        self._widgets["trend_label"] = tk.Label(
-            strip, text="--", font=self.f_badge,
-            bg=COLORS["raised"], fg=COLORS["neutral"],
-        )
-        self._widgets["trend_label"].pack(side="left")
+    def _drag_start(self, event) -> None:
+        self._drag_origin = (event.x_root, event.y_root)
+        self._window_origin = (self.root.winfo_x(), self.root.winfo_y())
 
-        # One arrow per timeframe, so a trend that only exists on one of them
-        # looks different from one they all agree on.
-        views = tk.Frame(strip, bg=COLORS["raised"])
-        views.pack(side="right", padx=(0, 8))
-        self._widgets["trend_views"] = views
-        self._trend_views: list[tk.Label] = []
+    def _drag_move(self, event) -> None:
+        x = self._window_origin[0] + (event.x_root - self._drag_origin[0])
+        y = self._window_origin[1] + (event.y_root - self._drag_origin[1])
+        self.root.geometry(f"+{x}+{y}")
 
-        self._widgets["trend_detail"] = tk.Label(
-            parent, text="", font=self.f_label,
-            bg=COLORS["bg"], fg=COLORS["faint"],
-        )
-        self._widgets["trend_detail"].pack(pady=(0, 8))
+    def _scan_clicked(self) -> None:
+        if self.vm.scan.scanning:
+            return  # ignore repeat presses mid-scan
+        self.on_scan()
 
-    def _render_trend(self, trend: dict[str, Any]) -> None:
-        w = self._widgets
-        w["trend_arrow"].configure(text=trend["arrow"], fg=trend["color"])
-        w["trend_label"].configure(text=trend["label"], fg=trend["color"])
-        w["trend_detail"].configure(text=trend["detail"])
-
-        views = trend["views"]
-        if len(views) != len(self._trend_views):
-            for label in self._trend_views:
-                label.destroy()
-            self._trend_views = []
-            for _ in views:
-                label = tk.Label(
-                    w["trend_views"], text="", font=self.f_label,
-                    bg=COLORS["raised"], fg=COLORS["faint"],
-                )
-                label.pack(side="left", padx=2)
-                self._trend_views.append(label)
-
-        for label, view in zip(self._trend_views, views):
-            label.configure(
-                text=f"{view['name']} {view['arrow']}", fg=view["color"]
-            )
-
-    def _build_score(self, parent: tk.Widget) -> None:
-        wrap = self._section(parent, pady=(2, 2))
-
-        self._widgets["score_bar"] = tk.Canvas(
-            wrap, height=6, bg=COLORS["raised"], highlightthickness=0
-        )
-        self._widgets["score_bar"].pack(fill="x", padx=2, pady=(2, 4))
-
-        # How many trades this is calling for, spelled out as a number. WAIT
-        # and NO TRADE both mean zero while looking nothing alike, and a count
-        # is what you can read at a glance without parsing a word.
-        take = tk.Frame(wrap, bg=COLORS["panel"])
-        take.pack(fill="x", pady=(0, 3))
-        tk.Label(
-            take, text="TAKE NOW", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(side="left", padx=2)
-        self._widgets["take_now"] = tk.Label(
-            take, text="--", font=self.f_mono,
-            bg=COLORS["panel"], fg=COLORS["neutral"],
-        )
-        self._widgets["take_now"].pack(side="right", padx=2)
-
-        row = tk.Frame(wrap, bg=COLORS["panel"])
-        row.pack(fill="x")
-
-        self._widgets["score"] = tk.Label(
-            row, text="-- / 100", font=self.f_mono_big,
-            bg=COLORS["panel"], fg=COLORS["neutral"],
-        )
-        self._widgets["score"].pack(side="left", padx=2)
-
-        self._widgets["badge"] = tk.Label(
-            row, text="--", font=self.f_badge,
-            bg=COLORS["raised"], fg=COLORS["neutral"], padx=6, pady=1,
-        )
-        self._widgets["badge"].pack(side="right", padx=2)
-
-        self._widgets["pattern"] = tk.Label(
-            wrap, text="--", font=self.f_small, bg=COLORS["panel"], fg=COLORS["dim"]
-        )
-        self._widgets["pattern"].pack(anchor="w", padx=2, pady=(2, 0))
-
-    def _build_buttons(self, parent: tk.Widget) -> None:
-        row = self._section(parent, pady=(6, 4))
-
-        self._widgets["scan"] = tk.Label(
-            row, text="Scan", font=self.f_body,
-            bg=COLORS["call"], fg="#04140a", cursor="hand2", pady=7,
-        )
-        self._widgets["scan"].pack(side="left", fill="x", expand=True, padx=(2, 4))
-        self._widgets["scan"].bind("<Button-1>", lambda _e: self._scan_clicked())
-
-        reset = tk.Label(
-            row, text="Reset", font=self.f_body,
-            bg=COLORS["raised"], fg=COLORS["dim"], cursor="hand2", pady=7, padx=14,
-        )
-        reset.pack(side="right", padx=(4, 2))
-        reset.bind("<Button-1>", lambda _e: self.on_reset())
-
-    def _build_session(self, parent: tk.Widget) -> None:
-        wrap = self._section(parent, pady=(2, 2))
-        tk.Label(
-            wrap, text="SESSION", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(anchor="w", padx=2)
-
-        counters = tk.Frame(wrap, bg=COLORS["panel"])
-        counters.pack(fill="x", pady=2)
-
-        for key, caption, color, delta in (
-            ("win", "WIN", COLORS["call"], (1, 0)),
-            ("loss", "LOSS", COLORS["put"], (0, 1)),
-        ):
-            cell = tk.Frame(counters, bg=COLORS["raised"], highlightthickness=1)
-            cell.configure(highlightbackground=COLORS["border"])
-            cell.pack(side="left", fill="both", expand=True, padx=2)
-
-            tk.Label(
-                cell, text=caption, font=self.f_label,
-                bg=COLORS["raised"], fg=COLORS["faint"],
-            ).pack(pady=(3, 0))
-            self._widgets[f"session_{key}"] = tk.Label(
-                cell, text="0", font=self.f_mono_big, bg=COLORS["raised"], fg=color
-            )
-            self._widgets[f"session_{key}"].pack()
-
-            buttons = tk.Frame(cell, bg=COLORS["raised"])
-            buttons.pack(pady=(0, 3))
-            for symbol, sign in (("+", 1), ("−", -1)):
-                btn = tk.Label(
-                    buttons, text=symbol, font=self.f_small,
-                    bg=COLORS["panel"], fg=color, cursor="hand2", padx=8,
-                )
-                btn.pack(side="left", padx=2)
-                wins, losses = delta
-                btn.bind(
-                    "<Button-1>",
-                    lambda _e, w=wins * sign, l=losses * sign: self.on_adjust(w, l),
-                )
-
-        self._widgets["session_rate"] = tk.Label(
-            wrap, text="No trades recorded yet", font=self.f_small,
-            bg=COLORS["panel"], fg=COLORS["dim"],
-        )
-        self._widgets["session_rate"].pack(anchor="w", padx=2, pady=(2, 0))
-
-        # A limit that is reached quietly is a limit that gets argued with, so
-        # this one stays out even when the evidence block is folded.
-        self._widgets["paused"] = tk.Label(
-            wrap, text="", font=self.f_badge,
-            bg=COLORS["panel"], fg=COLORS["no_trade"],
-            wraplength=PANEL_WIDTH - 28, justify="left",
-        )
-        self._widgets["paused"].pack(anchor="w", padx=2, pady=(4, 0))
-
-    def _build_details(self, parent: tk.Widget) -> None:
-        """Everything supporting the decision, folded away by default.
-
-        Each of these lines earned its place one at a time, and together they
-        turned a panel meant to be glanced at into a page to be read. None of
-        them is wrong and none is removed — they are one click away, with the
-        single number that says whether the record is good news left on the
-        header so folding them costs nothing that has to be acted on.
-        """
-        wrap = self._section(parent, pady=(2, 2))
-        header = tk.Frame(wrap, bg=COLORS["panel"])
-        header.pack(fill="x")
-
-        self._widgets["details_caret"] = tk.Label(
-            header, text="▸", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
-        )
-        self._widgets["details_caret"].pack(side="left")
-        title = tk.Label(
-            header, text="EVIDENCE", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
-        )
-        title.pack(side="left", padx=2)
-        self._widgets["details_summary"] = tk.Label(
-            header, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        )
-        self._widgets["details_summary"].pack(side="right", padx=2)
-        for widget in (self._widgets["details_caret"], title, header):
-            widget.bind("<Button-1>", lambda _e: self.on_toggle_details())
-
-        body = tk.Frame(wrap, bg=COLORS["panel"])
-        body.pack(fill="x")
-        self._widgets["details_body"] = body
-
-        # What the score above was actually worth here. First in the block on
-        # purpose: the score is a number the engine made up from weights
-        # somebody chose, and this is the measurement that says whether that
-        # number means anything.
-        self._widgets["calibration"] = tk.Label(
-            body, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"],
-            wraplength=PANEL_WIDTH - 32, justify="left",
-        )
-        self._widgets["calibration"].pack(anchor="w", padx=2)
-
-        # Duration is reported on its own line with its own score, because a
-        # right direction on a wrong expiration is not a tradeable setup.
-        for key, caption, color in (
-            ("duration_score", "DURATION FIT", COLORS["neutral"]),
-            ("recommended", "SUGGESTED", COLORS["dim"]),
-        ):
-            row = tk.Frame(body, bg=COLORS["panel"])
-            row.pack(fill="x", pady=(2, 0))
-            tk.Label(
-                row, text=caption, font=self.f_label,
-                bg=COLORS["panel"], fg=COLORS["faint"],
-            ).pack(side="left", padx=2)
-            self._widgets[key] = tk.Label(
-                row, text="--", font=self.f_mono, bg=COLORS["panel"], fg=color,
-            )
-            self._widgets[key].pack(side="right", padx=2)
-
-        self._widgets["session_edge"] = tk.Label(
-            body, text="", font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"]
-        )
-        self._widgets["session_edge"].pack(anchor="w", padx=2, pady=(4, 0))
-
-        # How many setups have passed the gates since the session began. A
-        # quiet panel is either a quiet market or a broken app, and the count
-        # is what tells the two apart.
-        self._widgets["session_calls"] = tk.Label(
-            body, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        )
-        self._widgets["session_calls"].pack(anchor="w", padx=2)
-
-        # What the WIN/LOSS buttons have taught it. Without this the buttons
-        # move a counter and appear to do nothing else, and the one loop that
-        # makes the tool better is invisible while it is filling up.
-        self._widgets["session_taught"] = tk.Label(
-            body, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["accent"],
-            wraplength=PANEL_WIDTH - 28, justify="left",
-        )
-        self._widgets["session_taught"].pack(anchor="w", padx=2)
-
-        # The measured record of this engine on this chart's own history — the
-        # one line on the panel that is a fact rather than a forecast.
-        tk.Label(
-            body, text="MEASURED ON THIS CHART", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(anchor="w", padx=2, pady=(6, 0))
-        self._widgets["proof"] = tk.Label(
-            body, text="Measuring this chart…", font=self.f_small,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-            wraplength=PANEL_WIDTH - 32, justify="left",
-        )
-        self._widgets["proof"].pack(anchor="w", padx=2)
-
-        # What the losing calls had in common. The panel's only backward-
-        # looking line, and the only one that explains a loss rather than
-        # reporting it.
-        self._widgets["lesson"] = tk.Label(
-            body, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["wait"],
-            wraplength=PANEL_WIDTH - 32, justify="left",
-        )
-        self._widgets["lesson"].pack(anchor="w", padx=2)
-
-        # What the record changed about the gates. A setting that moves
-        # silently is indistinguishable from a bug.
-        self._widgets["tuning"] = tk.Label(
-            body, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["accent"],
-            wraplength=PANEL_WIDTH - 32, justify="left",
-        )
-        self._widgets["tuning"].pack(anchor="w", padx=2)
-
-    def _build_risk(self, parent: tk.Widget) -> None:
-        wrap = self._section(parent, pady=(2, 2))
-        header = tk.Frame(wrap, bg=COLORS["panel"])
-        header.pack(fill="x")
-
-        # The whole header toggles, not just the caret — a 7pt triangle is a
-        # miserable click target on a panel this size.
-        self._widgets["risk_caret"] = tk.Label(
-            header, text="▾", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
-        )
-        self._widgets["risk_caret"].pack(side="left")
-        title = tk.Label(
-            header, text="RISK", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"], cursor="hand2",
-        )
-        title.pack(side="left", padx=2)
-        self._widgets["risk_percent"] = tk.Label(
-            header, text="", font=self.f_label,
-            bg=COLORS["panel"], fg=COLORS["faint"],
-        )
-        self._widgets["risk_percent"].pack(side="right", padx=2)
-        for widget in (self._widgets["risk_caret"], title, header):
-            widget.bind("<Button-1>", lambda _e: self.on_toggle_risk())
-
-        # Everything below the header folds away together, so the stake stays
-        # one click from view rather than gone.
-        body = tk.Frame(wrap, bg=COLORS["panel"])
-        body.pack(fill="x")
-        self._widgets["risk_body"] = body
-
-        # Balance and stake are typed in directly. The stake defaults to the
-        # configured percentage of the balance; typing any number overrides it
-        # (the percentage readout above shows what share that actually is).
-        for key, caption, commit in (
-            ("balance", "Balance", self._commit_balance),
-            ("stake", "Stake", self._commit_stake),
-        ):
-            row = tk.Frame(body, bg=COLORS["panel"])
-            row.pack(fill="x", pady=1)
-            tk.Label(
-                row, text=caption, font=self.f_small,
-                bg=COLORS["panel"], fg=COLORS["dim"],
-            ).pack(side="left", padx=2)
-            entry = self._text_field(row, width=10, on_commit=commit)
-            entry.pack(side="right", padx=2)
-            self._widgets[f"risk_{key}"] = entry
-
-        for key, caption in (
-            ("profit", "Win returns"),
-            ("breakeven", "Break-even rate"),
-        ):
-            row = tk.Frame(body, bg=COLORS["panel"])
-            row.pack(fill="x", pady=1)
-            tk.Label(
-                row, text=caption, font=self.f_small,
-                bg=COLORS["panel"], fg=COLORS["dim"],
-            ).pack(side="left", padx=2)
-            self._widgets[f"risk_{key}"] = tk.Label(
-                row, text="--", font=self.f_mono,
-                bg=COLORS["panel"], fg=COLORS["text"],
-            )
-            self._widgets[f"risk_{key}"].pack(side="right", padx=2)
+    def toggle_collapse(self) -> None:
+        """Shrink to just the header, so the panel can be parked out of the way."""
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self.root.geometry(f"{PANEL_WIDTH}x56")
+        else:
+            self.root.geometry(f"{PANEL_WIDTH}x{self._height}")
 
     def _commit_payout(self, text: str) -> None:
         cleaned = text.strip().rstrip("%+").replace(",", "")
@@ -859,66 +753,6 @@ class OverlayPanel:
         if value > 0:
             self.on_balance(value)
 
-    def _build_footer(self, parent: tk.Widget) -> None:
-        self._widgets["reason"] = tk.Label(
-            parent, text="Waiting for chart data.", font=self.f_small,
-            bg=COLORS["panel"], fg=COLORS["dim"],
-            wraplength=PANEL_WIDTH - 28, justify="left",
-        )
-        self._widgets["reason"].pack(anchor="w", padx=10, pady=(6, 2))
-
-        self._widgets["warnings"] = tk.Label(
-            parent, text="", font=self.f_small,
-            bg=COLORS["panel"], fg=COLORS["wait"],
-            wraplength=PANEL_WIDTH - 28, justify="left",
-        )
-        self._widgets["warnings"].pack(anchor="w", padx=10, pady=(0, 2))
-
-        tk.Label(
-            parent, text="Analysis only — not a trading recommendation.",
-            font=self.f_label, bg=COLORS["panel"], fg=COLORS["faint"],
-        ).pack(pady=(4, 8))
-
-    def _fit_height(self, position: tuple[int, int]) -> int:
-        """Resize the window to exactly fit its content, and return that height."""
-        self.root.update_idletasks()
-        height = max(self.root.winfo_reqheight(), 320)
-        # Never taller than the screen it sits on.
-        try:
-            height = min(height, self.root.winfo_screenheight() - 60)
-        except tk.TclError:  # pragma: no cover - no display
-            pass
-        self.root.geometry(f"{PANEL_WIDTH}x{height}+{position[0]}+{position[1]}")
-        return height
-
-    # -- interaction --------------------------------------------------------
-
-    def _drag_start(self, event) -> None:
-        self._drag_origin = (event.x_root, event.y_root)
-        self._window_origin = (self.root.winfo_x(), self.root.winfo_y())
-
-    def _drag_move(self, event) -> None:
-        dx = event.x_root - self._drag_origin[0]
-        dy = event.y_root - self._drag_origin[1]
-        x = self._window_origin[0] + dx
-        y = self._window_origin[1] + dy
-        self.root.geometry(f"+{x}+{y}")
-
-    def _scan_clicked(self) -> None:
-        if self.vm.scan.scanning:
-            return  # ignore repeat presses mid-scan
-        self.on_scan()
-
-    def toggle_collapse(self) -> None:
-        """Shrink to just the header, so the panel can be parked out of the way."""
-        self._collapsed = not self._collapsed
-        if self._collapsed:
-            self._body.pack_forget()
-            self.root.geometry(f"{PANEL_WIDTH}x36")
-        else:
-            self._body.pack(fill="both", expand=True)
-            self.root.geometry(f"{PANEL_WIDTH}x{self._natural_height}")
-
     def _close(self) -> None:
         self.on_close()
         self.destroy()
@@ -928,248 +762,6 @@ class OverlayPanel:
             self.root.destroy()
         except tk.TclError:
             pass
-
-    # -- rendering ----------------------------------------------------------
-
-    def refresh(self) -> None:
-        """Paint the current view model onto the widgets."""
-        data = self.vm.render()
-        w = self._widgets
-        self._pulse += 1
-
-        header = data["header"]
-        w["status"].configure(text=header["status"], fg=header["status_color"])
-
-        tiles = data["tiles"]
-        self._set_entry(w["tile_pair"], tiles["pair"])
-        self._set_entry(w["tile_payout"], tiles["payout"])
-        w["tile_time"].configure(text=tiles["time"])
-        w["tile_chart"].configure(text=tiles["chart"])
-        w["price"].configure(text=data["price"])
-
-        verdict = data["verdict"]
-        scanning = data["scan"]["scanning"]
-
-        if scanning:
-            w["verdict"].pack_forget()
-            w["dots_frame"].pack(pady=(4, 6))
-            self._animate_dots(data["scan"]["progress"])
-        else:
-            w["dots_frame"].pack_forget()
-            w["verdict"].pack(pady=(0, 2))
-
-        entry = data["entry"]
-        self._render_entry(entry, verdict["color"])
-
-        w["arrow"].configure(text=verdict["arrow"], fg=verdict["color"])
-        w["verdict"].configure(text=verdict["direction_label"], fg=verdict["color"])
-        # The border breathes only while there is something to act on, so the
-        # movement means "this one" rather than "the app is running".
-        w["verdict_box"].configure(
-            highlightbackground=(
-                self._pulse_toward(verdict["color"], COLORS["border"])
-                if verdict["actionable"]
-                else verdict["color"]
-            )
-        )
-        # The state chip is only ever a warning about the *signal*. Scanning is
-        # not a problem with the signal, so it must not borrow the alarm colour.
-        state_colors = {
-            "WEAKENING": COLORS["wait"],
-            "INVALIDATED": COLORS["put"],
-            "EXPIRED": COLORS["faint"],
-            "SCANNING": COLORS["dim"],
-        }
-        w["state"].configure(
-            text="" if verdict["state"] in ("ACTIVE", "IDLE") else verdict["state"],
-            fg=state_colors.get(verdict["state"], COLORS["faint"]),
-        )
-
-        w["score"].configure(text=verdict["score_display"], fg=verdict["score_color"])
-        w["badge"].configure(text=verdict["badge"], fg=verdict["badge_color"])
-        w["pattern"].configure(text=verdict["pattern"] or "")
-        w["duration_score"].configure(
-            text=verdict["duration_display"], fg=verdict["score_color"]
-        )
-        w["recommended"].configure(text=verdict["recommended"])
-        w["take_now"].configure(
-            text=verdict["take_label"],
-            fg=verdict["color"] if verdict["take_now"] else COLORS["dim"],
-        )
-        self._draw_score_bar(verdict["score"], verdict["score_color"])
-
-        w["scan"].configure(
-            text="Scanning…" if scanning else "Scan",
-            bg=COLORS["raised"] if scanning else COLORS["call"],
-            fg=COLORS["dim"] if scanning else "#04140a",
-        )
-
-        session = data["session"]
-        w["session_win"].configure(text=str(session["wins"]))
-        w["session_loss"].configure(text=str(session["losses"]))
-        if session["total"] == 0:
-            w["session_rate"].configure(text="No trades recorded yet", fg=COLORS["dim"])
-            w["session_edge"].configure(text="")
-        else:
-            rate_text = f"{session['win_rate_display']} of {session['total']} trades"
-            if not session["meaningful"]:
-                rate_text += "  (too few to read)"
-            w["session_rate"].configure(
-                text=rate_text,
-                fg=COLORS["dim"] if not session["meaningful"] else COLORS["text"],
-            )
-            edge = session["edge"]
-            if edge is None:
-                w["session_edge"].configure(text="")
-            else:
-                w["session_edge"].configure(
-                    text=(
-                        f"{edge:+.1f} pts vs {session['breakeven_rate']:.1f}% break-even"
-                    ),
-                    fg=COLORS["call"] if edge >= 0 else COLORS["put"],
-                )
-
-        calls = session.get("calls", 0)
-        w["session_calls"].configure(
-            text=(
-                f"{calls} setup{'' if calls == 1 else 's'} called this session"
-                if calls
-                else "No setups called yet this session"
-            )
-        )
-        w["session_taught"].configure(text=session.get("taught", ""))
-        risk_block = data["risk"]
-        w["paused"].configure(
-            text=(
-                f"⏸  TRADING PAUSED — {risk_block.get('paused_reason', '')}"
-                if risk_block.get("paused")
-                else ""
-            )
-        )
-
-        calibration = data["calibration"]
-        w["calibration"].configure(
-            text=calibration["text"], fg=calibration["color"]
-        )
-
-        proof = data["proof"]
-        w["proof"].configure(text=proof["text"], fg=proof["color"])
-        self._render_trend(data["trend"])
-        self._render_watchlist(data["watchlist"])
-        w["lesson"].configure(text=data["lesson"])
-        w["tuning"].configure(text="\n".join(data["tuning"]))
-
-        details = data["details"]
-        # Safe to hide and re-show by packing because the body is the last
-        # child of its own wrapper: re-packing appends, and appending puts it
-        # back exactly where it was. The watchlist, which is packed among
-        # siblings, cannot do this — see ``_render_watchlist``.
-        if details["collapsed"]:
-            w["details_body"].pack_forget()
-            w["details_caret"].configure(text="▸")
-        else:
-            w["details_body"].pack_configure(fill="x")
-            w["details_caret"].configure(text="▾")
-        w["details_summary"].configure(text=details["summary"])
-
-        risk = data["risk"]
-        if risk.get("collapsed"):
-            w["risk_body"].pack_forget()
-            w["risk_caret"].configure(text="▸")
-        else:
-            w["risk_body"].pack_configure(fill="x")
-            w["risk_caret"].configure(text="▾")
-        self._set_entry(w["risk_balance"], f"{risk['balance']:.2f}")
-        self._set_entry(w["risk_stake"], f"{risk['stake']:.2f}")
-        w["risk_profit"].configure(text=f"+{risk['potential_profit']:.2f}", fg=COLORS["call"])
-        w["risk_breakeven"].configure(text=f"{risk['breakeven_rate']:.1f}%")
-        # Show what share of the balance the stake actually is, and colour it
-        # when that share is into territory a losing streak would hurt.
-        percent = risk["risk_percent"]
-        w["risk_percent"].configure(
-            text=f"{percent:.1f}% of balance"
-            + (" · manual" if risk.get("stake_overridden") else ""),
-            fg=COLORS["put"] if percent > 10 else COLORS["wait"] if percent > 5 else COLORS["faint"],
-        )
-
-        w["reason"].configure(text=data["reason"])
-        # Risk warnings (oversized stake, session below break-even) belong on
-        # screen next to the signal warnings, not buried in a log.
-        warnings = list(data["warnings"]) + list(risk.get("warnings", []))
-        w["warnings"].configure(
-            text="\n".join(f"⚠ {line}" for line in warnings[:5]) if warnings else ""
-        )
-
-        # The reason and warning blocks wrap to a variable number of lines, so
-        # the window has to re-fit or the footer gets clipped exactly when there
-        # is a warning worth reading.
-        self._refit()
-
-    def _refit(self) -> None:
-        """Grow or shrink the window to fit the current text, without jitter."""
-        if self._collapsed:
-            return
-        try:
-            self.root.update_idletasks()
-            required = max(self.root.winfo_reqheight(), 320)
-            required = min(required, self.root.winfo_screenheight() - 60)
-            # A few pixels of slack stops a one-pixel font difference from
-            # resizing the window on every single repaint.
-            if abs(required - self._natural_height) > 6:
-                self._natural_height = required
-                self.root.geometry(f"{PANEL_WIDTH}x{required}")
-        except tk.TclError:  # pragma: no cover - window closing
-            pass
-
-    def _animate_dots(self, progress: float) -> None:
-        """Cycle the three dots so the scan visibly progresses."""
-        active = int(progress * 9) % 3
-        for index, dot in enumerate(self._dots):
-            dot.configure(fg=COLORS["call"] if index == active else COLORS["faint"])
-
-    # -- animation ----------------------------------------------------------
-
-    PULSE_FRAMES = 24  # about two seconds at the overlay's repaint rate
-
-    @staticmethod
-    def _mix(first: str, second: str, amount: float) -> str:
-        """Blend two ``#rrggbb`` colours, ``amount`` of the way to the second."""
-        amount = max(0.0, min(1.0, amount))
-        channels = []
-        for offset in (1, 3, 5):
-            a = int(first[offset:offset + 2], 16)
-            b = int(second[offset:offset + 2], 16)
-            channels.append(int(round(a + (b - a) * amount)))
-        return "#{:02x}{:02x}{:02x}".format(*channels)
-
-    def _pulse_phase(self) -> float:
-        """0..1 and back again, so the pulse breathes rather than blinks."""
-        half = self.PULSE_FRAMES / 2
-        return abs(half - (self._pulse % self.PULSE_FRAMES)) / half
-
-    def _pulse_toward(self, color: str, target: str | None = None) -> str:
-        return self._mix(color, target or COLORS["text"], self._pulse_phase() * 0.55)
-
-    def _draw_score_bar(self, score: float | None, color: str) -> None:
-        canvas: tk.Canvas = self._widgets["score_bar"]
-        canvas.delete("all")
-        width = canvas.winfo_width() or (PANEL_WIDTH - 20)
-        if score is None:
-            self._score_shown = None
-            return
-        target = max(0.0, min(100.0, score))
-        # Ease toward the new score instead of snapping to it. A quarter of the
-        # remaining distance per repaint settles in about a third of a second —
-        # long enough to be seen moving, short enough that the bar is never
-        # showing a number the panel is not.
-        if self._score_shown is None or abs(target - self._score_shown) < 0.5:
-            self._score_shown = target
-        else:
-            self._score_shown += (target - self._score_shown) * 0.25
-        filled = max(2, int(width * self._score_shown / 100.0))
-        canvas.create_rectangle(0, 0, filled, 6, fill=color, outline="")
-
-    # -- loop ---------------------------------------------------------------
 
     def run(self) -> None:
         self.root.mainloop()
