@@ -55,11 +55,41 @@ class TestConfig:
         config.set("storage.database", "storage/journal.db")
         assert config.resolve_path("storage.database").is_absolute()
 
-    def test_a_non_mapping_config_file_is_rejected(self, tmp_path):
-        path = tmp_path / "bad.yaml"
-        path.write_text("- just\n- a\n- list\n")
-        with pytest.raises(ValueError):
-            load_config(path)
+    def test_a_settings_file_it_cannot_read_does_not_stop_the_app(self, tmp_path):
+        """It used to raise. But this file is one the user is told to edit by
+        hand, and a stray character in YAML then meant a double-clicked
+        GateKeeper died on a parser stack trace with nothing on screen saying
+        which line to fix. Bad settings are worth losing; the app is not."""
+        for name, text in (
+            ("list.yaml", "- just\n- a\n- list\n"),
+            ("torn.yaml", "not: [valid\n"),
+            ("scalar.yaml", "42\n"),
+        ):
+            path = tmp_path / name
+            path.write_text(text)
+            config = load_config(path)
+            assert config.get("market.payout") == DEFAULTS["market"]["payout"]
+
+    def test_the_unreadable_file_is_kept_rather_than_deleted(self, tmp_path):
+        """Whatever is wrong with it, the values in it are the user's own."""
+        path = tmp_path / "config.yaml"
+        path.write_text("not: [valid\n")
+        load_config(path)
+        kept = tmp_path / "config.yaml.unreadable"
+        assert kept.exists() and kept.read_text() == "not: [valid\n"
+
+    def test_an_empty_file_is_not_treated_as_broken(self, tmp_path):
+        """A file with nothing in it is a file with no overrides."""
+        path = tmp_path / "config.yaml"
+        path.write_text("")
+        load_config(path)
+        assert not (tmp_path / "config.yaml.unreadable").exists()
+
+    def test_a_readable_file_is_left_alone(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text("market:\n  payout: 0.85\n")
+        assert load_config(path).get("market.payout") == 0.85
+        assert not (tmp_path / "config.yaml.unreadable").exists()
 
     def test_the_example_config_is_valid_and_complete(self):
         from poa.config import EXAMPLE_CONFIG_PATH

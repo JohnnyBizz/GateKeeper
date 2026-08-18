@@ -8,6 +8,7 @@ prefixed with ``POA_``, e.g. ``POA_SERVER__PORT=9000``.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import sys
 from dataclasses import dataclass, field
@@ -15,6 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# The standard logger rather than the project's own: ``logging_setup`` reads
+# its destination from here, so importing it back would be a cycle.
+log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -308,6 +313,23 @@ def _coerce(value: str) -> Any:
     return value
 
 
+def _set_aside(path: Path) -> Path | None:
+    """Move a file that could not be read out of the way, and say where to.
+
+    Kept rather than deleted: it is the user's settings, and whatever is wrong
+    with it, the values in it are the ones they chose. A fresh one is written
+    the next time anything is saved.
+    """
+    try:
+        kept = path.with_suffix(path.suffix + ".unreadable")
+        if kept.exists():
+            kept.unlink()
+        path.replace(kept)
+        return kept
+    except Exception:  # pragma: no cover - read-only disk, locked file
+        return None
+
+
 def _env_overrides(env: dict[str, str]) -> dict[str, Any]:
     """Translate ``POA_SECTION__KEY=value`` variables into a nested dict."""
     overrides: dict[str, Any] = {}
@@ -427,10 +449,28 @@ def load_config(path: str | Path | None = None) -> Config:
 
     file_data: dict[str, Any] = {}
     if chosen is not None and chosen.exists():
-        with chosen.open("r", encoding="utf-8") as handle:
-            file_data = yaml.safe_load(handle) or {}
-        if not isinstance(file_data, dict):
-            raise ValueError(f"config file {chosen} must contain a mapping")
+        # A settings file the app cannot read must not stop the app. This one
+        # is written atomically, so a half-written file cannot come from us —
+        # but the user is told to edit it by hand for the things the panel
+        # does not expose, and one stray character in YAML would otherwise
+        # mean a double-clicked GateKeeper dies on a parser stack trace, with
+        # nothing on screen to say which line to fix. The unreadable file is
+        # kept, under a name that says why, and the defaults are used instead.
+        try:
+            with chosen.open("r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle)
+            if loaded is not None and not isinstance(loaded, dict):
+                raise ValueError("it does not hold a mapping of settings")
+            file_data = loaded or {}
+        except Exception as exc:
+            file_data = {}
+            kept = _set_aside(chosen)
+            log.error(
+                "could not read the settings in %s (%s). Starting from the "
+                "defaults; the file has been kept as %s so nothing in it is "
+                "lost.", chosen, exc, kept.name if kept else chosen.name,
+            )
+            chosen = None
 
     merged = _deep_merge(DEFAULTS, file_data)
     merged = _deep_merge(merged, _env_overrides(dict(os.environ)))
