@@ -34,7 +34,8 @@ jobs:
     needs: test
     runs-on: windows-latest
     permissions:
-      contents: read
+      # Needed to publish the build as a release asset.
+      contents: write
       # Needed to delete previous builds' artifacts. Without it the allowance
       # fills and every upload fails, including builds with nothing wrong.
       actions: write
@@ -137,7 +138,29 @@ jobs:
               `${(freed / 1e9).toFixed(2)} GB`
             );
 
+      # The download that actually has to work. Release assets are stored
+      # separately from Actions artifacts, so a full artifact allowance — or
+      # the six-to-twelve hours GitHub takes to notice one has been emptied —
+      # cannot stop a finished build reaching anyone. It is also a stable
+      # address: the same link after every push, rather than a fresh one
+      # buried in whichever run happened to produce it.
+      - name: Publish the build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest \
+            dist/GateKeeper.exe dist/RecordFeed.exe \
+            --title "GateKeeper — latest build" \
+            --notes "Built from ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC')." \
+            --prerelease
+
+      # Kept as a second copy, and no longer able to fail the build: the
+      # release above is the download, and an artifact allowance problem must
+      # never again be the reason a working executable reaches nobody.
       - name: Upload executable
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: GateKeeper-windows
@@ -145,6 +168,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Upload the feed recorder
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: RecordFeed-windows
