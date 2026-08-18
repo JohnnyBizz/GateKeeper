@@ -409,6 +409,68 @@ class _FakeProof:
         return f"{self.settled} replayed setups"
 
 
+class TestACallYouCannotTakeAsYouAreSetUp:
+    """A setup found on another chart is scored against the expiry that suits
+    *that* chart. Taken at the expiry the platform happens to be set to, it is
+    a different trade from the one that passed — and often one the engine
+    would have refused outright.
+
+    The row carried the right expiry all along and the panel kept it to
+    itself, so a green tab invited exactly that mistake: five losses in a row
+    on thirty-second expiries, from setups scored at ten minutes.
+    """
+
+    def _vm(self, expiry=600, actionable=True, trade_duration=30):
+        vm = OverlayViewModel(session=SessionStats(), asset="EUR/USD OTC",
+                              chart_timeframe=5, trade_duration=trade_duration)
+        vm.watchlist = [
+            {"asset": "EUR/USD OTC", "timeframe": 5, "expiry": trade_duration,
+             "score": 53.0, "direction": "WAIT", "actionable": False},
+            {"asset": "EUR/USD OTC", "timeframe": 180, "expiry": expiry,
+             "score": 82.0, "direction": "CALL", "actionable": actionable},
+        ]
+        return vm
+
+    def test_the_tab_says_which_expiry_it_needs(self):
+        rows = self._vm().render()["watchlist"]
+        needing = [r for r in rows if r["mismatched"]]
+        assert len(needing) == 1
+        assert needing[0]["needs"] == "10M"
+
+    def test_a_matching_expiry_is_not_flagged(self):
+        """Nothing to warn about when it is the trade you are already set up
+        for — a marker on every tab would stop meaning anything."""
+        rows = self._vm(expiry=30).render()["watchlist"]
+        assert not any(r["mismatched"] for r in rows)
+
+    def test_a_setup_nobody_can_take_yet_is_not_flagged(self):
+        """Only calls. A tab that is not actionable is not an invitation."""
+        rows = self._vm(actionable=False).render()["watchlist"]
+        assert not any(r["mismatched"] for r in rows)
+
+    def test_the_mismatch_is_warned_about_in_words(self):
+        vm = self._vm()
+        vm.signal = make_signal(pullback_trend(400, direction=1))
+        warnings = vm.render()["warnings"]
+        assert warnings, "the mismatch has to be said, not just marked"
+        first = warnings[0]
+        assert "10 MIN" in first and "30 SEC" in first
+        assert "different trade" in first
+
+    def test_the_warning_comes_before_the_others(self):
+        """It decides whether the trade is the one that was scored at all."""
+        vm = self._vm()
+        vm.signal = make_signal(choppy_series(400))
+        warnings = vm.render()["warnings"]
+        assert warnings and "expiry" in warnings[0]
+
+    def test_nothing_is_warned_about_when_everything_lines_up(self):
+        vm = self._vm(expiry=30)
+        vm.signal = make_signal(pullback_trend(400, direction=1))
+        assert not any("expiry" in w and "different trade" in w
+                       for w in vm.render()["warnings"])
+
+
 class TestTheEvidenceFoldsAway:
     """Every line under the decision earned its place one at a time, and
     together they turned a panel meant to be glanced at into a page."""

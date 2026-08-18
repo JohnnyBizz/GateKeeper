@@ -297,6 +297,34 @@ class TestTheWatchlistTabs:
         _click(panel, "watch1")
         assert len(picked) == 2
 
+    def test_a_tab_shows_the_expiry_it_needs(self, panel_module):
+        """A green tab at the wrong expiry is an invitation to take a trade
+        the engine never scored."""
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.asset, vm.chart_timeframe, vm.trade_duration = "EUR/USD OTC", 5, 30
+        vm.watchlist = [
+            {"asset": "EUR/USD OTC", "timeframe": 180, "expiry": 600,
+             "score": 82.0, "direction": "CALL", "actionable": True},
+        ]
+        panel = _panel(panel_module, vm)
+        panel.refresh()
+        assert _find(panel, "10M"), "the tab never said which expiry it needs"
+
+    def test_a_matching_expiry_puts_no_marker_on_the_tab(self, panel_module):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.asset, vm.chart_timeframe, vm.trade_duration = "EUR/USD OTC", 5, 30
+        vm.watchlist = [
+            {"asset": "EUR/USD OTC", "timeframe": 180, "expiry": 30,
+             "score": 82.0, "direction": "CALL", "actionable": True},
+        ]
+        panel = _panel(panel_module, vm)
+        panel.refresh()
+        assert not [t for t in _texts(panel) if t.startswith("▸3")]
+
     def test_an_empty_watchlist_draws_no_tabs(self, panel_module):
         panel = _panel(panel_module)
         panel.refresh()

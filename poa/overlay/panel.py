@@ -418,6 +418,14 @@ class OverlayPanel:
             if score is not None:
                 self._text(x + width - 9, top + 13, f"{score:.0f}", self.f_mono,
                            colour, "e", tags=f"frame {tag}")
+            # The expiry this one was scored at, whenever that is not the
+            # expiry the platform is set to. Without it a green tab invites a
+            # trade at the wrong length — which is a different trade from the
+            # one that passed, and often one the engine would have refused.
+            needs = row.get("needs")
+            if needs:
+                self._text(x + width - 34, top + 13, f"▸{needs}", self.f_label,
+                           COLORS["wait"], "e", tags=f"frame {tag}")
             self._clickable(
                 tag,
                 lambda name=row["asset"], tf=row.get("timeframe"): self.on_asset(

@@ -725,20 +725,28 @@ class OverlayViewModel:
             direction = str(row.get("direction", "WAIT"))
             asset = str(row.get("asset", ""))
             timeframe = int(row.get("timeframe") or 0)
+            expiry = int(row.get("expiry") or 0)
             short = format_duration(timeframe).replace(" ", "") if timeframe else ""
+            actionable = bool(row.get("actionable"))
+            # A setup found on another chart was scored against the expiry that
+            # suits *that* chart, which is usually not the one the platform is
+            # set to. Taking it at the wrong expiry is a different trade from
+            # the one that passed — and the panel used to keep that to itself,
+            # so a green tab invited exactly that mistake.
+            mismatched = bool(actionable and expiry and expiry != self.trade_duration)
             rows.append(
                 {
                     "asset": asset,
                     "timeframe": timeframe,
-                    "expiry": int(row.get("expiry") or 0),
+                    "expiry": expiry,
                     "label": f"{asset.replace(' OTC', '')} {short}".strip(),
+                    "needs": _compact_duration(expiry) if mismatched else "",
+                    "mismatched": mismatched,
                     "score": row.get("score"),
                     "direction": direction,
-                    "actionable": bool(row.get("actionable")),
+                    "actionable": actionable,
                     "color": (
-                        direction_color(direction)
-                        if row.get("actionable")
-                        else COLORS["faint"]
+                        direction_color(direction) if actionable else COLORS["faint"]
                     ),
                     "active": (
                         asset == self.asset and timeframe == self.chart_timeframe
@@ -806,11 +814,40 @@ class OverlayViewModel:
                 "This is demo data, not your chart. Press Scan to find the "
                 "chart on your screen.",
             )
+        # A call that needs a different expiry is a call the user cannot take
+        # as they are set up. Said before anything else, because acting on it
+        # unchanged is not "close enough" — it is a trade the engine never
+        # scored, at an expiry it may well have refused.
+        elsewhere = [
+            row for row in self._watchlist() if row.get("mismatched")
+        ]
+        if elsewhere:
+            wanted = sorted({int(row["expiry"]) for row in elsewhere})
+            names = ", ".join(format_duration(seconds) for seconds in wanted[:2])
+            warnings.insert(
+                0,
+                f"{len(elsewhere)} setup{'' if len(elsewhere) == 1 else 's'} "
+                f"elsewhere need a {names} expiry — you are set to "
+                f"{format_duration(self.trade_duration)}. Change it first, or "
+                "it is a different trade.",
+            )
         if self.signal.state is SignalState.WEAKENING:
             warnings.insert(0, "Setup is weakening — confidence has fallen since entry.")
         elif self.signal.state is SignalState.INVALIDATED:
             warnings.insert(0, "Setup invalidated — do not treat the last signal as live.")
         return warnings[:4]
+
+
+def _compact_duration(seconds: int) -> str:
+    """``600`` becomes ``10M`` — short enough to sit on a watchlist tab."""
+    seconds = int(seconds)
+    if seconds <= 0:
+        return ""
+    if seconds < 60:
+        return f"{seconds}S"
+    if seconds % 60:
+        return f"{seconds // 60}M{seconds % 60}S"
+    return f"{seconds // 60}M"
 
 
 def _direction_label(direction: Direction) -> str:
