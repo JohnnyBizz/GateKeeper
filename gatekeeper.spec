@@ -31,7 +31,14 @@ analysis = Analysis(
         ("config.example.yaml", "."),
         ("data/sample_eurusd_m1.csv", "data"),
     ] + tesseract_datas,
-    hiddenimports=collect_submodules("poa"),
+    # PIL.ImageTk is imported inside a function, so that a headless run never
+    # pays for it and an install without tkinter still starts. A bundler that
+    # trusts top-level imports would leave it out — which the overlay would
+    # discover on its very first repaint, as a crash on the user's machine and
+    # nowhere else. Named here so that cannot happen.
+    hiddenimports=(
+        collect_submodules("poa") + ["PIL.ImageTk", "PIL._tkinter_finder"]
+    ),
     hookspath=[],
     runtime_hooks=[],
     # Trim the parts of the scientific stack that are never imported; without

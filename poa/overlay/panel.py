@@ -37,6 +37,14 @@ INNER = PANEL_WIDTH - PAD * 2
 # accumulate one image per frame of every pulse.
 MAX_CACHED_IMAGES = 240
 
+# How finely the countdown ring is drawn. A thirty-pixel circle has nowhere to
+# put more than this, and each step is an image kept for the session.
+RING_STEPS = 24
+
+# Where the draggable header ends. Everything below it is content, and a press
+# there is a press rather than the start of a drag.
+HEADER_BOTTOM = PAD + 38
+
 
 class OverlayPanel:
     """A compact, draggable, frameless panel that floats above other windows."""
@@ -94,10 +102,17 @@ class OverlayPanel:
         self._drag_origin = (0, 0)
         self._window_origin = (0, 0)
         self._entries: dict[str, tk.Entry] = {}
+        # The canvas items holding those fields, created once and moved after.
+        self._entry_items: dict[str, int] = {}
         # Rendered images, kept alive: Tk holds only a weak claim on a
         # PhotoImage, so an unreferenced one is collected and the canvas draws
         # a blank where the picture was.
         self._images: dict[Any, Any] = {}
+        # Images that follow the data rather than a fixed set of appearances,
+        # each in a slot of its own so a new one replaces the last.
+        self._slots: dict[str, tuple[Any, Any]] = {}
+        # Whether the press that began this drag landed on the handle.
+        self._dragging = False
         self._height = 700
         # Where the pulse is in its cycle, and how far the eased values have
         # travelled toward their targets.
@@ -152,18 +167,22 @@ class OverlayPanel:
         self.c.bind("<Button-1>", self._drag_start)
         self.c.bind("<B1-Motion>", self._drag_move)
 
-        for key, width, commit in (
-            ("pair", 13, lambda text: self.on_asset(text)),
-            ("payout", 5, self._commit_payout),
-            ("balance", 9, self._commit_balance),
-            ("stake", 9, self._commit_stake),
+        for key, width, font, commit in (
+            ("pair", 13, self.f_pair, lambda text: self.on_asset(text)),
+            ("payout", 5, self.f_mono, self._commit_payout),
+            ("balance", 9, self.f_mono, self._commit_balance),
+            ("stake", 9, self.f_mono, self._commit_stake),
         ):
-            self._entries[key] = self._text_field(width=width, on_commit=commit)
+            self._entries[key] = self._text_field(
+                width=width, font=font, on_commit=commit
+            )
 
-    def _text_field(self, *, width: int, on_commit: Callable[[str], None]) -> tk.Entry:
+    def _text_field(
+        self, *, width: int, font: Any, on_commit: Callable[[str], None]
+    ) -> tk.Entry:
         """A themed Entry that commits on Enter or when focus leaves it."""
         entry = tk.Entry(
-            self.c, font=self.f_mono, width=width, justify="left",
+            self.c, font=font, width=width, justify="left",
             bg=COLORS["raised"], fg=COLORS["text"],
             insertbackground=COLORS["accent"], relief="flat",
             highlightthickness=1, highlightbackground=COLORS["line"],
@@ -210,11 +229,55 @@ class OverlayPanel:
             self._images[key] = found
         return found
 
+    def _photo_slot(self, slot: str, key: Any, build: Callable[[], Any]) -> Any:
+        """A cached image for something that follows the data.
+
+        One slot, replaced rather than added to. The sparkline's appearance
+        depends on the latest price, so caching it alongside the fixed shapes
+        would add an entry per tick and evict everything else within a minute.
+        """
+        held = self._slots.get(slot)
+        if held is None or held[0] != key:
+            from PIL import ImageTk
+
+            held = (key, ImageTk.PhotoImage(build()))
+            self._slots[slot] = held
+        return held[1]
+
     def _image(self, x: int, y: int, key: Any, build, *, tags: str = "") -> None:
         self.c.create_image(
             x, y, image=self._photo(key, build), anchor="nw",
             tags=tags or "frame",
         )
+
+    def _image_slot(self, x: int, y: int, slot: str, key: Any, build) -> None:
+        self.c.create_image(
+            x, y, image=self._photo_slot(slot, key, build), anchor="nw",
+            tags="frame",
+        )
+
+    def _place_entry(self, key: str, x: int, y: int, anchor: str = "w") -> None:
+        """Put a typing field on the canvas, once, and move it thereafter.
+
+        Deliberately untagged, so clearing the frame never takes it with it. A
+        canvas window item destroyed and remade on every repaint unmaps and
+        remaps its widget twelve times a second — which flickers, and takes the
+        cursor out of the field the moment anyone tries to type in it.
+        """
+        item = self._entry_items.get(key)
+        if item is None:
+            self._entry_items[key] = self.c.create_window(
+                x, y, window=self._entries[key], anchor=anchor
+            )
+            return
+        self.c.coords(item, x, y)
+        self.c.itemconfigure(item, state="normal", anchor=anchor)
+
+    def _hide_entry(self, key: str) -> None:
+        """Take a field off screen without destroying it."""
+        item = self._entry_items.get(key)
+        if item is not None:
+            self.c.itemconfigure(item, state="hidden")
 
     def _card(
         self, x: int, y: int, w: int, h: int, *, radius: int = 12,
@@ -256,6 +319,12 @@ class OverlayPanel:
 
         self.c.delete("frame")
         y = self._draw_header(data)
+        if self._collapsed:
+            # Parked out of the way. Everything below the header is drawn into
+            # a window 56 pixels tall, which is work nobody can see.
+            for key in self._entry_items:
+                self._hide_entry(key)
+            return
         y = self._draw_market(data, y)
         y = self._draw_watchlist(data, y)
         y = self._draw_signal(data, y)
@@ -305,11 +374,7 @@ class OverlayPanel:
         self._card(PAD, y, INNER, height, radius=14, fill=COLORS["raised"],
                    fill_to=COLORS["panel"], border=COLORS["line"])
 
-        self.c.create_window(
-            PAD + 12, y + 18, window=self._entries["pair"], anchor="w",
-            tags="frame",
-        )
-        self._entries["pair"].configure(font=self.f_pair, width=13)
+        self._place_entry("pair", PAD + 12, y + 18)
         self._set_entry(self._entries["pair"], tiles["pair"])
 
         self._text(PAD + 12, y + 40,
@@ -326,10 +391,9 @@ class OverlayPanel:
                        self.f_label, colour, "e")
 
             closes = chart["closes"][-140:]
-            key = ("spark", colour, len(closes),
-                   round(closes[0], 6), round(closes[-1], 6))
-            self._image(
-                PAD + 12, y + 52, key,
+            key = (colour, len(closes), round(closes[0], 6), round(closes[-1], 6))
+            self._image_slot(
+                PAD + 12, y + 52, "spark", key,
                 lambda: gfx.sparkline(INNER - 24, 44, closes, color=colour),
             )
         return y + height + 8
@@ -390,7 +454,7 @@ class OverlayPanel:
         # beside it, so neither has to share the middle.
         score = verdict["score"]
         shown = self._ease_score(score)
-        self._image(PAD + 16, y + 34, ("gauge", round(shown or -1, 1), colour),
+        self._image(PAD + 16, y + 34, ("gauge", int(shown if shown is not None else -1), colour),
                     lambda: gfx.arc_gauge(88, shown, color=colour,
                                           track="#1c2739", thickness=7))
         self._text(PAD + 60, y + 72, "--" if score is None else f"{score:.0f}",
@@ -438,7 +502,8 @@ class OverlayPanel:
             else colour if ready else COLORS["faint"]
         )
         left = max(0.0, min(1.0, 1.0 - entry["progress"]))
-        self._image(PAD + 24, y + 152, ("ring", round(left, 2), tone),
+        left = round(left * RING_STEPS) / RING_STEPS
+        self._image(PAD + 24, y + 152, ("ring", left, tone),
                     lambda: gfx.countdown_ring(30, left, color=tone,
                                                track="#1c2739", thickness=4))
         text_x = PAD + 64
@@ -482,9 +547,9 @@ class OverlayPanel:
                    border=COLORS["line"])
         self._text(PAD + 14, y + 13, f"LAST {len(bars)} CANDLES", self.f_label,
                    COLORS["faint"], "w")
-        key = ("candles", len(bars), round(bars[0][0], 6), round(bars[-1][3], 6))
-        self._image(
-            PAD + 14, y + 24, key,
+        key = (len(bars), round(bars[0][0], 6), round(bars[-1][3], 6))
+        self._image_slot(
+            PAD + 14, y + 24, "candles", key,
             lambda: gfx.candles(
                 INNER - 28, 58,
                 [gfx.Bar(*bar) for bar in bars],
@@ -599,6 +664,8 @@ class OverlayPanel:
         self._clickable("riskhead", self.on_toggle_risk)
         y += 22
         if collapsed:
+            for key in ("balance", "stake", "payout"):
+                self._hide_entry(key)
             return y
 
         for key, label, value in (
@@ -606,16 +673,12 @@ class OverlayPanel:
             ("stake", "Stake", f"{risk['stake']:.2f}"),
         ):
             self._text(PAD + 2, y + 11, label, self.f_small, COLORS["dim"], "w")
-            self.c.create_window(PANEL_WIDTH - PAD - 4, y + 11,
-                                 window=self._entries[key], anchor="e",
-                                 tags="frame")
+            self._place_entry(key, PANEL_WIDTH - PAD - 4, y + 11, "e")
             self._set_entry(self._entries[key], value)
             y += 24
 
         self._text(PAD + 2, y + 9, "Payout", self.f_small, COLORS["dim"], "w")
-        self.c.create_window(PANEL_WIDTH - PAD - 4, y + 9,
-                             window=self._entries["payout"], anchor="e",
-                             tags="frame")
+        self._place_entry("payout", PANEL_WIDTH - PAD - 4, y + 9, "e")
         self._set_entry(self._entries["payout"], data["tiles"]["payout"])
         y += 24
 
@@ -656,11 +719,22 @@ class OverlayPanel:
     # -- animation ----------------------------------------------------------
 
     PULSE_FRAMES = 24  # about two seconds at the overlay's repaint rate
+    # How many distinct frames a pulse is allowed. Quantised on purpose: every
+    # drawn shape is cached by appearance, so a continuously varying strength
+    # would mean a fresh supersampled render — and for the glowing card a
+    # fresh Gaussian blur — several times a second, to make a difference
+    # nobody can see. Eight steps is a smooth breath and eight cached images.
+    PULSE_STEPS = 8
+
+    def _pulse_step(self) -> int:
+        """Which frame of the pulse this repaint is on."""
+        half = self.PULSE_FRAMES / 2
+        raw = abs(half - (self._pulse % self.PULSE_FRAMES)) / half
+        return int(round(raw * self.PULSE_STEPS))
 
     def _pulse_phase(self) -> float:
         """0..1 and back again, so a pulse breathes rather than blinks."""
-        half = self.PULSE_FRAMES / 2
-        return abs(half - (self._pulse % self.PULSE_FRAMES)) / half
+        return self._pulse_step() / self.PULSE_STEPS
 
     def _pulse_toward(self, colour: str, target: str | None = None) -> str:
         return gfx.mix(colour, target or COLORS["text"], self._pulse_phase() * 0.55)
@@ -701,10 +775,16 @@ class OverlayPanel:
             pass
 
     def _drag_start(self, event) -> None:
+        # Only the header is a handle. Bound to the whole canvas, a press on
+        # SCAN followed by the smallest twitch dragged the window instead of
+        # pressing the button.
+        self._dragging = event.y <= HEADER_BOTTOM
         self._drag_origin = (event.x_root, event.y_root)
         self._window_origin = (self.root.winfo_x(), self.root.winfo_y())
 
     def _drag_move(self, event) -> None:
+        if not self._dragging:
+            return
         x = self._window_origin[0] + (event.x_root - self._drag_origin[0])
         y = self._window_origin[1] + (event.y_root - self._drag_origin[1])
         self.root.geometry(f"+{x}+{y}")

@@ -63,7 +63,19 @@ class _Widget:
 
     def create_window(self, x, y, **kw):
         return self._record("window", x=x, y=y, window=kw.get("window"),
-                            tags=str(kw.get("tags", "")))
+                            tags=str(kw.get("tags", "")), state="normal")
+
+    def _item(self, item_id):
+        for item in self.recorder.items:
+            if item["id"] == item_id:
+                return item
+        return {}
+
+    def coords(self, item_id, x, y):
+        self._item(item_id).update(x=x, y=y)
+
+    def itemconfigure(self, item_id, **kw):
+        self._item(item_id).update(kw)
 
     def delete(self, which):
         if which in ("all", None):
@@ -432,6 +444,191 @@ class TestDrawnImagesAreKeptAlive:
 
 class _FakeImage:
     size = (4, 4)
+
+
+class TestTheTypingFieldsSurviveARepaint:
+    """A canvas window item destroyed and remade on every repaint unmaps and
+    remaps its widget twelve times a second — which flickers, and takes the
+    cursor out of the field the moment anyone tries to type in it."""
+
+    def _windows(self, panel):
+        return [item for item in _drawn(panel) if item["kind"] == "window"]
+
+    def test_a_field_is_created_once_and_moved_after(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        created = len(self._windows(panel))
+        for _ in range(6):
+            panel.refresh()
+        assert len(self._windows(panel)) == created
+
+    def test_clearing_the_frame_does_not_take_them_with_it(self, panel_module):
+        """They are deliberately untagged."""
+        panel = _panel(panel_module)
+        panel.refresh()
+        panel.c.delete("frame")
+        assert self._windows(panel)
+
+    def test_a_folded_risk_block_hides_its_fields(self, panel_module):
+        """Hidden, not left floating over whatever is drawn beneath."""
+        panel = _panel(panel_module)
+        panel.vm.risk_collapsed = False
+        panel.refresh()
+        assert all(w["state"] == "normal" for w in self._windows(panel))
+
+        panel.vm.risk_collapsed = True
+        panel.refresh()
+        hidden = {
+            id(panel._entries[key]): w["state"]
+            for key in ("balance", "stake", "payout")
+            for w in self._windows(panel) if w["window"] is panel._entries[key]
+        }
+        assert hidden and set(hidden.values()) == {"hidden"}
+
+    def test_collapsing_the_panel_hides_every_field(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        panel.toggle_collapse()
+        panel.refresh()
+        assert all(w["state"] == "hidden" for w in self._windows(panel))
+
+    def test_the_pair_field_gets_the_headline_face(self, panel_module):
+        panel = _panel(panel_module)
+        assert panel._entries["pair"].cget("font") is panel.f_pair
+
+
+class TestOnlyTheHeaderDragsTheWindow:
+    """Bound to the whole canvas, a press on SCAN followed by the smallest
+    twitch dragged the window instead of pressing the button."""
+
+    class _Event:
+        def __init__(self, y):
+            self.y, self.x_root, self.y_root = y, 100, 100
+
+    def test_a_press_on_the_header_starts_a_drag(self, panel_module):
+        panel = _panel(panel_module)
+        panel._drag_start(self._Event(y=20))
+        assert panel._dragging is True
+
+    def test_a_press_on_the_body_does_not(self, panel_module):
+        panel = _panel(panel_module)
+        panel._drag_start(self._Event(y=400))
+        assert panel._dragging is False
+
+    def test_moving_after_a_body_press_leaves_the_window_alone(self, panel_module):
+        moved = []
+        panel = _panel(panel_module)
+        panel.root.geometry = lambda *a: moved.append(a)
+        panel._drag_start(self._Event(y=400))
+        panel._drag_move(self._Event(y=420))
+        assert moved == []
+
+
+class TestACollapsedPanelDrawsNothingBelowTheHeader:
+    def test_the_body_is_skipped(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        full = len(_drawn(panel))
+        panel.toggle_collapse()
+        panel.refresh()
+        assert len(_drawn(panel)) < full // 2
+
+    def test_the_header_is_still_there(self, panel_module):
+        panel = _panel(panel_module)
+        panel.toggle_collapse()
+        panel.refresh()
+        assert _find(panel, "GATEKEEPER")
+
+
+class TestTheImageCacheDoesNotThrash:
+    """Every drawn shape is cached by appearance. Keyed on a continuously
+    varying number, a single pulsing card would evict the whole cache several
+    times a minute and re-run a Gaussian blur to do it."""
+
+    def _live(self, panel_module):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        class _Live:
+            actionable = True
+            direction_confidence = 82.0
+            overall_confidence = 82.0
+            duration_confidence = 70.0
+            duration = None
+            mtf = None
+            score = None
+            price = 1.1
+            reason = ""
+            warnings: list = []
+            state = type("S", (), {"value": "ACTIVE"})()
+
+            @property
+            def direction(self):
+                from poa.models import Direction
+
+                return Direction.CALL
+
+        vm = OverlayViewModel()
+        vm.signal = _Live()
+        return _panel(panel_module, vm)
+
+    def test_a_smoother_pulse_does_not_cost_more_images(self, panel_module):
+        """The glowing card is the most expensive thing drawn — a blur over a
+        340px surface — so how many of it exist has to be a choice, not a
+        side effect of how many frames the breath is spread over."""
+        counts = []
+        for frames in (24, 96):
+            panel = self._live(panel_module)
+            panel.PULSE_FRAMES = frames
+            for _ in range(frames * 3):
+                panel.refresh()
+            counts.append(len([k for k in panel._images if k[0] == "card"]))
+        assert counts[1] == counts[0], f"{counts[0]} cards became {counts[1]}"
+
+    def test_the_countdown_ring_is_quantised(self, panel_module):
+        """Unquantised there is one image per second of the chart's timeframe,
+        so a five-minute chart alone would evict the whole cache."""
+        panel = self._live(panel_module)
+        panel.vm.chart_timeframe = 300
+        for step in range(300):
+            panel.vm._now = lambda step=step: 1_700_000_100.0 + step
+            panel.refresh()
+        rings = [key for key in panel._images if key[0] == "ring"]
+        # One image per step of the drain, times the handful of tones the
+        # pulse passes through while a bar is nearly gone.
+        ceiling = panel_module.RING_STEPS + panel.PULSE_STEPS * 2
+        assert len(rings) <= ceiling, f"{len(rings)} rings, ceiling {ceiling}"
+
+    def test_the_cache_never_passes_its_cap(self, panel_module):
+        panel = self._live(panel_module)
+        for step in range(400):
+            panel.vm._now = lambda step=step: 1_700_000_100.0 + step * 7
+            panel.refresh()
+        assert len(panel._images) <= panel_module.MAX_CACHED_IMAGES
+
+    def test_data_driven_images_replace_rather_than_accumulate(self, panel_module):
+        """The sparkline's look depends on the latest price, so caching it
+        beside the fixed shapes would add an entry per tick."""
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        panel = _panel(panel_module, vm)
+        start = datetime(2026, 8, 17, tzinfo=timezone.utc)
+        for tick in range(60):
+            price = 1.10 + tick * 0.0001
+            vm.recent = Series(
+                [
+                    Candle(start + timedelta(seconds=60 * i), price, price + 0.001,
+                           price - 0.001, price + i * 1e-5)
+                    for i in range(40)
+                ],
+                60, "EUR/USD OTC",
+            )
+            panel.refresh()
+        assert set(panel._slots) <= {"spark", "candles"}
+        assert not [key for key in panel._images if key[0] in ("spark", "candles")]
 
 
 class TestItIsReadableAcrossADesk:
