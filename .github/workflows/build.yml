@@ -138,6 +138,24 @@ jobs:
               `${(freed / 1e9).toFixed(2)} GB`
             );
 
+      # A zipped copy of each executable, to be published beside the bare one.
+      #
+      # Edge refused to download RecordFeed.exe outright — "couldn't download,
+      # virus detected" — and a refusal at the browser is not something anyone
+      # can click past: there is no file to allow, because none arrived. That
+      # check reads the executable as it comes down the wire; a zip is not an
+      # executable, so it arrives, and Windows then judges the file on
+      # extraction, where "keep anyway" is at least offered.
+      #
+      # Both forms are published rather than the zip alone: when the plain
+      # .exe does come through it is one click, and that is the better path
+      # for anyone whose machine is not refusing it.
+      - name: Zip the executables as well
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\GateKeeper.exe -DestinationPath dist\GateKeeper-windows.zip -Force
+          Compress-Archive -Path dist\RecordFeed.exe -DestinationPath dist\RecordFeed-windows.zip -Force
+
       # The download that actually has to work. Release assets are stored
       # separately from Actions artifacts, so a full artifact allowance — or
       # the six-to-twelve hours GitHub takes to notice one has been emptied —
@@ -152,8 +170,14 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest \
             dist/GateKeeper.exe dist/RecordFeed.exe \
+            dist/GateKeeper-windows.zip dist/RecordFeed-windows.zip \
             --title "GateKeeper — latest build" \
-            --notes "Built from ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC')." \
+            --notes "$(printf '%s\n' \
+              "Built from ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC')." \
+              "" \
+              "**If the browser refuses the .exe** (\"couldn't download - virus detected\"), take the .zip beside it instead and extract it. These builds are not code-signed, so a brand-new unsigned executable is judged on reputation it has not had time to earn." \
+              "" \
+              "GateKeeper can record a chart on its own — the RECORD button on the panel — so RecordFeed.exe is only needed if you would rather run it separately.")" \
             --prerelease
 
       # Kept as a second copy, and no longer able to fail the build: the

@@ -64,6 +64,7 @@ class OverlayPanel:
         on_toggle_risk: Callable[[], None] | None = None,
         on_toggle_details: Callable[[], None] | None = None,
         on_payout: Callable[[float], None] | None = None,
+        on_record: Callable[[], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
     ) -> None:
@@ -79,6 +80,7 @@ class OverlayPanel:
         self.on_toggle_risk = on_toggle_risk or (lambda: None)
         self.on_toggle_details = on_toggle_details or (lambda: None)
         self.on_payout = on_payout or (lambda p: None)
+        self.on_record = on_record or (lambda: None)
 
         self.root = tk.Tk()
         self.root.title("GateKeeper")
@@ -331,6 +333,7 @@ class OverlayPanel:
         y = self._draw_trend(data, y)
         y = self._draw_chart(data, y)
         y = self._draw_actions(data, y)
+        y = self._draw_record(data, y)
         y = self._draw_session(data, y)
         y = self._draw_details(data, y)
         y = self._draw_risk(data, y)
@@ -585,6 +588,45 @@ class OverlayPanel:
                    COLORS["dim"], "center", tags="frame reset")
         self._clickable("reset", self.on_reset)
         return y + 38 + 8
+
+    def _draw_record(self, data: dict[str, Any], y: int) -> int:
+        """Capture the live feed to a file, without a second download.
+
+        Slim on purpose: it is not part of trading and must not compete with
+        the verdict for attention. It is here rather than buried in settings
+        because the recording is what the engine gets measured against, and a
+        capability nobody can find is one nobody uses.
+        """
+        rec = data["recording"]
+        colour = rec["color"]
+        self._card(PAD, y, INNER, 26, radius=9, fill=COLORS["panel"],
+                   border=COLORS["line"], tags="frame record")
+
+        if rec["active"]:
+            # The bar sits under the label rather than beside it: at this
+            # height there is no room for both, and a half-hour wait wants to
+            # show how far along it is more than it wants to be pretty.
+            self._image_slot(
+                PAD + 2, y + 20, "recbar", ("recbar", rec["progress"]),
+                lambda: gfx.bar_meter(INNER - 4, 3, rec["progress"], color=colour),
+            )
+            self._image(PAD + 10, y + 9, ("dot", colour),
+                        lambda: gfx.pill(7, 7, color=colour, opacity=255),
+                        tags="frame record")
+            self._text(PAD + 24, y + 12, rec["label"], self.f_caption, colour, "w",
+                       tags="frame record")
+            self._text(PANEL_WIDTH - PAD - 8, y + 12, f"{rec['frames']:,}",
+                       self.f_label, COLORS["faint"], "e", tags="frame record")
+        else:
+            self._text(PANEL_WIDTH // 2, y + 13, rec["label"], self.f_caption,
+                       colour, "center", tags="frame record")
+        self._clickable("record", self.on_record)
+        y += 26 + 4
+
+        if rec["message"]:
+            y = self._wrapped(PAD + 2, y, rec["message"], COLORS["faint"])
+            y += 2
+        return y + 4
 
     def _draw_session(self, data: dict[str, Any], y: int) -> int:
         session, risk = data["session"], data["risk"]

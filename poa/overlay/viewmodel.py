@@ -143,6 +143,87 @@ class ScanController:
 
 
 @dataclass
+class RecordingState:
+    """A capture of the live feed, as the panel needs to see it.
+
+    Written by the recording thread and read by the UI thread. Every field is
+    a number or a string, assigned whole, so there is nothing here that can be
+    read half-updated — which is what lets the two threads share it without a
+    lock around every repaint.
+    """
+
+    active: bool = False
+    elapsed: float = 0.0
+    total: float = 0.0
+    frames: int = 0
+    #: A finished bundle the user has not opened yet. Cleared once they have,
+    #: so the button goes back to offering another recording — a session is
+    #: worth more as two captures of different markets than as one, and a
+    #: button that permanently reads "TAP TO OPEN" can never take the second.
+    bundle: str = ""
+    #: The last file produced, kept after the button has gone back to idle.
+    last_bundle: str = ""
+    #: Why it could not be taken, if it could not.
+    error: str = ""
+    #: A line for the panel: what it is doing, or what it produced.
+    message: str = ""
+    #: When the run began, on the monotonic clock. The recording thread only
+    #: reports progress as frames arrive, so a socket that has gone quiet
+    #: would leave the countdown frozen at half an hour — which reads as a
+    #: hung app during exactly the wait it exists to make bearable. The clock
+    #: is the truth about how long is left; the frame count is not.
+    started_at: float | None = None
+    _clock: Any = field(default=time.monotonic, repr=False)
+
+    def since_start(self) -> float:
+        """How long this has been running, by the clock rather than by luck."""
+        if self.active and self.started_at is not None:
+            return max(0.0, self._clock() - self.started_at)
+        return self.elapsed
+
+    def progress(self) -> float:
+        """0..1 through the recording."""
+        if not self.total:
+            return 0.0
+        return max(0.0, min(1.0, self.since_start() / self.total))
+
+    def remaining(self) -> float:
+        return max(0.0, self.total - self.since_start())
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.active:
+            left = self.remaining()
+            label = (
+                f"RECORDING — {left / 60:.0f} MIN LEFT"
+                if left >= 60
+                else f"RECORDING — {left:.0f}s LEFT"
+            )
+            colour = COLORS["put"]
+        elif self.error:
+            label = "RECORD FAILED — TAP TO RETRY"
+            colour = COLORS["wait"]
+        elif self.bundle:
+            label = "RECORDING SAVED — TAP TO OPEN"
+            colour = COLORS["call"]
+        else:
+            label = "RECORD 30 MIN FOR ANALYSIS"
+            colour = COLORS["accent"]
+        return {
+            "active": self.active,
+            "progress": round(self.progress(), 3),
+            "frames": self.frames,
+            "elapsed": round(self.since_start(), 1),
+            "remaining": round(self.remaining(), 1),
+            "label": label,
+            "color": colour,
+            "bundle": self.bundle,
+            "last_bundle": self.last_bundle,
+            "error": self.error,
+            "message": self.message,
+        }
+
+
+@dataclass
 class OverlayViewModel:
     """Everything the panel renders, as plain data."""
 
@@ -201,6 +282,10 @@ class OverlayViewModel:
     # shape of the last half hour is what lets anyone judge whether the claim
     # is plausible. Typed loosely to keep this layer free of the models too.
     recent: Any = None
+    # A recording of the live feed, running or just finished. Held as plain
+    # numbers rather than as a thread handle, so the panel can be drawn from
+    # it and the whole of it tested without a browser.
+    recording: RecordingState = field(default_factory=RecordingState)
     # Injected so the countdown can be tested without waiting for a minute.
     _now: Any = field(default=time.time, repr=False)
 
@@ -318,6 +403,7 @@ class OverlayViewModel:
                 "collapsed": self.risk_collapsed,
             },
             "entry": self._entry(scanning, signal),
+            "recording": self.recording.to_dict(),
             "chart": self._chart(scanning),
             "details": self._details(),
             "watchlist": self._watchlist(),
@@ -808,6 +894,17 @@ class OverlayViewModel:
         if self.scan.scanning or self.signal is None:
             return []
         warnings = list(self.signal.warnings)
+        # The reason line above already carries the engine's explanation, and
+        # when a signal is refused for want of data the engine builds that
+        # line *out of these very issues* — so the panel said "16 candles so
+        # far; 60 are needed for a full read" as prose and then said it again
+        # underneath with a warning triangle in front of it. Twice is not
+        # twice as clear, and the second copy pushes anything genuinely new
+        # off the bottom: only four warnings are ever shown.
+        reason = self._reason()
+        warnings = [
+            line for line in warnings if line and str(line).strip() not in reason
+        ]
         if self.source == "synthetic":
             warnings.insert(
                 0,

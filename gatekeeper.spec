@@ -75,9 +75,16 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Deliberately off. Compressing the executable saves a few megabytes on a
+    # file that is downloaded once, and costs the download itself: a binary
+    # that has to unpack itself in memory before it runs is the classic shape
+    # of something hiding what it does, and browsers and antivirus refuse it
+    # on that shape alone. RecordFeed.exe was refused outright.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
+    # A name, a publisher and a version, so this is not an anonymous binary.
+    version="packaging/gatekeeper_version.txt",
     # No console window: this is a desktop app, not a script.
     console=False,
     disable_windowed_traceback=False,

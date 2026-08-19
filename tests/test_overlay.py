@@ -2796,3 +2796,85 @@ class TestThePayoutComesFromThePlatform:
             assert app.vm.payout == 0.92
         finally:
             app.shutdown()
+
+
+class TestThePanelSaysAThingOnce:
+    """A message repeated is not a message twice as clear.
+
+    While the chart was still filling, the panel read:
+
+        Insufficient chart data. 16 candles so far; 60 are needed for a full
+        read. Loading history from the platform…
+        ⚠ 16 candles so far; 60 are needed for a full read. Loading history
+        from the platform…
+
+    The engine builds the reason line *out of* the quality issues and then
+    hands the same issues over as warnings, so the second copy was guaranteed
+    rather than unlucky — and only four warnings are ever shown, so it also
+    pushed anything genuinely new off the bottom of the panel.
+    """
+
+    def _vm(self, issues):
+        from poa.chart_detection.quality import DataQuality
+        from poa.signals import GateSettings, SignalEngine, SignalRequest
+
+        series = choppy_series(120)
+        signal = SignalEngine().evaluate(
+            SignalRequest(
+                series=series,
+                asset="EUR/USD",
+                chart_timeframe=60,
+                trade_duration=180,
+                quality=DataQuality(
+                    ok=False,
+                    confidence=30.0,
+                    candle_count=16,
+                    issues=list(issues),
+                    source="feed",
+                ),
+                settings=GateSettings(),
+            )
+        )
+        vm = OverlayViewModel(signal=signal, source="feed", connected=True)
+        vm.scan.state = ScanState.REVEALED
+        return vm
+
+    ISSUE = (
+        "16 candles so far; 60 are needed for a full read. "
+        "Loading history from the platform…"
+    )
+
+    def test_a_warning_already_in_the_reason_is_not_repeated(self):
+        data = self._vm([self.ISSUE]).render()
+
+        assert self.ISSUE in data["reason"]
+        assert data["warnings"] == []
+
+    def _wearing(self, reason, warnings):
+        """A real evaluated signal, wearing a given reason and warnings."""
+        signal = make_signal(pullback_trend(240))
+        signal.reason = reason
+        signal.warnings = list(warnings)
+        vm = OverlayViewModel(signal=signal, source="feed", connected=True)
+        vm.scan.state = ScanState.REVEALED
+        return vm.render()
+
+    def test_a_warning_the_reason_does_not_carry_still_shows(self):
+        """The filter must take out the duplicate, not the warnings."""
+        other = "Timeframe could not be read from the chart."
+        data = self._wearing(
+            reason=f"Insufficient chart data. {self.ISSUE}",
+            warnings=[self.ISSUE, other],
+        )
+
+        assert data["warnings"] == [other]
+
+    def test_the_room_it_frees_goes_to_something_new(self):
+        """Only four warnings are ever shown, so a duplicate costs a real one."""
+        extras = [f"Warning number {n}." for n in range(4)]
+        data = self._wearing(
+            reason=f"Insufficient chart data. {self.ISSUE}",
+            warnings=[self.ISSUE] + extras,
+        )
+
+        assert data["warnings"] == extras

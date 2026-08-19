@@ -681,3 +681,58 @@ class TestItIsReadableAcrossADesk:
         text, dim, faint = (luminance(COLORS[k]) for k in ("text", "dim", "faint"))
         assert text > dim > faint
         assert text - dim > 20 and dim - faint > 20
+
+
+class TestTheRecordButton:
+    """One control, four things to say, and a click that means each of them."""
+
+    def test_it_is_drawn_and_it_answers(self, panel_module):
+        pressed: list[int] = []
+        panel = _panel(panel_module, on_record=lambda: pressed.append(1))
+        panel.refresh()
+
+        assert _find(panel, "RECORD 30 MIN FOR ANALYSIS")
+        _click(panel, "record")
+        assert pressed == [1]
+
+    def test_a_running_capture_shows_how_long_is_left(self, panel_module):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.recording.active = True
+        vm.recording.total = 1800.0
+        vm.recording.elapsed = 600.0
+        vm.recording.frames = 4210
+        panel = _panel(panel_module, vm=vm)
+        panel.refresh()
+
+        # Twenty minutes of nothing on screen is indistinguishable from a
+        # hung app, which is the state this button is most likely to be in.
+        assert _find(panel, "RECORDING — 20 MIN LEFT")
+        assert _find(panel, "4,210")
+
+    def test_a_finished_one_names_the_file_to_send(self, panel_module):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.recording.bundle = "/tmp/gatekeeper-recording-2026-08-19-1100.zip"
+        vm.recording.message = "gatekeeper-recording-2026-08-19-1100.zip — 6 charts."
+        panel = _panel(panel_module, vm=vm)
+        panel.refresh()
+
+        assert _find(panel, "RECORDING SAVED — TAP TO OPEN")
+        assert _find(panel, "gatekeeper-recording-2026-08-19-1100.zip")
+
+    def test_it_never_covers_the_verdict(self, panel_module):
+        """It is not part of trading and must not compete with what is."""
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.recording.active = True
+        vm.recording.total = 1800.0
+        panel = _panel(panel_module, vm=vm)
+        panel.refresh()
+
+        record = _find(panel, "RECORDING —")[0]
+        scan = _find(panel, "SCAN")[0]
+        assert record["y"] > scan["y"]

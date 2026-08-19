@@ -1118,8 +1118,33 @@ from losers"* against generated data cannot answer the question either way —
 and measuring it there and reporting the answer would be worse than not
 measuring at all.
 
-`RecordFeed` already writes the platform's own frames to disk with the secrets
-stripped. Those can now be read back:
+### Taking a recording
+
+Press **RECORD 30 MIN FOR ANALYSIS** on the panel. GateKeeper is already
+attached to the browser the platform runs in, so it listens to the same socket
+it reads prices from, streams the frames to disk, and at the end writes one
+file:
+
+    <data folder>/storage/gatekeeper-recording-<date>-<time>.zip
+
+That zip holds the candles — every timeframe the tool would have had at the
+time — and a summary of what the platform sent. The raw frames stay behind:
+they are tens of megabytes of heartbeats and acknowledgements, and nothing is
+measured on them. The button opens the folder when it is finished.
+
+Nothing is sent to the platform and no trade is placed. Passwords, session
+tokens and balances are stripped before anything reaches disk.
+
+Recording is in the app on purpose. It used to mean downloading a second
+executable, `RecordFeed.exe`, and Windows refuses that download outright —
+*"couldn't download, virus detected"* — which is a refusal nobody can click
+past, because no file ever arrives. `RecordFeed.exe` is still published, for
+running a capture without the app; see BUILD.md.
+
+### Reading one back
+
+Both the button and `RecordFeed` write the platform's own frames to disk with
+the secrets stripped. Those can be read back:
 
 ```bash
 python tools/backtest.py --recording feed.jsonl --list-charts

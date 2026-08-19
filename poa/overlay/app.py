@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable
@@ -185,6 +186,9 @@ class OverlayApp:
         self._scan_results: queue.Queue[Any] = queue.Queue()
         self._scan_busy = False
         self._scan_done: Callable[[str], None] | None = None
+        # The recording thread, when one is running. Daemon, so a capture
+        # left going never keeps the app from closing.
+        self._recording_thread: threading.Thread | None = None
         # Guards the move-and-rescan from looping when there is nowhere clear.
         self._moved_for_scan = False
 
@@ -932,6 +936,123 @@ class OverlayApp:
         """Fold the evidence block away, and remember that across restarts."""
         self.vm.details_collapsed = not self.vm.details_collapsed
         self._remember_fold("overlay.details_collapsed", self.vm.details_collapsed)
+
+    # -- recording ----------------------------------------------------------
+
+    def _toggle_recording(self) -> None:
+        """The RECORD button. Starts a capture, or opens the last one.
+
+        Recording used to mean downloading a second executable, and Windows
+        refuses that download outright — "RecordFeed.exe, virus detected" —
+        which is not something anyone can click past, because no file ever
+        arrives. GateKeeper is already on the machine and already attached to
+        the browser a recording has to be taken from, so it takes it.
+        """
+        state = self.vm.recording
+        if state.active:
+            # Deliberately not a stop button. A half-finished capture is worth
+            # far less than a finished one, and the urge to end it early is
+            # strongest at exactly the wrong moment. The run has a deadline.
+            return
+        if state.bundle:
+            self._reveal(Path(state.bundle).parent)
+            # Handed over, so the button goes back to offering another. Two
+            # captures of different markets are worth more than one long
+            # capture of the same one, and a button permanently reading "TAP
+            # TO OPEN" could never take the second.
+            state.last_bundle = state.bundle
+            state.bundle = ""
+            state.message = f"Last saved: {Path(state.last_bundle).name}"
+            return
+        self._start_recording()
+
+    def _start_recording(self, minutes: float | None = None) -> None:
+        """Capture the live feed for a while, on a thread of its own."""
+        from ..feed.session_recording import DEFAULT_MINUTES
+
+        state = self.vm.recording
+        if state.active:
+            return
+        seconds = float(minutes if minutes is not None else DEFAULT_MINUTES) * 60.0
+        state.elapsed = 0.0
+        state.total = seconds
+        state.frames = 0
+        state.bundle = ""
+        state.error = ""
+        state.message = "Starting — leave the chart open on the platform."
+        # The clock before the flag: the countdown reads from ``started_at``
+        # the moment ``active`` is true, and a repaint landing between the two
+        # would show half an hour already gone.
+        state.started_at = time.monotonic()
+        state.active = True
+
+        self._recording_thread = threading.Thread(
+            target=self._recording_worker,
+            args=(seconds,),
+            name="gatekeeper-recording",
+            daemon=True,
+        )
+        self._recording_thread.start()
+
+    def _recording_worker(self, seconds: float) -> None:
+        """Off the UI thread. Writes numbers the panel reads, and nothing else."""
+        from ..feed.session_recording import record_session
+
+        state = self.vm.recording
+        port = int(self.config.get("capture.debug_port", 9222))
+        storage = data_root() / "storage"
+
+        def progress(elapsed: float, left: float, frames: int) -> None:
+            state.elapsed = elapsed
+            state.frames = frames
+            state.message = f"{frames:,} frames captured."
+
+        try:
+            result = record_session(
+                port, seconds, storage, on_progress=progress, progress_every=2.0
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.exception("recording failed: %s", exc)
+            state.error = str(exc)
+            state.message = f"Recording failed: {exc}"
+            state.started_at = None
+            state.active = False
+            return
+
+        state.elapsed = seconds
+        state.started_at = None
+        state.frames = result.frames
+        if result.error and result.frames == 0:
+            state.error = result.error
+            state.message = result.error
+        elif result.bundle is not None:
+            state.bundle = state.last_bundle = str(result.bundle)
+            charts = len(result.candles)
+            state.message = (
+                f"{Path(result.bundle).name} — {charts} chart"
+                f"{'' if charts == 1 else 's'}, {result.frames:,} frames."
+            )
+            log.info("recording saved to %s", result.bundle)
+        else:
+            state.error = result.error or "No chart had enough candles to export."
+            state.message = state.error
+        state.active = False
+
+    def _reveal(self, path: Path) -> None:
+        """Show a produced file in the desktop's own file browser."""
+        import os
+        import subprocess
+        import sys
+
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:  # pragma: no cover - best effort
+            log.debug("could not open %s: %s", path, exc)
 
     def _remember_fold(self, key: str, collapsed: bool) -> None:
         self.config.set(key, collapsed)
@@ -1780,6 +1901,7 @@ class OverlayApp:
             on_toggle_risk=self._toggle_risk,
             on_toggle_details=self._toggle_details,
             on_payout=self.set_payout,
+            on_record=self._toggle_recording,
             position=(
                 int(self.config.get("overlay.x", 40)),
                 int(self.config.get("overlay.y", 80)),

@@ -1,6 +1,11 @@
-# PyInstaller spec for the feed recorder — a small console tool, separate from
-# the main app on purpose. It runs once, prints what the platform's socket is
-# sending, and is thrown away as soon as that format is known.
+# PyInstaller spec for the feed recorder — a small console tool that records
+# what the platform's socket is sending.
+#
+# GateKeeper itself does this now, from the RECORD button on the panel, using
+# the browser it is already attached to. That is the path that matters: this
+# executable is the one Windows refused to download, and a capability behind a
+# refused download is a capability nobody has. What is left here is the
+# scriptable way in — a capture without the app, or with flags.
 
 from PyInstaller.utils.hooks import collect_submodules
 
@@ -38,9 +43,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # Off on purpose — see gatekeeper.spec. A self-unpacking executable is the
+    # shape a download check refuses, and this is the file that was refused:
+    # "RecordFeed.exe — couldn't download, virus detected".
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
+    # A name, a publisher and a version, so this is not an anonymous binary.
+    version="packaging/recordfeed_version.txt",
     # A console, deliberately: the whole output of this tool is text to read.
     console=True,
     disable_windowed_traceback=False,
