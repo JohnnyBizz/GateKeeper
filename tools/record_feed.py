@@ -158,7 +158,12 @@ def main() -> int:
         # wastes somebody's afternoon.
         print("What this length will produce, per timeframe:\n")
         print(coverage(args.seconds))
-        print()
+        print(
+            "\nSwitch your chart's timeframe once while this runs "
+            "(1 MIN → 5 MIN → back).\nThe platform sends its candle history "
+            "when a timeframe changes, and that\nhistory is the only way a "
+            "recording gets charts above a minute.\n"
+        )
     else:
         print(f"\nRecording for {args.seconds:.0f} seconds. Leave the chart open.\n")
 
@@ -213,6 +218,9 @@ def main() -> int:
         print(f"\n{len(result.candles)} chart(s) written to {folder}  ({total:.1f} MB)")
         for path in sorted(result.candles):
             print(f"   {path.name}")
+        shortfall = result.shortfall()
+        if shortfall:
+            print(f"\n  ! {shortfall}")
     else:
         print(
             "\nNo chart had enough candles to export. A longer recording,"

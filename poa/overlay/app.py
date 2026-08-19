@@ -979,7 +979,15 @@ class OverlayApp:
         state.frames = 0
         state.bundle = ""
         state.error = ""
-        state.message = "Starting — leave the chart open on the platform."
+        # Said before the wait, not after it. A half hour of ticks gives the
+        # second charts and nothing longer, because thirty M1 bars is not a
+        # chart — and the platform hands over its history when a timeframe
+        # changes, which is one click and unguessable.
+        state.message = (
+            "Leave the chart open. Switch its timeframe once while this runs "
+            "(1 MIN → 5 MIN → back) — that makes the platform send its "
+            "history, which is the only way this gets charts above a minute."
+        )
         # The clock before the flag: the countdown reads from ``started_at``
         # the moment ``active`` is true, and a repaint landing between the two
         # would show half an hour already gone.
@@ -1032,6 +1040,9 @@ class OverlayApp:
                 f"{Path(result.bundle).name} — {charts} chart"
                 f"{'' if charts == 1 else 's'}, {result.frames:,} frames."
             )
+            shortfall = result.shortfall()
+            if shortfall:
+                state.message += " " + shortfall
             log.info("recording saved to %s", result.bundle)
         else:
             state.error = result.error or "No chart had enough candles to export."

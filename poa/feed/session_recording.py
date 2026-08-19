@@ -62,6 +62,12 @@ class Recording:
     sockets: list[str] = field(default_factory=list)
     report: str = ""
     sample_bytes: int = 0
+    #: Which chart lengths the recording could actually produce, in seconds.
+    timeframes: list[int] = field(default_factory=list)
+    #: Whether the platform handed over its candle history during the run.
+    #: Without it a recording only holds what arrived live, which for a half
+    #: hour means sub-minute charts and nothing else.
+    history_seen: bool = False
     #: Set when the run could not be taken at all — no debuggable browser, no
     #: platform tab. The caller says so; nothing was written.
     error: str | None = None
@@ -72,6 +78,30 @@ class Recording:
     def sendable(self) -> Path | None:
         """The one file worth attaching, if there is one."""
         return self.bundle
+
+    def shortfall(self) -> str:
+        """What this recording cannot answer, and what would fix it.
+
+        A half-hour capture reliably produces the second charts, because ticks
+        arrive continuously. It produces nothing at a minute or longer unless
+        the platform hands over its history — thirty minutes is thirty M1
+        bars, and sixty are needed before a chart can be read at all.
+
+        The platform sends that history when a chart's timeframe changes. So
+        the fix is one click, and worth knowing about before the wait rather
+        than after it.
+        """
+        if not self.candles:
+            return ""
+        if max(self.timeframes, default=0) >= 60:
+            return ""
+        return (
+            "Sub-minute charts only — the platform never sent its candle "
+            "history, so there is nothing here at 1 MIN or longer. Next time, "
+            "switch your chart's timeframe once while the recording runs "
+            "(1 MIN → 5 MIN → back). That is what makes it hand the history "
+            "over."
+        )
 
 
 def coverage(seconds: float) -> str:
@@ -186,6 +216,13 @@ def record_session(
 
     if capture is not None:
         result.sockets = list(capture.sockets)
+        # The event that carries the platform's own candle history. Whether it
+        # arrived decides whether this recording holds anything above a
+        # minute, so it is worth knowing rather than inferring from what came
+        # out at the end.
+        result.history_seen = any(
+            "loadHistoryPeriodFast" in name for name in capture.summary.by_event
+        )
         lines = ["SOCKETS", "-" * 70]
         lines.extend(f"  {url}" for url in capture.sockets)
         lines += ["", "WHAT CAME THROUGH", "-" * 70, capture.summary.render()]
@@ -207,6 +244,7 @@ def record_session(
     folder = storage / "candles"
     try:
         charts = charts_from_recording(sample)
+        result.timeframes = sorted({timeframe for _, timeframe, _ in charts})
         result.candles = export_candles(charts, folder)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("could not build candles: %s", exc)

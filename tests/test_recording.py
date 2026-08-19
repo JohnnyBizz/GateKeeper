@@ -373,3 +373,131 @@ class TestASessionCanTakeMoreThanOneRecording:
             assert started == [1]
         finally:
             app.shutdown()
+
+
+class TestARecordingSaysWhatItCouldNotCapture:
+    """Thirty minutes of ticks is not thirty minutes of every chart.
+
+    The first real recording came back with 5s, 10s, 15s and 30s charts and
+    nothing above them — because the platform never sent its candle history,
+    and half an hour of live M1 is thirty bars where sixty are needed. The
+    file that came out could not answer anything about the timeframe actually
+    being traded, and said so nowhere.
+    """
+
+    def _result(self, timeframes, candles=("a.csv",)):
+        return rec.Recording(
+            frames=100,
+            candles=[Path(name) for name in candles],
+            timeframes=list(timeframes),
+        )
+
+    def test_sub_minute_only_says_so_and_says_what_to_do(self):
+        note = self._result([5, 10, 15, 30]).shortfall()
+
+        assert "Sub-minute charts only" in note
+        # The fix is one click and nobody would guess it.
+        assert "switch your chart's timeframe" in note.lower()
+
+    def test_a_recording_that_reached_a_minute_says_nothing(self):
+        assert self._result([5, 15, 60, 300]).shortfall() == ""
+
+    def test_nor_does_one_that_produced_no_charts_at_all(self):
+        """That is a different failure, already reported in its own words."""
+        assert self._result([], candles=()).shortfall() == ""
+
+    def test_whether_the_history_arrived_is_recorded(self, monkeypatch, tmp_path):
+        frames = _frames(3) + [
+            decode_frame('42["loadHistoryPeriodFast",{"asset":"EURUSD_otc"}]')
+        ]
+        monkeypatch.setattr(rec, "record_platform", _fake_platform(frames))
+        assert rec.record_session(9222, 1800.0, tmp_path).history_seen
+
+        monkeypatch.setattr(rec, "record_platform", _fake_platform(_frames(3)))
+        assert not rec.record_session(9222, 1800.0, tmp_path).history_seen
+
+    def test_the_panel_repeats_it_when_the_recording_ends(
+        self, monkeypatch, tmp_path
+    ):
+        landed = tmp_path / "gatekeeper-recording-now.zip"
+        landed.write_bytes(b"PK")
+
+        def fake_session(port, seconds, storage, **kwargs):
+            return rec.Recording(
+                frames=9, bundle=landed, candles=[Path("a.csv")], timeframes=[5, 30]
+            )
+
+        monkeypatch.setattr(rec, "record_session", fake_session)
+        app = TestTheRecordButton()._app(tmp_path, monkeypatch)
+        try:
+            app._start_recording(minutes=30)
+            app._recording_thread.join(timeout=5)
+            assert "Sub-minute charts only" in app.vm.recording.message
+        finally:
+            app.shutdown()
+
+    def test_the_advice_is_given_before_the_wait_as_well(self, monkeypatch, tmp_path):
+        """Learning it afterwards costs another half hour."""
+        from poa.overlay import app as app_module
+
+        app = TestTheRecordButton()._app(tmp_path, monkeypatch)
+        try:
+            # The worker would overwrite the opening message within a tick,
+            # and the opening message is the thing under test.
+            class _Idle:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def start(self):
+                    pass
+
+            monkeypatch.setattr(app_module.threading, "Thread", _Idle)
+            app._start_recording(minutes=30)
+
+            message = app.vm.render()["recording"]["message"]
+            assert "Switch its timeframe once" in message
+            assert "1 MIN" in message
+        finally:
+            app.shutdown()
+
+
+class TestTheSummaryHidesNoEvent:
+    """A protocol summary that drops the rare events drops the point.
+
+    Ticks arrive fourteen thousand times and say nothing new; the history
+    block arrives twice. Ranking by frequency and cutting at twenty-five put
+    the cut in the middle of a run of four-count events, so "did the history
+    ever arrive" could not be answered from the file written to answer it.
+    """
+
+    def _summary(self, names):
+        from poa.feed.frames import Frame, Summary
+
+        summary = Summary()
+        for name, count in names.items():
+            for _ in range(count):
+                summary.add(
+                    Frame(direction="in", opcode=1, kind="json",
+                          event=name, payload={"x": 1})
+                )
+        return summary
+
+    def test_a_rare_event_is_still_listed(self):
+        names = {f"chatter{n}": 100 for n in range(30)}
+        names["loadHistoryPeriodFast"] = 2
+        text = self._summary(names).render()
+
+        assert "loadHistoryPeriodFast" in text
+
+    def test_and_the_reader_is_told_which_lack_an_example(self):
+        names = {f"chatter{n}": 100 for n in range(30)}
+        names["loadHistoryPeriodFast"] = 2
+        text = self._summary(names).render(max_events=25)
+
+        assert "6 rarer events listed above without one" in text
+
+    def test_a_short_list_reads_as_it_always_did(self):
+        text = self._summary({"updateStream": 9, "ping": 2}).render()
+
+        assert "One example of each" in text
+        assert "rarer event" not in text

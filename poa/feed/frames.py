@@ -251,10 +251,23 @@ class Summary:
         lines.append("")
         lines.append("Events, most frequent first:")
         ranked = sorted(self.by_event.items(), key=lambda kv: -kv[1])
-        for name, count in ranked[:max_events]:
+        # Every name, however rare. A summary exists to say what the platform
+        # sends, and the rare events are the ones worth knowing about: price
+        # ticks arrive fourteen thousand times and say nothing new, while the
+        # history block that seeds a chart arrives twice. Cutting the list at
+        # the twenty-five most frequent cut it in the middle of a run of
+        # four-count events — so "did the history ever arrive" was
+        # unanswerable from the file written to answer it.
+        for name, count in ranked:
             lines.append(f"  {count:6d}  {name}")
         lines.append("")
-        lines.append("One example of each (secrets already removed):")
+        # The examples are the long part, so those stay capped.
+        hidden = max(0, len(ranked) - max_events)
+        lines.append(
+            "One example of each (secrets already removed):" if not hidden else
+            f"One example of the {max_events} most frequent ({hidden} rarer "
+            f"event{'' if hidden == 1 else 's'} listed above without one):"
+        )
         for name, _count in ranked[:max_events]:
             sample = self.samples.get(name)
             if sample is None:
