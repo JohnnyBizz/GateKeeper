@@ -979,14 +979,15 @@ class OverlayApp:
         state.frames = 0
         state.bundle = ""
         state.error = ""
-        # Said before the wait, not after it. A half hour of ticks gives the
-        # second charts and nothing longer, because thirty M1 bars is not a
-        # chart — and the platform hands over its history when a timeframe
-        # changes, which is one click and unguessable.
+        # The one thing that actually has to happen, and nothing else. This
+        # briefly told the user to switch timeframes to shake the platform's
+        # history loose, on a diagnosis that turned out to be wrong — the
+        # history was arriving and being dropped on the way back in. Asking
+        # somebody to work around a bug is bad enough; asking them to work
+        # around one that is not there is worse.
         state.message = (
-            "Leave the chart open. Switch its timeframe once while this runs "
-            "(1 MIN → 5 MIN → back) — that makes the platform send its "
-            "history, which is the only way this gets charts above a minute."
+            "Leave the chart open on the timeframe you trade. "
+            "Nothing is sent to the platform and no trade is placed."
         )
         # The clock before the flag: the countdown reads from ``started_at``
         # the moment ``active`` is true, and a repaint landing between the two

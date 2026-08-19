@@ -215,6 +215,37 @@ def describe_shape(value: Any, _depth: int = 0) -> str:
     return type(value).__name__
 
 
+class AttachmentNamer:
+    """Gives a binary attachment the name announced by the frame before it.
+
+    The platform sends its larger messages in two parts: a header naming the
+    event, then the payload with no name on it at all. Anything reading the
+    feed has to carry that name forward or the payload arrives anonymous.
+
+    This existed twice — once in the live listener, which did it, and once in
+    the offline replay, which did not. So the same recording meant two
+    different things depending on which read it: live, the platform's candle
+    history seeded the chart; replayed, that history was an unnamed payload
+    that matched nothing and was dropped. Every measurement taken offline was
+    therefore taken without the history it was supposed to include.
+
+    The two directions interleave, so each carries its own pending name.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, str | None] = {"in": None, "out": None}
+
+    def name_for(
+        self, event: str | None, announces: str | None, direction: str = "in"
+    ) -> str | None:
+        """The event this payload belongs to, named or inherited."""
+        if direction not in self._pending:
+            direction = "in"
+        name = event or self._pending[direction]
+        self._pending[direction] = announces
+        return name
+
+
 @dataclass
 class Summary:
     """What a capture contained, in a form worth pasting into a message."""

@@ -26,6 +26,7 @@ from typing import Any, Iterator
 
 from ..logging_setup import get_logger
 from ..models import Series
+from .frames import AttachmentNamer
 from .source import FeedChartSource
 
 log = get_logger(__name__)
@@ -62,14 +63,24 @@ def charts_from_recording(
     notices has drifted.
     """
     source = FeedChartSource(port=0, min_candles=min_candles, max_candles=max_candles)
+    # The platform's larger messages arrive as a header naming the event and
+    # then a payload with no name on it. Reading each frame on its own dropped
+    # every one of those — including loadHistoryPeriodFast, which is the
+    # platform's own candle history and the only source of anything at a
+    # minute or longer. Recordings came back holding sub-minute charts and
+    # nothing else, and the reason looked like the platform not sending it.
+    # It had sent it: a hundred and fifty M1 candles, replayed as an anonymous
+    # payload that matched no handler.
+    namer = AttachmentNamer()
     seen = 0
     for frame in read_frames(path):
-        event = frame.get("event")
+        direction = str(frame.get("direction") or "in")
+        event = namer.name_for(frame.get("event"), frame.get("announces"), direction)
         payload = frame.get("payload")
         if payload is None:
             continue
         try:
-            source._handle(event, payload, str(frame.get("direction") or "in"))
+            source._handle(event, payload, direction)
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("frame %d could not be replayed: %s", seen, exc)
         seen += 1

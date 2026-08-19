@@ -21,7 +21,7 @@ from ..chart_detection.base import Capture, ChartSource, ChartSourceError
 from ..logging_setup import get_logger
 from ..models import DataQuality, Series
 from .cdp import BrowserError, launch_browser, list_targets, pick_target
-from .frames import decode_frame
+from .frames import AttachmentNamer, decode_frame
 from .protocol import (
     infer_period,
     parse_chart_request,
@@ -269,9 +269,11 @@ class FeedChartSource(ChartSource):
                 self._error = None
             log.info("reading the feed from %s", target.url)
 
-            # A binary payload's name lives in the header frame before it, and
-            # the two directions interleave, so each keeps its own pending name.
-            pending: dict[str, str | None] = {"in": None, "out": None}
+            # A binary payload's name lives in the header frame before it.
+            # Shared with the offline replay rather than written twice: the
+            # replay had its own version that did not do this, so the same
+            # recording meant one thing live and another on disk.
+            namer = AttachmentNamer()
             attached_at = time.monotonic()
             while not self._stop.is_set():
                 try:
@@ -301,8 +303,7 @@ class FeedChartSource(ChartSource):
                     direction=direction,
                     opcode=int(response.get("opcode", 1)),
                 )
-                name = frame.event or pending[direction]
-                pending[direction] = frame.announces
+                name = namer.name_for(frame.event, frame.announces, direction)
                 if frame.payload is not None:
                     self._handle(name, frame.payload, direction)
 

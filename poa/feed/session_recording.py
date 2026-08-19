@@ -80,27 +80,29 @@ class Recording:
         return self.bundle
 
     def shortfall(self) -> str:
-        """What this recording cannot answer, and what would fix it.
+        """What this recording cannot answer.
 
-        A half-hour capture reliably produces the second charts, because ticks
-        arrive continuously. It produces nothing at a minute or longer unless
-        the platform hands over its history — thirty minutes is thirty M1
-        bars, and sixty are needed before a chart can be read at all.
+        A capture builds the sub-minute charts out of ticks, which arrive
+        continuously, so those are never the problem. Anything at a minute or
+        longer comes from the platform's own history: half an hour of live
+        ticks is thirty M1 bars, where sixty are needed before a chart can be
+        read at all.
 
-        The platform sends that history when a chart's timeframe changes. So
-        the fix is one click, and worth knowing about before the wait rather
-        than after it.
+        Said plainly and without a cause attached. The first time a recording
+        came back sub-minute-only the reason looked obvious — the platform had
+        not sent its history — and it was wrong: the history had arrived, a
+        hundred and fifty M1 candles of it, and the replay dropped them. A
+        guess about why, printed as though it were a finding, sent the user off
+        to change something that was never the problem.
         """
         if not self.candles:
             return ""
         if max(self.timeframes, default=0) >= 60:
             return ""
         return (
-            "Sub-minute charts only — the platform never sent its candle "
-            "history, so there is nothing here at 1 MIN or longer. Next time, "
-            "switch your chart's timeframe once while the recording runs "
-            "(1 MIN → 5 MIN → back). That is what makes it hand the history "
-            "over."
+            "Sub-minute charts only — nothing here at 1 MIN or longer, so this "
+            "cannot measure the timeframe you trade. Leave the platform's "
+            "chart open on that timeframe and record again."
         )
 
 

@@ -396,8 +396,10 @@ class TestARecordingSaysWhatItCouldNotCapture:
         note = self._result([5, 10, 15, 30]).shortfall()
 
         assert "Sub-minute charts only" in note
-        # The fix is one click and nobody would guess it.
-        assert "switch your chart's timeframe" in note.lower()
+        assert "cannot measure the timeframe you trade" in note
+        # No cause asserted. The obvious one was wrong, and printing a guess
+        # as a finding sent the user to change something that was never it.
+        assert "never sent" not in note
 
     def test_a_recording_that_reached_a_minute_says_nothing(self):
         assert self._result([5, 15, 60, 300]).shortfall() == ""
@@ -436,7 +438,7 @@ class TestARecordingSaysWhatItCouldNotCapture:
         finally:
             app.shutdown()
 
-    def test_the_advice_is_given_before_the_wait_as_well(self, monkeypatch, tmp_path):
+    def test_what_has_to_happen_is_said_before_the_wait(self, monkeypatch, tmp_path):
         """Learning it afterwards costs another half hour."""
         from poa.overlay import app as app_module
 
@@ -455,8 +457,8 @@ class TestARecordingSaysWhatItCouldNotCapture:
             app._start_recording(minutes=30)
 
             message = app.vm.render()["recording"]["message"]
-            assert "Switch its timeframe once" in message
-            assert "1 MIN" in message
+            assert "Leave the chart open on the timeframe you trade" in message
+            assert "no trade is placed" in message
         finally:
             app.shutdown()
 
@@ -501,3 +503,108 @@ class TestTheSummaryHidesNoEvent:
 
         assert "One example of each" in text
         assert "rarer event" not in text
+
+
+class TestAnAttachmentKeepsTheNameAnnouncedForIt:
+    """The platform names its big messages in the frame *before* the payload.
+
+    The live listener carried that name forward. The offline replay did not,
+    and read each frame alone — so every announced message replayed as an
+    anonymous payload matching no handler. The one that mattered is
+    loadHistoryPeriodFast: the platform's own candle history, and the only
+    source of any chart at a minute or longer.
+
+    The symptom was a recording that came back holding 5s, 10s, 15s and 30s
+    charts and nothing above them, which read as the platform never having
+    sent its history. It had sent it — a hundred and fifty M1 candles — and
+    the replay dropped them. Every measurement taken offline was therefore
+    taken on tick-derived sub-minute charts alone.
+    """
+
+    HISTORY_START = 1787163540
+
+    def _recording(self, tmp_path, *, announced: bool):
+        """A capture that changes symbol and is then sent M1 history."""
+        candles = [
+            {
+                "symbol_id": 1,
+                "time": self.HISTORY_START + 60 * n,
+                "open": 1.2350 + n * 0.0001,
+                "close": 1.2351 + n * 0.0001,
+                "high": 1.2353 + n * 0.0001,
+                "low": 1.2349 + n * 0.0001,
+                "volume": 90,
+            }
+            for n in range(80)
+        ]
+        frames = [
+            {"direction": "out", "opcode": 1, "kind": "socket.io",
+             "event": "changeSymbol", "announces": None,
+             "payload": ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]},
+        ]
+        if announced:
+            # How the platform really sends it: a header, then the payload.
+            frames += [
+                {"direction": "in", "opcode": 1, "kind": "socket.io",
+                 "event": "loadHistoryPeriodFast",
+                 "announces": "loadHistoryPeriodFast", "payload": None},
+                {"direction": "in", "opcode": 2, "kind": "json",
+                 "event": None, "announces": None,
+                 "payload": {"asset": "EURUSD_otc", "data": candles}},
+            ]
+        else:
+            frames.append(
+                {"direction": "in", "opcode": 1, "kind": "json",
+                 "event": "loadHistoryPeriodFast", "announces": None,
+                 "payload": {"asset": "EURUSD_otc", "data": candles}}
+            )
+        path = tmp_path / "feed.jsonl"
+        path.write_text(
+            "\n".join(json.dumps(f) for f in frames) + "\n", encoding="utf-8"
+        )
+        return path
+
+    def _minute_charts(self, path):
+        from poa.feed.replay import charts_from_recording
+
+        return [
+            (asset, tf, series)
+            for asset, tf, series in charts_from_recording(path, min_candles=20)
+            if tf >= 60
+        ]
+
+    def test_the_history_survives_arriving_as_an_attachment(self, tmp_path):
+        charts = self._minute_charts(self._recording(tmp_path, announced=True))
+
+        assert charts, "the platform's candle history was dropped"
+        asset, timeframe, series = charts[0]
+        assert timeframe == 60
+        assert len(series) >= 60
+
+    def test_and_still_survives_arriving_named(self, tmp_path):
+        """Not every message is split. The unsplit form must keep working."""
+        charts = self._minute_charts(self._recording(tmp_path, announced=False))
+
+        assert charts
+        assert charts[0][1] == 60
+
+    def test_the_two_directions_do_not_steal_each_other_s_names(self):
+        """They interleave on one socket, so one pending name would cross."""
+        from poa.feed.frames import AttachmentNamer
+
+        namer = AttachmentNamer()
+        assert namer.name_for("loadHistoryPeriodFast", "loadHistoryPeriodFast",
+                              "in") == "loadHistoryPeriodFast"
+        # An outbound frame lands between the header and its payload.
+        assert namer.name_for("saveCharts", None, "out") == "saveCharts"
+        # The inbound attachment still knows what it belongs to.
+        assert namer.name_for(None, None, "in") == "loadHistoryPeriodFast"
+
+    def test_a_name_is_carried_once_and_not_forever(self):
+        from poa.feed.frames import AttachmentNamer
+
+        namer = AttachmentNamer()
+        namer.name_for("updateStream", "updateStream", "in")
+        assert namer.name_for(None, None, "in") == "updateStream"
+        # The next anonymous payload is not another updateStream.
+        assert namer.name_for(None, None, "in") is None
