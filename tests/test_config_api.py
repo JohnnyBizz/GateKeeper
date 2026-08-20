@@ -584,3 +584,88 @@ class TestDepthIsForMeasuringNotDeciding:
             assert len(engine.latest_series()) == len(engine.source.series)
         finally:
             engine.close()
+
+
+class TestASettingsFileIsBroughtUpToDate:
+    """A changed default reaches nobody who has already run the app.
+
+    ``save()`` writes every key, so the file on disk holds the old value and
+    overlays the new one forever. A default is only a default on a machine
+    that has never started GateKeeper — which is not the machine that needs
+    the change.
+    """
+
+    def _write(self, tmp_path, data):
+        import yaml
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle)
+        return path
+
+    def test_an_old_file_gets_the_new_gate(self, tmp_path):
+        from poa.config import load_config
+
+        path = self._write(tmp_path, {"signals": {"min_confidence": 75}})
+        config = load_config(path)
+
+        assert config.get("signals.min_confidence") == 85
+        assert config.get("signals.auto_tune") is False
+
+    def test_and_the_change_is_written_back(self, tmp_path):
+        """Otherwise it is applied again, and again, every single start."""
+        import yaml
+
+        from poa.config import CONFIG_VERSION, load_config
+
+        path = self._write(tmp_path, {"signals": {"min_confidence": 75}})
+        load_config(path)
+
+        with path.open(encoding="utf-8") as handle:
+            saved = yaml.safe_load(handle)
+        assert saved["signals"]["min_confidence"] == 85
+        assert saved["config_version"] == CONFIG_VERSION
+
+    def test_a_number_the_user_chose_is_left_alone(self, tmp_path):
+        """Only the old default moves. Anything else is somebody's decision."""
+        from poa.config import load_config
+
+        path = self._write(tmp_path, {"signals": {"min_confidence": 62}})
+        config = load_config(path)
+
+        assert config.get("signals.min_confidence") == 62
+
+    def test_it_runs_once_and_not_every_start(self, tmp_path):
+        """A migration that reapplies itself would undo the next change."""
+        from poa.config import load_config
+
+        path = self._write(tmp_path, {"signals": {"min_confidence": 75}})
+        load_config(path)
+
+        # The user then decides 85 is too quiet and goes back down.
+        config = load_config(path)
+        config.set("signals.min_confidence", 70)
+        config.set("signals.auto_tune", True)
+        config.save(path)
+
+        again = load_config(path)
+        assert again.get("signals.min_confidence") == 70
+        assert again.get("signals.auto_tune") is True
+
+    def test_a_fresh_install_needs_no_migration(self, tmp_path):
+        from poa.config import CONFIG_VERSION, load_config
+
+        config = load_config(tmp_path / "nothing-here.yaml")
+
+        assert config.get("signals.min_confidence") == 85
+        assert config.data["config_version"] == CONFIG_VERSION
+
+    def test_an_unreadable_file_does_not_take_the_migration_with_it(self, tmp_path):
+        """Defaults already cover it, and saving over it would lose the file."""
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        path.write_text("signals: [this is not a mapping\n", encoding="utf-8")
+
+        config = load_config(path)
+        assert config.get("signals.min_confidence") == 85

@@ -102,7 +102,12 @@ TRADE_DURATIONS: tuple[int, ...] = (
 )
 
 
+# Bumped whenever a stored setting has to change on installs that already
+# exist. See ``_migrate``.
+CONFIG_VERSION = 2
+
 DEFAULTS: dict[str, Any] = {
+    "config_version": CONFIG_VERSION,
     "server": {
         "host": "127.0.0.1",
         "port": 8765,
@@ -213,7 +218,11 @@ DEFAULTS: dict[str, Any] = {
         "risk_collapsed": False,
     },
     "signals": {
-        "min_confidence": 75,
+        # Under test. Measured across a rising and a falling recording, the
+        # old 75 straddled break-even and 85 cleared it — on a threshold
+        # chosen by looking at the same data, so it is a hypothesis rather
+        # than a settled number. data/recorded/README.md has the table.
+        "min_confidence": 85,
         "min_duration_compatibility": 65,
         "min_data_confidence": 70,
         # Structural gates. Every one of these must pass before a direction is
@@ -234,7 +243,11 @@ DEFAULTS: dict[str, Any] = {
         # numbers somebody typed. Moves a few points at a time, within bounds,
         # and only on evidence the sample can carry. Set false to keep the
         # values above fixed.
-        "auto_tune": True,
+        #
+        # Off while min_confidence is being tested: a gate that moves itself
+        # between 55 and 90 cannot also be the thing under measurement. Turn
+        # it back on once the threshold is settled.
+        "auto_tune": False,
         # Evaluate at the expiry the analysis prefers rather than the one
         # left in a settings box. The duration gate was rejecting sound
         # setups for a reason that had nothing to do with the market — a
@@ -474,4 +487,55 @@ def load_config(path: str | Path | None = None) -> Config:
 
     merged = _deep_merge(DEFAULTS, file_data)
     merged = _deep_merge(merged, _env_overrides(dict(os.environ)))
-    return Config(data=merged, path=chosen)
+    config = Config(data=merged, path=chosen)
+    _migrate(config, file_data)
+    return config
+
+
+def _migrate(config: Config, file_data: dict[str, Any]) -> None:
+    """Bring a settings file written by an older version up to date.
+
+    Without this a changed default reaches nobody who has ever run the app.
+    ``save()`` writes every key, so the file on disk already holds the old
+    value and overlays the new one forever — a default is only a default on a
+    machine that has never started GateKeeper.
+
+    Applied once and stamped, so a value the user later chooses for themselves
+    is not overwritten on the next start.
+    """
+    stored = int(file_data.get("config_version") or 0)
+    if not file_data or stored >= CONFIG_VERSION:
+        config.data["config_version"] = CONFIG_VERSION
+        return
+
+    changed: list[str] = []
+    if stored < 2:
+        # Measured on two real recordings, one rising and one falling, at the
+        # chart-and-expiry pairings actually traded: at the old gate of 75 the
+        # pooled win rate was 59.0%, interval 49.2–68.1, which straddles the
+        # 52.1% a 92% payout needs. At 85 it was 73.6%, interval 60.4–83.6,
+        # which clears it.
+        #
+        # 85 was chosen by looking at the table that scored it, so this is a
+        # hypothesis under test rather than a settled number — see
+        # data/recorded/README.md. Moved only where the install is still on
+        # the old default; a number the user picked is left alone.
+        if float(config.get("signals.min_confidence", 75)) == 75.0:
+            config.set("signals.min_confidence", 85)
+            changed.append("signals.min_confidence 75 -> 85")
+        # And pinned, because a gate under test cannot also be moving on its
+        # own. Auto-tune travels between 55 and 90 in steps of five, which
+        # would quietly answer a different question than the one being asked.
+        if bool(config.get("signals.auto_tune", True)):
+            config.set("signals.auto_tune", False)
+            changed.append("signals.auto_tune on -> off")
+
+    config.data["config_version"] = CONFIG_VERSION
+    if not changed:
+        return
+    for line in changed:
+        log.info("settings updated: %s", line)
+    try:
+        config.save()
+    except Exception as exc:  # pragma: no cover - read-only install
+        log.debug("could not save the updated settings: %s", exc)

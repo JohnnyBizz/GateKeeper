@@ -114,8 +114,15 @@ overlay:
   opacity: 0.96            # 1.0 = fully opaque
   scan_seconds: 2.4        # how long the Scan animation holds before revealing
 
+# Bumped when a stored setting has to change on installs that already exist.
+config_version: 2
+
 signals:
-  min_confidence: 75              # setup score needed before a direction is shown
+  # 85 is under test. Measured across a rising and a falling recording, 75
+  # straddled break-even and 85 cleared it — on a threshold chosen by
+  # looking at the same data, so treat it as a hypothesis. The table is in
+  # data/recorded/README.md.
+  min_confidence: 85              # setup score needed before a direction is shown
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
   min_data_confidence: 70         # chart-reading confidence needed to analyse
 

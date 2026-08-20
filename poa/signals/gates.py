@@ -74,7 +74,7 @@ NEVER_ADVISORY = frozenset({"data_quality"})
 
 @dataclass
 class GateSettings:
-    min_confidence: float = 75.0
+    min_confidence: float = 85.0
     min_duration_compatibility: float = 65.0
     min_data_confidence: float = 70.0
     min_component_agreement: float = 0.55
