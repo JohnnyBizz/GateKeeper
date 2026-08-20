@@ -901,7 +901,32 @@ class OverlayApp:
                 float(row.get("score") or 0.0),
                 float(row.get("duration_score") or 0.0),
             )
+        self._settle_watched(rows)
         self._announce_watchlist(rows)
+
+    def _settle_watched(self, rows: Any) -> None:
+        """Settle each watched chart's calls against that chart's own price.
+
+        The engine settles using the open chart's price, and only that one.
+        That was sufficient while it was also the only chart ever journalled;
+        now that a setup on any watched chart is a call, eight charts' worth
+        of them had no price that could ever decide them and expired unsettled.
+
+        Every one of these prices is already in hand — the sweep just read the
+        chart to score it.
+        """
+        source = getattr(self.engine.source, "name", None)
+        for row in rows:
+            signal = row.get("_signal")
+            asset = str(row.get("asset") or "")
+            if signal is None or not asset or signal.price is None:
+                continue
+            try:
+                self.engine.journal.resolve_outcomes(
+                    float(signal.price), source=source, asset=asset
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                log.debug("could not settle %s: %s", asset, exc)
 
     def _announce_watchlist(self, rows: Any) -> None:
         """Say something when a chart nobody is looking at has a setup.

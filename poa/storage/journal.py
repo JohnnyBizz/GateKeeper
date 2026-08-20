@@ -302,6 +302,10 @@ class Journal:
         voided = 0
         with self._lock:
             for row in pending:
+                # Not this price's row. Left pending for the chart that can
+                # actually decide it, rather than voided for not being here.
+                if settles_a_different_chart(row, asset):
+                    continue
                 entry_price = row["price"]
                 reason = _settlement_block(row, current_price, now, source, asset)
                 if reason is not None:
@@ -534,6 +538,24 @@ class Journal:
 # --------------------------------------------------------------------------
 
 
+def settles_a_different_chart(row: sqlite3.Row, asset: str | None) -> bool:
+    """Whether this price simply belongs to a different instrument.
+
+    Distinct from being unsettleable, and the distinction is the whole point:
+    a row this price cannot decide may still be decided by the right chart's
+    price a moment later, so it stays pending rather than being destroyed.
+
+    It used to be a void, which was harmless while only the open chart was
+    ever journalled — nothing belonging to another chart was in the table to
+    destroy. The moment setups on watched charts became calls, settling the
+    open chart voided every pending row belonging to the other eight: sixteen
+    calls in one session, ten voided, and the six survivors were only the ones
+    whose chart happened to be open as their expiry came due.
+    """
+    row_asset = row["asset"] if "asset" in row.keys() else None
+    return bool(asset and row_asset and row_asset != asset)
+
+
 def _settlement_block(
     row: sqlite3.Row,
     current_price: float,
@@ -559,11 +581,9 @@ def _settlement_block(
             "data source the price came from, so it cannot be settled safely."
         )
 
-    row_asset = row["asset"] if "asset" in row.keys() else None
-    if asset and row_asset and row_asset != asset:
-        return (
-            f"Voided: recorded on {row_asset}, and the chart now shows {asset}."
-        )
+    # A different instrument is deliberately not handled here — see
+    # ``settles_a_different_chart``. It is a reason to leave the row alone,
+    # not a reason to destroy it.
 
     # Late settlement. The price at expiry is gone; today's price is not it.
     try:

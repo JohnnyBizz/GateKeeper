@@ -172,10 +172,24 @@ class TestSettlementIsolation:
         assert tmp_journal.get(signal.id)["outcome"] == "void"
 
     def test_a_different_pair_cannot_settle_the_row(self, tmp_journal):
+        """And must not destroy it either — it waits for its own chart.
+
+        This used to assert ``void``. That was safe while the open chart was
+        the only one ever journalled, because no other chart's rows existed to
+        destroy. Once a setup on any watched chart became a call, one price
+        voided eight charts' worth of pending rows: ten of sixteen calls in
+        the first real session died this way, none of them for any reason to
+        do with the trade.
+
+        Not settling it is the part that mattered. Killing it never was.
+        """
         signal = self._record(tmp_journal, source="screen", asset="EUR/USD")
         later = utcnow() + timedelta(seconds=90)
         tmp_journal.resolve_outcomes(1.0805, later, source="screen", asset="GBP/USD")
-        assert tmp_journal.get(signal.id)["outcome"] == "void"
+
+        entry = tmp_journal.get(signal.id)
+        assert entry["outcome"] in (None, "", "pending"), entry["outcome"]
+        assert [r["id"] for r in tmp_journal.pending_outcomes(later)] == [signal.id]
 
     def test_an_incompatible_price_scale_is_voided(self, tmp_journal):
         # Entry recorded on an uncalibrated 0-100 relative scale, settlement
@@ -1379,3 +1393,85 @@ class TestAWinRateIsReportedNextToWhatItIsWorth:
         if buy["settled"]:
             assert buy["wins"] + sell["wins"] == buy["settled"]
             assert buy["win_rate"] > sell["win_rate"]
+
+
+class TestAPriceOnlySettlesItsOwnChart:
+    """Ten calls out of sixteen came back VOID in the first real session.
+
+    The engine settles with the open chart's price. Any pending row for a
+    different instrument was voided on the spot — permanently — for the crime
+    of not being the chart on screen. That was invisible while the open chart
+    was the only one ever journalled. The moment setups on watched charts
+    became calls, one chart's price destroyed the other eight charts' rows.
+    """
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(tmp_path / "j.db")
+
+    def _record(self, journal, asset, direction="CALL", price=1.10):
+        """A real evaluated signal, dressed as a just-expired call on ``asset``."""
+        from datetime import timedelta
+
+        from poa.models import Direction, utcnow
+
+        signal = make_signal(pullback_trend(400, direction=1), asset=asset)
+        signal.id = f"{asset}-{direction}-{price}"
+        signal.timestamp = utcnow() - timedelta(seconds=40)
+        signal.trade_duration = 30
+        signal.chart_timeframe = 5
+        signal.price = price
+        signal.direction = Direction[direction]
+        journal.record(signal, None, source="feed")
+        return signal
+
+    def test_another_chart_s_call_is_left_pending_not_voided(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._record(journal, "EUR/USD", price=1.10)
+            journal.resolve_outcomes(1.36, source="feed", asset="GBP/USD")
+
+            pending = journal.pending_outcomes()
+            assert len(pending) == 1, "the EUR/USD call was destroyed"
+        finally:
+            journal.close()
+
+    def test_and_its_own_chart_settles_it_afterwards(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._record(journal, "EUR/USD", direction="CALL", price=1.10)
+            journal.resolve_outcomes(1.36, source="feed", asset="GBP/USD")
+            journal.resolve_outcomes(1.11, source="feed", asset="EUR/USD")
+
+            assert journal.pending_outcomes() == []
+            rows = journal.recent(limit=5)
+            assert [r["outcome"] for r in rows] == ["win"]
+        finally:
+            journal.close()
+
+    def test_each_chart_settles_only_its_own(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._record(journal, "EUR/USD", direction="CALL", price=1.10)
+            self._record(journal, "GBP/USD", direction="PUT", price=1.36)
+
+            journal.resolve_outcomes(1.11, source="feed", asset="EUR/USD")
+            journal.resolve_outcomes(1.35, source="feed", asset="GBP/USD")
+
+            outcomes = {r["asset"]: r["outcome"] for r in journal.recent(limit=5)}
+            assert outcomes == {"EUR/USD": "win", "GBP/USD": "win"}
+        finally:
+            journal.close()
+
+    def test_a_genuinely_unsettleable_row_is_still_voided(self, tmp_path):
+        """The protection this replaces still has to work — wrong scale."""
+        journal = self._journal(tmp_path)
+        try:
+            self._record(journal, "EUR/USD", price=1.10)
+            journal.resolve_outcomes(161.36, source="feed", asset="EUR/USD")
+
+            rows = journal.recent(limit=5)
+            assert rows[0]["outcome"] == "void"
+        finally:
+            journal.close()
