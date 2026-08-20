@@ -124,12 +124,21 @@ overlay:
 config_version: 2
 
 signals:
-  # 85 is under test. Measured across a rising and a falling recording, 75
-  # straddled break-even and 85 cleared it — on a threshold chosen by
-  # looking at the same data, so treat it as a hypothesis. The table is in
+  # 62 is set for RATE, not accuracy, and the difference was measured before
+  # choosing it: about one call a minute per pair instead of one every two,
+  # winning 66.7% in one recorded half hour and 54.8% in another. Neither beat
+  # always-buy on the same entries.
+  #
+  # 85 was here before and nobody chose it — it was fitted to 29 calls and did
+  # not survive the next batch. Raising this again is reasonable; just judge it
+  # on the always-BUY line in the session report rather than on the win rate,
+  # because a trending session flatters any threshold. Table in
   # data/recorded/README.md.
   min_confidence: 75              # direction score gate — an internal number
-  min_shown_confidence: 85        # the number the PANEL shows must clear this
+  min_shown_confidence: 62        # the number the PANEL shows must clear this
+                                  # 62 is a call about once a minute per pair.
+                                  # Raise it for fewer, and read the always-BUY
+                                  # line in the session report either way.
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
   min_data_confidence: 70         # chart-reading confidence needed to analyse
 

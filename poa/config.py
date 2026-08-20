@@ -245,7 +245,19 @@ DEFAULTS: dict[str, Any] = {
         # Setting min_confidence to 85 gated the internals at 85 and still
         # displayed calls at 80.1, so "trade at 85" meant something the user
         # could not see and had not agreed to.
-        "min_shown_confidence": 85,
+        #
+        # 62, matching a competing tool that shows BUY at 62/100. Chosen for
+        # rate rather than accuracy, deliberately, with the trade-off measured
+        # first: on the recorded market it is a call about once a minute
+        # instead of once every two, and it won 66.7% in one half hour and
+        # 54.8% in another. Neither beat always-buy on the same entries, so
+        # the honest reading is that 62 changes how often the tool speaks and
+        # not how often it is right.
+        #
+        # Every session report prints the always-buy and always-sell rate
+        # beside the win rate. That comparison is what tells a good week apart
+        # from a trending one, and at this gate there will be plenty of both.
+        "min_shown_confidence": 62,
         "min_duration_compatibility": 65,
         "min_data_confidence": 70,
         # Structural gates. Every one of these must pass before a direction is
@@ -549,8 +561,14 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         # it had nothing to do and write nothing, and every later ``save``
         # would keep overlaying the old file.
         if "min_shown_confidence" not in (file_data.get("signals") or {}):
-            config.set("signals.min_shown_confidence", 85)
-            changed.append("signals.min_shown_confidence -> 85")
+            config.set("signals.min_shown_confidence", 62)
+            changed.append("signals.min_shown_confidence -> 62")
+        # 85 was the previous default and nobody chose it: it was fitted to
+        # twenty-nine calls and did not survive the next batch. Move it on.
+        # Any other number is one the user picked, and is left alone.
+        elif float(config.get("signals.min_shown_confidence", 62)) == 85.0:
+            config.set("signals.min_shown_confidence", 62)
+            changed.append("signals.min_shown_confidence 85 -> 62")
         # An earlier version of this migration put the 85 on min_confidence,
         # which gates the direction score rather than the displayed number and
         # therefore did not do what it was set to do. Put it back.

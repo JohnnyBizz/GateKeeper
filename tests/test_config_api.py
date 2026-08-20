@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import json
 
 import pytest
@@ -610,7 +611,7 @@ class TestASettingsFileIsBroughtUpToDate:
         config = load_config(path)
 
         # The gate that matters is on the number the panel shows.
-        assert config.get("signals.min_shown_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 62
         assert config.get("signals.auto_tune") is False
 
     def test_the_85_is_taken_off_the_wrong_gate(self, tmp_path):
@@ -624,7 +625,7 @@ class TestASettingsFileIsBroughtUpToDate:
         config = load_config(path)
 
         assert config.get("signals.min_confidence") == 75
-        assert config.get("signals.min_shown_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 62
 
     def test_and_the_change_is_written_back(self, tmp_path):
         """Otherwise it is applied again, and again, every single start."""
@@ -637,7 +638,7 @@ class TestASettingsFileIsBroughtUpToDate:
 
         with path.open(encoding="utf-8") as handle:
             saved = yaml.safe_load(handle)
-        assert saved["signals"]["min_shown_confidence"] == 85
+        assert saved["signals"]["min_shown_confidence"] == 62
         assert saved["config_version"] == CONFIG_VERSION
 
     def test_a_number_the_user_chose_is_left_alone(self, tmp_path):
@@ -671,7 +672,7 @@ class TestASettingsFileIsBroughtUpToDate:
 
         config = load_config(tmp_path / "nothing-here.yaml")
 
-        assert config.get("signals.min_shown_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 62
         assert config.data["config_version"] == CONFIG_VERSION
 
     def test_an_unreadable_file_does_not_take_the_migration_with_it(self, tmp_path):
@@ -682,7 +683,7 @@ class TestASettingsFileIsBroughtUpToDate:
         path.write_text("signals: [this is not a mapping\n", encoding="utf-8")
 
         config = load_config(path)
-        assert config.get("signals.min_shown_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 62
 
 
 class TestWatchingOnlyTheChartsYouTrade:
@@ -764,3 +765,64 @@ class TestWatchingOnlyTheChartsYouTrade:
             yaml.safe_dump({"market": {"scan_timeframes": [15, 300]}}, handle)
 
         assert load_config(path).get("market.scan_timeframes") == [15, 300]
+
+
+class TestTheShownGateMovesToSixtyTwo:
+    """Set for rate, not accuracy, and the trade-off was measured first.
+
+    On the recorded market 62 is a call about once a minute per pair against
+    once every two at 85, winning 66.7% in one half hour and 54.8% in another
+    — and beating always-buy in neither. It changes how often the tool speaks,
+    not how often it is right, and that is what it was chosen for.
+
+    85 was the previous default and nobody picked it: it was fitted to
+    twenty-nine calls and did not survive the next batch.
+    """
+
+    def _config(self, tmp_path, signals=None):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump({"signals": signals} if signals else {}, handle)
+        return load_config(path)
+
+    def test_a_file_that_never_had_the_key_gets_sixty_two(self, tmp_path):
+        assert self._config(tmp_path).get("signals.min_shown_confidence") == 62
+
+    def test_the_old_default_is_moved_on(self, tmp_path):
+        """85 was never a choice, so leaving it would strand every install."""
+        config = self._config(tmp_path, {"min_shown_confidence": 85})
+
+        assert config.get("signals.min_shown_confidence") == 62
+
+    def test_a_number_the_user_picked_is_left_alone(self, tmp_path):
+        config = self._config(tmp_path, {"min_shown_confidence": 90})
+
+        assert config.get("signals.min_shown_confidence") == 90
+
+    def test_the_internal_gate_is_untouched(self, tmp_path):
+        """Only the displayed number moved. The direction score still gates
+        at 75, which is what the panel's score is derived from."""
+        config = self._config(tmp_path, {"min_shown_confidence": 85})
+
+        assert config.get("signals.min_confidence") == 75
+
+    def test_the_shipped_default_and_the_example_file_agree(self):
+        """A config.example.yaml saying 85 while the code says 62 is how
+        somebody ends up debugging a setting that was never in effect."""
+        import yaml
+
+        from poa.config import DEFAULTS
+
+        example = yaml.safe_load(
+            (Path(__file__).resolve().parent.parent / "config.example.yaml")
+            .read_text(encoding="utf-8")
+        )
+        assert (
+            example["signals"]["min_shown_confidence"]
+            == DEFAULTS["signals"]["min_shown_confidence"]
+            == 62
+        )
