@@ -162,11 +162,63 @@ def build_report(report: SessionReport) -> str:
     return "\n".join(lines)
 
 
+# Roughly how often a directional call appears, per chart length, measured by
+# walking the recordings in ``data/recorded`` at the shipped gates. Not a
+# promise — a quiet market is quieter still — but the right order of magnitude,
+# and enough to tell "nothing happened" apart from "nothing works".
+CALLS_EVERY_MINUTES = {5: 3, 10: 6, 15: 9, 30: 15, 60: 120}
+
+
+def _silence_note(report: SessionReport) -> list[str]:
+    """Say whether an empty session was expected on the charts being read."""
+    minutes = max((report.ended - report.started).total_seconds() / 60.0, 0.0)
+    lengths = []
+    for name in report.charts:
+        for seconds, label in ((5, "5 SEC"), (10, "10 SEC"), (15, "15 SEC"),
+                               (30, "30 SEC"), (60, "1 MIN")):
+            if name.endswith(label):
+                lengths.append(seconds)
+                break
+    if not lengths:
+        return []
+
+    fastest = min(lengths)
+    every = CALLS_EVERY_MINUTES.get(fastest)
+    if every is None:
+        return []
+    expected = minutes / every
+
+    out = [
+        f"This session ran {minutes:.0f} minutes. On the fastest chart it was",
+        f"reading, a call appears roughly every {every} minutes, so about"
+        f" {expected:.1f} were",
+        "expected — measured by replaying real recordings at these gates.",
+    ]
+    if expected < 1.0:
+        out += [
+            "",
+            "So an empty session here is the expected outcome, not a fault.",
+        ]
+        if fastest >= 60:
+            out += [
+                "A 1 MIN chart is the quiet one. If you want calls at a useful",
+                "rate, open the 5 SEC chart on the platform — the tool calls",
+                "from the chart you have OPEN, and on that one it speaks every",
+                "two or three minutes.",
+            ]
+    else:
+        out += [
+            "",
+            "That is fewer than expected. Worth looking at the gate audit.",
+        ]
+    return out
+
+
 def _calls_section(report: SessionReport) -> list[str]:
     count = len(report.calls)
     lines = _heading("CALLS MADE", f"{count} call{'' if count == 1 else 's'}")
     if not count:
-        return lines + [
+        lines += [
             "No setup passed the gates this session.",
             "",
             "Not the same as nothing happening: it means every setup the",
@@ -174,6 +226,18 @@ def _calls_section(report: SessionReport) -> list[str]:
             "The gate audit below says which, and whether refusing them cost",
             "anything.",
         ]
+        # And the question that actually matters when a session comes back
+        # empty: was that unusual, or is this chart one the tool rarely
+        # speaks on at all?
+        #
+        # Ten consecutive reports read "0 calls" and every one of them was
+        # taken as evidence the tool was broken. Measured on real recordings
+        # it produces a call every two or three minutes on a 5 SEC chart and
+        # every eighteen to two hundred minutes on a 1 MIN one. An hour on
+        # the slow chart is *expected* to be silent, and a report that could
+        # not say so sent everybody hunting a bug that was not there.
+        lines += ["", *_silence_note(report)]
+        return lines
 
     lines.append(
         f"{'TIME':<6}{'PAIR':<14}{'DIR':<6}{'SCORE':>6}"

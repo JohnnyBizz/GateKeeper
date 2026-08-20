@@ -383,3 +383,79 @@ class TestTheReportCanActuallyBeFound:
             assert "GATEKEEPER" in written.read_text(encoding="utf-8")
         finally:
             app.shutdown()
+
+
+class TestAnEmptySessionSaysWhetherThatWasExpected:
+    """Ten reports in a row read "0 calls" and every one was taken as a fault.
+
+    Measured on real recordings at the shipped gates, the tool produces a
+    directional call every two or three minutes on a 5 SEC chart and every
+    eighteen to two hundred minutes on a 1 MIN one. An hour on the slow chart
+    is *expected* to be silent — and a report that could not say so sent
+    everybody hunting a bug that was not there, twice.
+    """
+
+    def _report(self, charts, minutes):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.reporting.session import SessionReport, build_report
+
+        started = datetime(2026, 8, 20, 17, 0, tzinfo=timezone.utc)
+        return build_report(SessionReport(
+            started=started,
+            ended=started + timedelta(minutes=minutes),
+            source="feed",
+            charts=list(charts),
+            calls=[],
+            payout=0.92,
+        ))
+
+    def test_an_hour_on_a_minute_chart_is_expected_to_be_quiet(self):
+        text = self._report(["EUR/USD 1 MIN"], 53)
+
+        assert "expected outcome, not a fault" in text
+        assert "open the 5 SEC chart" in text
+
+    def test_and_it_says_where_the_calls_actually_are(self):
+        text = self._report(["EUR/USD 1 MIN"], 53)
+
+        # The number that makes the advice actionable rather than vague.
+        assert "every 120 minutes" in text or "every 2 minutes" in text
+        assert "chart you have OPEN" in text
+
+    def test_a_quiet_hour_on_a_fast_chart_is_worth_investigating(self):
+        """Same silence, opposite meaning — 5 SEC should have spoken ~20 times."""
+        text = self._report(["EUR/USD 5 SEC"], 60)
+
+        assert "fewer than expected" in text
+        assert "expected outcome, not a fault" not in text
+
+    def test_the_fastest_chart_being_read_is_the_one_judged(self):
+        """A 5 SEC chart in the list means calls were available, 1 MIN or not."""
+        text = self._report(["EUR/USD 1 MIN", "EUR/USD 5 SEC"], 60)
+
+        assert "fewer than expected" in text
+
+    def test_a_session_with_no_recognisable_chart_says_nothing_extra(self):
+        text = self._report([], 30)
+
+        assert "expected outcome" not in text
+        assert "No setup passed the gates" in text
+
+    def test_a_session_with_calls_is_left_alone(self):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.reporting.session import SessionReport, build_report
+
+        started = datetime(2026, 8, 20, 17, 0, tzinfo=timezone.utc)
+        text = build_report(SessionReport(
+            started=started,
+            ended=started + timedelta(minutes=53),
+            charts=["EUR/USD 1 MIN"],
+            calls=[{"timestamp": started, "asset": "EUR/USD", "direction": "PUT",
+                    "overall_confidence": 88.0, "trade_duration": 180,
+                    "price": 1.16, "outcome": "win"}],
+            payout=0.92,
+        ))
+
+        assert "expected outcome, not a fault" not in text
