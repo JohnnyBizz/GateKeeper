@@ -957,15 +957,48 @@ class TestTheGateStillMovesOnAMarginalChart:
         assert bucket.win_rate is not None and bucket.win_rate > 50.0
         assert bucket.win_rate < calibration.breakeven  # still under the bar
 
-    def test_a_profitable_gate_still_wins_on_expected_value(self):
-        """The break-even ranking is not replaced, only backed up."""
+    def test_tightening_is_not_recommended_when_it_makes_things_worse(self):
+        """Taking everything is 70% here and every stricter gate is worse.
+
+        Under the old expected-value ranking this recommended tightening
+        anyway, because volume multiplied by payout outweighed the drop in
+        accuracy. Judged on being right, the answer is to leave the gate
+        alone — and "take everything" is not a gate to recommend.
+        """
         calibration = self._calibration(
             {55.0: (45, 15), 65.0: (30, 10), 75.0: (12, 8), 85.0: (11, 9)}
         )
+        assert calibration.recommended_threshold() is None
+
+    def test_a_clearly_better_band_is_still_recommended(self):
+        """Weak setups below 60, strong ones above. Tightening earns its place.
+
+        The gate lands on the loosest threshold that isolates the strong band
+        rather than the strictest one that contains it — there is no reason to
+        pay for selectivity that excludes nothing extra.
+        """
+        calibration = self._calibration({55.0: (20, 40), 85.0: (34, 6)})
         threshold, bucket = calibration.recommended_threshold()
-        assert bucket.win_rate is not None
-        assert bucket.win_rate > calibration.breakeven
-        assert threshold <= 65
+
+        assert threshold == 60
+        assert bucket.settled == 40
+        assert bucket.win_rate == 85.0
+
+    def test_the_same_record_recommends_the_same_gate_at_any_payout(self):
+        """The property the expected-value ranking could not have.
+
+        It handed the choice to the broker: the same chart picked a different
+        gate on a 50% morning than on a 92% one, having learned nothing about
+        the market. The user's instruction was the other way round — they deal
+        with the money, the tool finds the correct calls.
+        """
+        chosen = set()
+        for payout in (0.30, 0.50, 0.75, 0.92, 1.10):
+            calibration = self._calibration({55.0: (20, 40), 85.0: (34, 6)})
+            calibration.payout = payout
+            chosen.add(calibration.recommended_threshold()[0])
+
+        assert len(chosen) == 1, f"the payout moved the gate: {sorted(chosen)}"
 
     def test_a_chart_that_loses_to_a_coin_recommends_nothing(self):
         """Loosening toward the best of a bad lot is manufacturing calls.

@@ -832,3 +832,64 @@ class TestTheNumberOnThePanelClearsTheMinimum:
                 seen.append(signal)
         assert seen, "the floor removed calls without ever saying so"
         assert "under the 99 you set" in seen[0].reason
+
+
+class TestThePayoutDoesNotDecideAnything:
+    """"You deal with the money, find me the winning trades." Said three times.
+
+    The payout had two jobs it was never given. It set the bar the measured
+    record had to clear before a setup was allowed — so the same reading of
+    the same chart was endorsed at 92% and vetoed at 50%, having learned
+    nothing about the market — and it picked which score threshold the record
+    tuned itself to, by ranking thresholds on expected value.
+
+    On a bad payout that veto tightened to 66.7%, which meant the tool went
+    quietest exactly when the reason had least to do with the chart.
+    """
+
+    def _calibration(self, payout, rate, settled=60):
+        from poa.backtesting.calibration import _band_label, Bucket, Calibration
+
+        wins = round(settled * rate / 100)
+        cal = Calibration(payout=payout, min_sample=20, total=settled)
+        cal.bands = [
+            Bucket(label=_band_label(80), wins=wins, losses=settled - wins,
+                   min_sample=20)
+        ]
+        return cal
+
+    def test_the_bar_is_being_right_not_being_profitable(self):
+        """Fifty per cent, whatever the broker is paying."""
+        for payout in (0.50, 0.80, 0.92):
+            assert self._calibration(payout, 60.0).decision_threshold == 50.0
+
+    def test_the_payout_is_still_reported(self):
+        """Removed from the decision, not from the user's sight."""
+        cal = self._calibration(0.50, 60.0)
+        assert cal.breakeven > 60.0          # 50% payout needs 66.7%
+        assert cal.decision_threshold == 50.0
+
+    def test_a_band_winning_more_than_a_coin_is_not_vetoed_by_a_bad_payout(self):
+        """The case that used to silence the tool on a 50% morning."""
+        cal = self._calibration(0.50, 60.0)
+
+        beats, detail = cal.verdict(85.0, "WEAK_UPTREND")
+
+        # 60% is short of the 66.7% that payout needs, and well clear of a
+        # coin. The record must not call that a losing setup.
+        assert beats is not False, detail
+
+    def test_a_band_losing_to_a_coin_is_still_refused(self):
+        """Taking payout out is not the same as taking the brakes off."""
+        cal = self._calibration(0.92, 30.0)
+
+        beats, _detail = cal.verdict(85.0, "WEAK_UPTREND")
+
+        assert beats is False
+
+    def test_the_same_chart_gets_the_same_answer_at_any_payout(self):
+        answers = {
+            self._calibration(payout, 60.0).verdict(85.0, "WEAK_UPTREND")[0]
+            for payout in (0.30, 0.50, 0.75, 0.92, 1.20)
+        }
+        assert len(answers) == 1, "the broker's pricing changed the reading"

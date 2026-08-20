@@ -740,11 +740,23 @@ class OverlayPanel:
             self._text(PANEL_WIDTH - PAD - 4, y + 8, value, self.f_mono,
                        COLORS["text"], "e")
             y += 18
+
+        # The money warnings live here, with the money — not under the call.
+        # Folded away with the rest of the block, so they are there to read
+        # and never in the way of the reason a setup was refused.
+        for line in list(risk.get("warnings", []))[:3]:
+            y = self._wrapped(PAD + 2, y + 2, f"⚠ {line}", COLORS["wait"])
         return y + 4
 
     def _draw_footer(self, data: dict[str, Any], y: int) -> int:
         y = self._wrapped(PAD + 2, y + 4, data["reason"], COLORS["dim"])
-        warnings = list(data["warnings"]) + list(data["risk"].get("warnings", []))
+        # Only what the chart said. The risk block's warnings are about money
+        # — the stake, the balance, what a payout would need to break even —
+        # and appending them here put "a 50% payout needs a 66.7% win rate"
+        # underneath the reasoning for a WAIT, as though the broker's pricing
+        # were evidence about the market. It is not, it was never asked for,
+        # and it pushed the actual reasons off a list that shows four.
+        warnings = list(data["warnings"])
         for line in warnings[:4]:
             y = self._wrapped(PAD + 2, y, f"⚠ {line}", COLORS["wait"])
         self._text(PANEL_WIDTH // 2, y + 10,

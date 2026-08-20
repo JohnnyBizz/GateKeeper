@@ -308,3 +308,78 @@ class TestTheSessionEndWritesOne:
             assert "EUR/USD OTC 1 MIN" in path.read_text(encoding="utf-8")
         finally:
             app.shutdown()
+
+
+class TestTheReportCanActuallyBeFound:
+    """The app kept score all along, in a folder Windows hides by default.
+
+    "It already writes a report" was true and useless at the same time: the
+    file lands under AppData\\Local, which is not shown in Explorer unless you
+    have turned hidden files on or typed the path. A scorecard nobody can find
+    does not measure anything.
+    """
+
+    def _app(self, tmp_path, monkeypatch):
+        from poa.config import load_config
+        from poa.overlay import app as app_module
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("capture.source_chosen", True)
+        monkeypatch.setattr(app_module, "data_root", lambda: tmp_path)
+        return OverlayApp(config)
+
+    def test_closing_the_app_opens_the_folder_the_report_is_in(
+        self, tmp_path, monkeypatch
+    ):
+        app = self._app(tmp_path, monkeypatch)
+        opened: list = []
+        monkeypatch.setattr(app, "_reveal", lambda path: opened.append(path))
+
+        app.shutdown()
+
+        assert opened, "the session report was written somewhere nobody was shown"
+        assert opened[0] == app._report_dir()
+
+    def test_it_can_be_turned_off_once_you_know_the_path(
+        self, tmp_path, monkeypatch
+    ):
+        app = self._app(tmp_path, monkeypatch)
+        opened: list = []
+        monkeypatch.setattr(app, "_reveal", lambda path: opened.append(path))
+        app.config.set("overlay.reveal_report", False)
+
+        app.shutdown()
+
+        assert opened == []
+
+    def test_a_report_that_could_not_be_written_opens_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """An empty folder popping open would be a worse lie than silence."""
+        app = self._app(tmp_path, monkeypatch)
+        opened: list = []
+        monkeypatch.setattr(app, "_reveal", lambda path: opened.append(path))
+        monkeypatch.setattr(app, "write_session_report", lambda: None)
+
+        app.shutdown()
+
+        assert opened == []
+
+    def test_the_report_lands_where_it_says_it_does(self, tmp_path, monkeypatch):
+        app = self._app(tmp_path, monkeypatch)
+        try:
+            written = app.write_session_report()
+            assert written is not None
+            assert written.parent == app._report_dir()
+            assert written.name.startswith("session-")
+            assert written.suffix == ".txt"
+            # Plain text, so it opens anywhere and pastes into a message.
+            assert "GATEKEEPER" in written.read_text(encoding="utf-8")
+        finally:
+            app.shutdown()

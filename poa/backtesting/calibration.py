@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable, Sequence
 
-from .stats import breakeven_rate
+from .stats import breakeven_rate, wilson_interval
 
 # Settled trades needed before a bucket is allowed to claim anything.
 MIN_SAMPLE = 20
@@ -94,6 +94,21 @@ class Bucket:
             return None
         p = self.win_rate / 100.0
         return round(math.sqrt(max(p * (1.0 - p), 0.0) / self.settled) * 100.0, 2)
+
+    def clearly_above(self, floor: float) -> bool:
+        """Is this rate past ``floor`` by more than the sample's own noise?
+
+        The partner to :meth:`clearly_below`, and held to the same standard.
+        A hundred and sixty trades at 51.25% is not a chart being read well,
+        it is a coin landing slightly more one way, and letting a gap that
+        size move a gate is the same superstition in the opposite direction.
+        """
+        if not self.meaningful or self.win_rate is None:
+            return False
+        error = self.standard_error
+        if error is None:
+            return False
+        return (self.win_rate - error) > floor
 
     def clearly_below(self, breakeven: float) -> bool:
         """Is this rate short of break-even by more than the sample's own noise?
@@ -167,7 +182,28 @@ class Calibration:
 
     @property
     def breakeven(self) -> float:
+        """The rate this payout needs to be worth taking. For display only."""
         return breakeven_rate(self.payout)
+
+    @property
+    def decision_threshold(self) -> float:
+        """The rate a setup has to clear to count as *right*, not as *profitable*.
+
+        Deliberately fifty, and deliberately not the payout's break-even.
+
+        Whether a call is worth taking at 50% or 92% is a question about money,
+        and it belongs to whoever is placing the trade — they said so, more
+        than once. Judging the analysis by it meant the same reading of the
+        same chart was endorsed on one pair and vetoed on another purely
+        because the broker was paying less that morning, which is not a fact
+        about the chart. Worse, on a bad payout the veto tightened to 66.7%,
+        so the tool went quiet exactly when it had least to do with the market.
+
+        So the record answers one question only: do setups like this one come
+        out right more often than a coin. The payout is still printed in the
+        risk block, where the money question lives.
+        """
+        return 50.0
 
     # -- looking a live setup up in the record ------------------------------
 
@@ -193,7 +229,7 @@ class Calibration:
         Returns ``(beats_breakeven, why)``. ``None`` means the record has no
         opinion — which is different from "no", and is said differently.
         """
-        breakeven = self.breakeven
+        breakeven = self.decision_threshold
         band = self.measured_rate(score)
         if band is None:
             return None, (
@@ -203,7 +239,7 @@ class Calibration:
         rate = band.win_rate or 0.0
         detail = (
             f"Setups scoring {band.label} have settled at {rate:.0f}% here "
-            f"over {band.settled} trades (break-even {breakeven:.0f}%)"
+            f"over {band.settled} trades (a coin flip is {breakeven:.0f}%)"
         )
 
         # A regime that loses on its own record overrides a score band that
@@ -291,15 +327,63 @@ class Calibration:
     def _best_of(
         self, table: list[tuple[int, Bucket]]
     ) -> tuple[int, Bucket] | None:
-        breakeven = self.breakeven
+        floor = self.decision_threshold
+        populated = [b for b in self.bands if b.settled]
+        discriminating = len(populated) > 1
+        baseline = table[0][1] if table else None
+        baseline_rate = (baseline.win_rate or 0.0) if baseline is not None else 0.0
         best: tuple[float, int, Bucket] | None = None
         for threshold, bucket in table:
-            if not bucket.beats(breakeven):
+            if not bucket.meaningful or bucket.win_rate is None:
                 continue
-            rate = (bucket.win_rate or 0.0) / 100.0
-            expected = bucket.settled * (rate * self.payout - (1.0 - rate))
-            if best is None or expected > best[0]:
-                best = (expected, threshold, bucket)
+            # Ranked by the *lower* end of the band's interval rather than by
+            # its rate, and never by what it would have paid.
+            #
+            # Expected value let the payout pick the gate — the same chart
+            # chose differently on a 50% morning than a 92% one, having
+            # learned nothing about the market. Plain accuracy swings the
+            # other way and hands it to whichever thin band got lucky, since
+            # twenty trades at 100% outranks eighty at 65%. The lower bound
+            # asks what the band can be relied on for, so a small sample has
+            # to be very good to beat a large one, and a coin flip clears
+            # nothing at all.
+            # Eligibility and ranking are two questions, and conflating them
+            # broke both. Requiring the *interval* to clear a coin is the
+            # right bar for publishing a finding and the wrong one for
+            # choosing a gate: twenty-four real trades at 67% have a lower
+            # bound of 43%, so nothing a session could realistically produce
+            # would ever move it, and the record could not learn from the
+            # trades it was built to learn from.
+            #
+            # So: to be eligible a band has to be right more often than a
+            # coin. To win, it has to be the one that can be *relied* on for
+            # it — which is the lower bound, and which is what stops twenty
+            # lucky trades at 100% outranking eighty solid ones at 65%.
+            if not bucket.clearly_above(floor):
+                continue
+            # A gate has to be better than taking everything, or it is not a
+            # gate — it is the same trades with a number written next to them.
+            # When every band settles at the same rate the score is separating
+            # nothing, and moving the threshold along it only changes how many
+            # of those identical trades get taken.
+            #
+            # Unless there is only one band with anything in it, in which case
+            # there is no separating to be done and the only question is
+            # whether those setups come out right. That is the case that
+            # matters most in practice: a gate refusing setups that scored 72
+            # is corrected by twenty-four of them settling at 67%, and holding
+            # that to a discrimination test it cannot take would keep the gate
+            # shut on the evidence against it.
+            if discriminating and bucket is not baseline:
+                if not bucket.clearly_above(baseline_rate):
+                    continue
+            elif discriminating:
+                continue
+            interval = wilson_interval(bucket.wins, bucket.settled)
+            if interval is None:
+                continue
+            if best is None or interval[0] > best[0]:
+                best = (interval[0], threshold, bucket)
         if best is not None:
             return best[1], best[2]
         return self._best_discriminator(table)

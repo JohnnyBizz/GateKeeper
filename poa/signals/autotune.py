@@ -110,6 +110,28 @@ def tune(
             CEILING_DURATION,
         ),
     ):
+        # The bounds hold whether or not the record has an opinion. They were
+        # applied only on the way to a recommendation, so a gate already
+        # outside them — set by hand, or left behind by an older version —
+        # stayed there for as long as the record stayed quiet. The floor
+        # exists because a gate that can reach zero eventually takes every
+        # trade, and "only while something is being recommended" is not a
+        # floor.
+        if current < floor or current > ceiling:
+            clamped = round(max(floor, min(ceiling, current)), 1)
+            adjustments.append(
+                Adjustment(
+                    key=key,
+                    was=round(current, 1),
+                    now=clamped,
+                    reason=(
+                        f"{current:.0f} is outside the {floor:.0f}-{ceiling:.0f} "
+                        "range these gates are allowed to take"
+                    ),
+                )
+            )
+            current = clamped
+
         best = recommend()
         if best is None:
             continue

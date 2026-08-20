@@ -2014,7 +2014,16 @@ class OverlayApp:
 
     def shutdown(self) -> None:
         # Before the engine closes, while the journal is still open.
-        self.write_session_report()
+        written = self.write_session_report()
+        # And show where it went. A report nobody can find is a report nobody
+        # reads: it lands under AppData, which is hidden by default on
+        # Windows, so "the app already keeps score" was true and useless at
+        # the same time. Opening the folder once, on exit, costs one window
+        # and removes the whole question.
+        if written is not None and bool(
+            self.config.get("overlay.reveal_report", True)
+        ):
+            self._reveal(Path(written).parent)
         try:
             self.engine.unsubscribe(self._on_engine_state)
         except Exception:  # pragma: no cover - best effort

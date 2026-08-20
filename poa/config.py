@@ -226,6 +226,11 @@ DEFAULTS: dict[str, Any] = {
         "session_manual": True,
         # Whether the risk block starts folded away. The panel remembers.
         "risk_collapsed": False,
+        # Open the reports folder when the app closes and a report was
+        # written. It lands under AppData, which Windows hides by default,
+        # so without this the session's own scorecard is somewhere most
+        # people would never look. Set false once you know the path.
+        "reveal_report": True,
     },
     "signals": {
         # Under test. Measured across a rising and a falling recording, the
