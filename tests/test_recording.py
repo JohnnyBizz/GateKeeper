@@ -153,19 +153,23 @@ class TestARecordingBecomesOneSendableFile:
 class TestWhatALengthWillProduce:
     """Said before the wait rather than after it."""
 
+    def _rows(self, seconds):
+        """The table rows, without the caveat that follows them."""
+        return {
+            line.split()[0]: line
+            for line in rec.coverage(seconds).splitlines()
+            if line.strip() and line.strip()[0].isdigit()
+        }
+
     def test_half_an_hour_is_a_second_chart_and_not_a_minute_one(self):
-        text = rec.coverage(1800.0)
-        by_line = {line.split()[0]: line for line in text.splitlines()}
+        by_line = self._rows(1800.0)
 
         assert "enough to measure" in by_line["5s"]
         assert "too few" in by_line["1m"]
         assert "too few" in by_line["5m"]
 
     def test_three_hours_reaches_the_minute_chart(self):
-        by_line = {
-            line.split()[0]: line for line in rec.coverage(3 * 3600.0).splitlines()
-        }
-        assert "enough to measure" in by_line["1m"]
+        assert "enough to measure" in self._rows(3 * 3600.0)["1m"]
 
 
 class TestTheRecordButton:
@@ -608,3 +612,32 @@ class TestAnAttachmentKeepsTheNameAnnouncedForIt:
         assert namer.name_for(None, None, "in") == "updateStream"
         # The next anonymous payload is not another updateStream.
         assert namer.name_for(None, None, "in") is None
+
+
+class TestTheCoverageTableIsAFloorAndSaysSo:
+    """It counts live ticks only, and a real run beat it by fifteen times.
+
+    A thirty-minute recording with a 1 MIN chart open produced 193 M1 candles
+    over 4.6 hours, because the open chart also receives the platform's own
+    history. The table promises 30. Understating is the safe direction to be
+    wrong in — somebody records for longer than they needed to — but only if
+    the reader is told which direction the error runs in, otherwise the table
+    reads as "half an hour cannot measure M1" and that is simply false.
+    """
+
+    def test_the_table_says_which_way_it_is_wrong(self):
+        text = rec.coverage(1800.0)
+
+        assert "From live ticks alone" in text
+        assert "history" in text
+        assert "do far better than this" in text
+
+    def test_the_numbers_themselves_are_unchanged(self):
+        """The floor is still the floor; only the caveat is new."""
+        by_line = {
+            line.split()[0]: line
+            for line in rec.coverage(1800.0).splitlines()
+            if line.strip() and line.strip()[0].isdigit()
+        }
+        assert "360 candles" in by_line["5s"]
+        assert "30 candles" in by_line["1m"]

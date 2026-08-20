@@ -107,12 +107,19 @@ class Recording:
 
 
 def coverage(seconds: float) -> str:
-    """What a run of this length will and will not be able to answer.
+    """What a run of this length builds out of live ticks alone.
 
     Worth saying before the wait rather than after it. Half an hour sounds
     generous and is: for the second charts. It is thirty candles of M1, which
     is not a chart — so somebody expecting to have measured the timeframe they
     actually trade would find out at the end, having spent the half hour.
+
+    A floor rather than a forecast, and the note below the table says so. The
+    chart left open on the platform also gets the platform's own history,
+    which reaches back hours: a thirty-minute recording with a 1 MIN chart
+    open really produced 193 M1 candles over 4.6 hours, against the 30 this
+    table promises. Understating that is the safe direction to be wrong in,
+    but only if the reader is told which direction it is.
     """
     rows = []
     for timeframe in RECORDED_TIMEFRAMES:
@@ -126,6 +133,17 @@ def coverage(seconds: float) -> str:
             verdict = f"{candles} candles — too few; needs about {needed:.1f}h"
         label = f"{timeframe}s" if timeframe < 60 else f"{timeframe // 60}m"
         rows.append(f"    {label:>4}   {verdict}")
+    rows.append("")
+    rows.append(
+        "    From live ticks alone. The chart you leave open also gets the"
+    )
+    rows.append(
+        "    platform's own history, which reaches back hours — so the longer"
+    )
+    rows.append(
+        "    timeframes usually do far better than this. Leave it on the one"
+    )
+    rows.append("    you trade.")
     return "\n".join(rows)
 
 
