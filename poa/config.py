@@ -136,7 +136,15 @@ DEFAULTS: dict[str, Any] = {
         # gone; asking the page to load again recovers them without the user
         # having to touch anything.
         "refresh_chart": True,
-        "poll_seconds": 2.0,
+        # How often the open chart is re-read. Reading it off the feed costs a
+        # few milliseconds, so two seconds was two seconds of a thirty-second
+        # trade spent waiting for no reason.
+        #
+        # Safe to set this low even on a screen source, where a poll is a
+        # screenshot and an OCR pass: the engine loop never schedules the next
+        # read sooner than the last one took, so an expensive source paces
+        # itself and a cheap one gets the interval it asks for.
+        "poll_seconds": 0.5,
         # Screen capture region, in pixels. Populate with tools/select_region.py.
         "region": {"left": 0, "top": 0, "width": 0, "height": 0},
         "monitor": 1,
@@ -291,7 +299,10 @@ DEFAULTS: dict[str, Any] = {
         "min_component_agreement": 0.55,
         "max_atr_percentile": 92,
         "resistance_proximity_atr": 0.75,
-        "cooldown_seconds": 60,
+        # How long the same chart is silenced after a signal. Sixty seconds is
+        # two whole trades at a thirty-second expiry, so a chart that set up
+        # twice in a minute only ever offered the first one.
+        "cooldown_seconds": 15,
         "weakening_drop": 15,
         "invalidation_drop": 25,
     },
@@ -300,8 +311,16 @@ DEFAULTS: dict[str, Any] = {
         "desktop_notifications": True,
         "sound": False,
         "sound_command": "",
-        "cooldown_seconds": 120,
-        "min_confidence": 75,
+        # Two minutes was four trades' worth of silence at a thirty-second
+        # expiry. The watchlist already only announces on the transition into
+        # being tradeable, so this is a second layer and does not need to be
+        # the one doing the work.
+        "cooldown_seconds": 20,
+        # Must match the gate the panel shows calls at, or the tool displays a
+        # call and says nothing about it. These drifted apart the moment the
+        # shown gate moved to 62 and alerts stayed at 75: every call between
+        # the two was silent, which on a thirty-second trade means missed.
+        "min_confidence": 62,
         "notify_on": [
             "BUY_SIGNAL",
             "SELL_SIGNAL",
@@ -569,6 +588,29 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         elif float(config.get("signals.min_shown_confidence", 62)) == 85.0:
             config.set("signals.min_shown_confidence", 62)
             changed.append("signals.min_shown_confidence 85 -> 62")
+
+        # The waiting. Every one of these was tuned when a call arrived every
+        # few minutes; on a thirty-second trade off a five-second chart they
+        # are each a slice of the trade spent doing nothing. Only values still
+        # sitting on the old default are moved — a number the user chose is
+        # theirs.
+        for key, was, now in (
+            ("capture.poll_seconds", 2.0, 0.5),
+            ("overlay.scan_seconds", 2.4, 0.6),
+            ("signals.cooldown_seconds", 60, 15),
+            ("alerts.cooldown_seconds", 120, 20),
+            # And this one is not about speed but about agreement: alerts
+            # gated at 75 while the panel showed calls at 62 meant every call
+            # between the two appeared in silence.
+            ("alerts.min_confidence", 75, 62),
+        ):
+            try:
+                current = float(config.get(key, now))
+            except (TypeError, ValueError):  # pragma: no cover - corrupt value
+                continue
+            if current == float(was):
+                config.set(key, now)
+                changed.append(f"{key} {was} -> {now}")
         # An earlier version of this migration put the 85 on min_confidence,
         # which gates the direction score rather than the displayed number and
         # therefore did not do what it was set to do. Put it back.

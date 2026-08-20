@@ -28,7 +28,12 @@ from ..signals.engine import Signal
 # How long the scanning state is held before the verdict is revealed. The
 # analysis itself completes in well under this; the delay exists so the user
 # sees the verdict was re-derived rather than silently swapped.
-SCAN_DURATION_SECONDS = 2.4
+#
+# It was 2.4 seconds, which is most of a five-second bar and a twelfth of a
+# thirty-second trade spent watching an animation whose only job is to say
+# "this is a new answer". Long enough to read as a re-read, short enough that
+# pressing Scan is not itself a cost.
+SCAN_DURATION_SECONDS = 0.6
 
 
 class ScanState(str, Enum):

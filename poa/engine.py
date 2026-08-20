@@ -648,9 +648,17 @@ class AnalysisEngine:
                 self._stop.wait(backoff)
                 continue
 
-            poll = max(0.5, float(self.config.get("capture.poll_seconds", 2.0)))
+            poll = max(0.1, float(self.config.get("capture.poll_seconds", 0.5)))
             elapsed = time.monotonic() - started
-            self._stop.wait(max(0.1, poll - elapsed))
+            # Never spend more than half the time reading. The interval can be
+            # set low because a fast source deserves it — a feed read is a few
+            # milliseconds — but that same number on a screen source, where
+            # every poll is a screenshot and an OCR pass, would run the reads
+            # back to back and peg a core. Waiting at least as long as the read
+            # took holds the duty cycle at fifty per cent whatever the source
+            # costs, so the setting can be tuned for the fast case without
+            # breaking the slow one.
+            self._stop.wait(max(0.1, poll - elapsed, elapsed))
 
     # -- reads for the API -------------------------------------------------
 

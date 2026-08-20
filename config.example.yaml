@@ -32,7 +32,9 @@ capture:
   # switch timeframe to shake them loose. Set false to never touch the page.
   refresh_chart: true
 
-  poll_seconds: 2.0       # how often to re-read the chart
+  poll_seconds: 0.5       # how often to re-read the chart. Low is safe:
+                          # the engine never starts a read sooner than the
+                          # last one took, so a slow source paces itself.
 
   # -- screen source ---------------------------------------------------------
   # Run `python tools/select_region.py` to fill this in by dragging over your
@@ -118,7 +120,7 @@ overlay:
   x: 40                    # initial window position
   y: 80
   opacity: 0.96            # 1.0 = fully opaque
-  scan_seconds: 2.4        # how long the Scan animation holds before revealing
+  scan_seconds: 0.6        # how long the Scan animation holds before revealing
 
 # Bumped when a stored setting has to change on installs that already exist.
 config_version: 2
@@ -149,7 +151,7 @@ signals:
   max_atr_percentile: 92          # refuse to signal in the top volatility decile
   resistance_proximity_atr: 0.75  # how close to a major level counts as blocked
 
-  cooldown_seconds: 60
+  cooldown_seconds: 15     # silence on one chart after a signal
   weakening_drop: 15              # confidence drop that marks a setup WEAKENING
   invalidation_drop: 25           # confidence drop that INVALIDATES it
 
@@ -158,8 +160,9 @@ alerts:
   desktop_notifications: true
   sound: false
   sound_command: ""        # leave blank to auto-detect a player
-  cooldown_seconds: 120    # suppress repeats of the same alert
-  min_confidence: 75       # only alert on directional signals at least this strong
+  cooldown_seconds: 20     # suppress repeats of the same alert
+  min_confidence: 62       # must match signals.min_shown_confidence, or the
+                           # panel shows calls that never make a sound
   notify_on:
     - BUY_SIGNAL
     - SELL_SIGNAL

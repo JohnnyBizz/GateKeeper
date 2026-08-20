@@ -826,3 +826,70 @@ class TestTheShownGateMovesToSixtyTwo:
             == DEFAULTS["signals"]["min_shown_confidence"]
             == 62
         )
+
+
+class TestTheWaitingIsCutForShortTrades:
+    """Every delay was tuned when a call arrived every few minutes.
+
+    On a thirty-second trade off a five-second chart each one is a slice of
+    the trade spent doing nothing: two seconds before the open chart is
+    re-read, 2.4 watching a scan animation, a minute of silence on a chart
+    that just signalled, two minutes on the alert.
+
+    And one that was not about speed at all — alerts gated at 75 while the
+    panel showed calls at 62, so every call between the two appeared without
+    a sound. On a thirty-second trade a silent call is a missed one.
+    """
+
+    def _config(self, tmp_path, data=None):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(data or {}, handle)
+        return load_config(path)
+
+    def test_the_old_defaults_are_all_moved_on(self, tmp_path):
+        config = self._config(tmp_path, {
+            "capture": {"poll_seconds": 2.0},
+            "overlay": {"scan_seconds": 2.4},
+            "signals": {"cooldown_seconds": 60, "min_shown_confidence": 85},
+            "alerts": {"cooldown_seconds": 120, "min_confidence": 75},
+        })
+
+        assert config.get("capture.poll_seconds") == 0.5
+        assert config.get("overlay.scan_seconds") == 0.6
+        assert config.get("signals.cooldown_seconds") == 15
+        assert config.get("alerts.cooldown_seconds") == 20
+        assert config.get("alerts.min_confidence") == 62
+
+    def test_a_number_the_user_chose_is_left_alone(self, tmp_path):
+        """Somebody who set a slow poll on purpose keeps it."""
+        config = self._config(tmp_path, {
+            "capture": {"poll_seconds": 5.0},
+            "alerts": {"cooldown_seconds": 300},
+        })
+
+        assert config.get("capture.poll_seconds") == 5.0
+        assert config.get("alerts.cooldown_seconds") == 300
+
+    def test_alerts_fire_at_the_gate_the_panel_shows(self, tmp_path):
+        """The two must agree or the tool calls without saying so."""
+        config = self._config(tmp_path)
+
+        assert (
+            config.get("alerts.min_confidence")
+            == config.get("signals.min_shown_confidence")
+        )
+
+    def test_a_corrupt_value_does_not_stop_the_migration(self, tmp_path):
+        config = self._config(tmp_path, {
+            "capture": {"poll_seconds": "soon"},
+            "alerts": {"cooldown_seconds": 120},
+        })
+
+        # The unreadable one is left for the loader's own defaulting; the rest
+        # still move, because one bad key is not a reason to strand the file.
+        assert config.get("alerts.cooldown_seconds") == 20
