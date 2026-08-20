@@ -178,6 +178,9 @@ def _print_detail(result, stats) -> None:
     print(f"Flat             {stats['flat']}")
     win_rate = stats["win_rate"]
     print(f"Win rate         {'--' if win_rate is None else f'{win_rate:.1f}%'}")
+    interval = stats.get("interval")
+    if interval:
+        print(f"95% interval     {interval[0]:.1f}% .. {interval[1]:.1f}%")
     print(f"Break-even       {stats['breakeven_rate']:.1f}%  (at {stats['payout_assumed']:.0%} payout)")
     expected = stats["expected_value"]
     print(f"Expected value   {'--' if expected is None else f'{expected:+.4f} per unit staked'}")
@@ -188,6 +191,29 @@ def _print_detail(result, stats) -> None:
     )
     if stats["sample_warning"]:
         print(f"\n  ! {stats['sample_warning']}")
+
+    # The comparison that decides whether anything above is analysis. Same
+    # entries, same expiries, direction replaced by a rule with no opinion.
+    baselines = stats.get("baselines") or []
+    if baselines and win_rate is not None:
+        print("\nTHE SAME ENTRIES, WITH NO OPINION")
+        for base in baselines:
+            rate = base["win_rate"]
+            if rate is None:
+                continue
+            gap = win_rate - rate
+            verdict = (
+                "the engine is ahead" if gap > 0
+                else "level" if gap == 0
+                else f"BEATS the engine by {-gap:.1f} points"
+            )
+            print(f"  {base['name']:<14} {base['wins']:>3}/{base['settled']:<3} "
+                  f"{rate:5.1f}%   {verdict}")
+        print(
+            "\n  A tool that names one direction almost every time posts"
+            "\n  whatever the market did. If it cannot beat these, the score"
+            "\n  is not what produced the result."
+        )
 
     for title, key in (
         ("BY DIRECTION", "by_direction"),

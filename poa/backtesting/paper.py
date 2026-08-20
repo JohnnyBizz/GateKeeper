@@ -24,7 +24,7 @@ from ..logging_setup import get_logger
 from ..models import DataQuality, Direction, Series, format_duration
 from ..signals.engine import Signal, SignalEngine, SignalRequest
 from ..signals.gates import GateSettings
-from .stats import summarise_outcomes
+from .stats import directional_baselines, summarise_outcomes, wilson_interval
 
 log = get_logger(__name__)
 
@@ -327,6 +327,19 @@ class Backtester:
                 for t in trades
             ],
             self.payout,
+        )
+        # What the same entries would have paid with no opinion at all, and an
+        # interval around the engine's own rate. A win rate is only worth
+        # reading beside these: a run that calls BUY almost every time posts
+        # whatever the market did, and reads as analysis.
+        statistics["baselines"] = [
+            baseline.to_dict()
+            for baseline in directional_baselines(t.price_change for t in trades)
+        ]
+        decided = int(statistics["wins"]) + int(statistics["losses"])
+        interval = wilson_interval(int(statistics["wins"]), decided)
+        statistics["interval"] = (
+            None if interval is None else [round(interval[0], 1), round(interval[1], 1)]
         )
 
         return BacktestResult(

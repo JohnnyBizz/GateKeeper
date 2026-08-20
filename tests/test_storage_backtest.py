@@ -1268,3 +1268,81 @@ class TestTheRegimeRecordGate:
         report, _ = self._gates(self._calibration(regime))
         detail = [r for r in report.results if r.name == "regime_record"][0].detail
         assert "%" in detail and "against" in detail
+
+
+class TestAWinRateIsReportedNextToWhatItIsWorth:
+    """Two numbers that stop a result being read as better than it is.
+
+    A rate on its own invited exactly one mistake, twice. On a real recording
+    the engine scored 66.7% over 36 trades, which reads as a working edge and
+    is consistent with anything from 50.3% to 79.8% — straddling break-even,
+    so equally consistent with a losing tool. And on those same entries, a
+    rule that just said BUY every time scored 72.2%. Both facts were found by
+    happening to check. Now the report says them.
+    """
+
+    def test_the_interval_is_wide_when_the_sample_is_small(self):
+        from poa.backtesting.stats import wilson_interval
+
+        low, high = wilson_interval(2, 3)
+        assert high - low > 50  # three trades tell you almost nothing
+
+        low, high = wilson_interval(600, 1000)
+        assert high - low < 10  # a thousand tell you something
+
+    def test_it_never_promises_more_than_certainty(self):
+        from poa.backtesting.stats import wilson_interval
+
+        assert wilson_interval(0, 0) is None
+        low, high = wilson_interval(5, 5)
+        assert high <= 100.0 and low < 100.0   # five in a row is not proof
+        low, high = wilson_interval(0, 5)
+        assert low >= 0.0 and high > 0.0
+
+    def test_the_baselines_count_which_way_price_went(self):
+        from poa.backtesting.stats import directional_baselines
+
+        buy, sell = directional_baselines([0.1, 0.2, -0.3, 0.4, -0.5])
+        assert (buy.name, buy.wins, buy.settled) == ("always BUY", 3, 5)
+        assert (sell.name, sell.wins, sell.settled) == ("always SELL", 2, 5)
+
+    def test_an_unmoved_market_settles_neither_baseline(self):
+        from poa.backtesting.stats import directional_baselines
+
+        buy, sell = directional_baselines([0.0, None, 0.5])
+        assert buy.settled == sell.settled == 1
+        assert buy.wins == 1 and sell.wins == 0
+
+    def test_a_backtest_reports_both_without_being_asked(self):
+        """The point is that nobody has to think to run this."""
+        from conftest import trending_series
+        from poa.backtesting.paper import Backtester
+
+        series = trending_series(400, step=0.00012)
+        result = Backtester(window=120, payout=0.92).run(
+            series, trade_duration=180, asset="EUR/USD", step=1
+        )
+        stats = result.statistics
+
+        assert "baselines" in stats
+        assert {b["name"] for b in stats["baselines"]} == {
+            "always BUY", "always SELL"
+        }
+        if stats["wins"] + stats["losses"]:
+            assert stats["interval"] is not None
+            low, high = stats["interval"]
+            assert 0.0 <= low <= high <= 100.0
+
+    def test_a_rising_market_makes_always_buy_the_one_to_beat(self):
+        """Which is the whole reason the comparison is printed."""
+        from conftest import trending_series
+        from poa.backtesting.paper import Backtester
+
+        series = trending_series(400, step=0.00012)
+        result = Backtester(window=120, payout=0.92).run(
+            series, trade_duration=180, asset="EUR/USD", step=1
+        )
+        buy, sell = result.statistics["baselines"]
+        if buy["settled"]:
+            assert buy["wins"] + sell["wins"] == buy["settled"]
+            assert buy["win_rate"] > sell["win_rate"]

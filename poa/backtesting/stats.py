@@ -10,6 +10,7 @@ behaviour of the engine on the data it was given, and no more.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
@@ -53,6 +54,81 @@ class Streaks:
             "current_streak": self.current,
             "current_streak_kind": self.current_kind,
         }
+
+
+def wilson_interval(wins: int, total: int) -> tuple[float, float] | None:
+    """The 95% interval around a win rate, as percentages.
+
+    A rate without one invites the mistake this exists to stop. Thirty-six
+    trades at 66.7% reads like a working edge and is consistent with anything
+    from 50.3% to 79.8% — which straddles break-even, so it is equally
+    consistent with a losing tool. Wilson rather than the textbook normal
+    interval, because the samples here are small and the rates near the edges.
+    """
+    if total <= 0:
+        return None
+    z = 1.96
+    p = wins / total
+    centre = (p + z * z / (2 * total)) / (1 + z * z / total)
+    spread = (
+        z
+        * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total))
+        / (1 + z * z / total)
+    )
+    return (max(0.0, centre - spread) * 100, min(1.0, centre + spread) * 100)
+
+
+@dataclass
+class Baseline:
+    """What a rule with no opinion would have scored on the same entries."""
+
+    name: str
+    wins: int
+    settled: int
+
+    @property
+    def win_rate(self) -> float | None:
+        return None if not self.settled else self.wins / self.settled * 100
+
+    def to_dict(self) -> dict[str, Any]:
+        rate = self.win_rate
+        interval = wilson_interval(self.wins, self.settled)
+        return {
+            "name": self.name,
+            "wins": self.wins,
+            "settled": self.settled,
+            "win_rate": None if rate is None else round(rate, 1),
+            "interval": None if interval is None
+            else [round(interval[0], 1), round(interval[1], 1)],
+        }
+
+
+def directional_baselines(changes: Iterable[float | None]) -> list[Baseline]:
+    """Always-buy and always-sell, judged on the engine's own entries.
+
+    The number that matters is not the engine's win rate but the gap between
+    it and this. A tool calling BUY thirty-four times out of thirty-six has
+    barely made a decision, and over a half hour when price happened to rise
+    it posts a healthy-looking rate for a reason that has nothing to do with
+    its analysis. Measured on a real recording, always-buy beat the engine on
+    every chart-and-expiry combination tried, on identical entries.
+
+    Printed beside every result from now on, because that was found by
+    happening to check rather than by the report saying so.
+    """
+    ups = downs = 0
+    for change in changes:
+        if change is None or change == 0:
+            continue
+        if change > 0:
+            ups += 1
+        else:
+            downs += 1
+    settled = ups + downs
+    return [
+        Baseline("always BUY", ups, settled),
+        Baseline("always SELL", downs, settled),
+    ]
 
 
 def _rate(wins: int, losses: int) -> float | None:
