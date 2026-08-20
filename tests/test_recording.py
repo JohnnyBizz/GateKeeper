@@ -408,9 +408,13 @@ class TestARecordingSaysWhatItCouldNotCapture:
     def test_a_recording_that_reached_a_minute_says_nothing(self):
         assert self._result([5, 15, 60, 300]).shortfall() == ""
 
-    def test_nor_does_one_that_produced_no_charts_at_all(self):
-        """That is a different failure, already reported in its own words."""
-        assert self._result([], candles=()).shortfall() == ""
+    def test_a_run_that_captured_nothing_at_all_says_nothing_here(self):
+        """No frames is a connection failure, and ``error`` already names it.
+
+        Explaining the shape of a recording that never happened would bury
+        the reason it did not under advice about timeframes.
+        """
+        assert rec.Recording(frames=0, candles=[]).shortfall() == ""
 
     def test_whether_the_history_arrived_is_recorded(self, monkeypatch, tmp_path):
         frames = _frames(3) + [
@@ -641,3 +645,97 @@ class TestTheCoverageTableIsAFloorAndSaysSo:
         }
         assert "360 candles" in by_line["5s"]
         assert "30 candles" in by_line["1m"]
+
+
+class TestARecordingThatNamesNoChartSaysSo:
+    """The worst outcome: half an hour spent, a file produced, nothing in it.
+
+    A real capture came back with 15,800 frames and zero candles. Prices arrive
+    for the whole market whether or not anything says which chart is being
+    followed, so the run looked busy the entire time and built nothing. The
+    page announces its chart when it loads, and the chart had been open for
+    hours before anybody pressed RECORD, so those messages were long past.
+
+    The live source has always asked the page to reload when it has not been
+    told what it is showing. The recorder did not.
+    """
+
+    def _naming(self, name):
+        return decode_frame(f'42["{name}",{{"asset":"EURUSD_otc","period":60}}]')
+
+    def test_the_capture_reports_whether_a_chart_was_named(self, monkeypatch, tmp_path):
+        anonymous = _frames(4)
+        monkeypatch.setattr(rec, "record_platform", _fake_platform(anonymous))
+        assert not rec.record_session(9222, 1800.0, tmp_path).named_a_chart
+
+    def test_a_run_with_no_charts_explains_itself(self):
+        result = rec.Recording(frames=15800, candles=[], named_a_chart=False)
+        note = result.shortfall()
+
+        assert "never said which chart" in note
+        assert "15,800" in note
+        assert "Record again" in note
+
+    def test_a_named_run_with_too_little_data_says_that_instead(self):
+        """A different failure, and it needs a different answer."""
+        result = rec.Recording(frames=900, candles=[], named_a_chart=True)
+        note = result.shortfall()
+
+        assert "never said which chart" not in note
+        assert "longer recording" in note
+
+    def test_the_panel_treats_an_empty_bundle_as_a_failure(
+        self, monkeypatch, tmp_path
+    ):
+        """Offering it as "SAVED - TAP TO OPEN" is how an empty file gets sent."""
+        landed = tmp_path / "gatekeeper-recording-empty.zip"
+        landed.write_bytes(b"PK")
+
+        def fake_session(port, seconds, storage, **kwargs):
+            return rec.Recording(frames=15800, bundle=landed, candles=[],
+                                 named_a_chart=False)
+
+        monkeypatch.setattr(rec, "record_session", fake_session)
+        app = TestTheRecordButton()._app(tmp_path, monkeypatch)
+        try:
+            app._start_recording(minutes=30)
+            app._recording_thread.join(timeout=5)
+
+            state = app.vm.render()["recording"]
+            assert state["label"] == "RECORD FAILED — TAP TO RETRY"
+            assert not state["bundle"]
+            assert "never said which chart" in state["message"]
+        finally:
+            app.shutdown()
+
+    def test_a_real_recording_still_reads_as_success(self, monkeypatch, tmp_path):
+        landed = tmp_path / "gatekeeper-recording-good.zip"
+        landed.write_bytes(b"PK")
+
+        def fake_session(port, seconds, storage, **kwargs):
+            return rec.Recording(frames=9000, bundle=landed,
+                                 candles=[Path("EUR-USD-OTC-60s.csv")],
+                                 timeframes=[60], named_a_chart=True)
+
+        monkeypatch.setattr(rec, "record_session", fake_session)
+        app = TestTheRecordButton()._app(tmp_path, monkeypatch)
+        try:
+            app._start_recording(minutes=30)
+            app._recording_thread.join(timeout=5)
+
+            state = app.vm.render()["recording"]
+            assert state["label"] == "RECORDING SAVED — TAP TO OPEN"
+            assert state["bundle"] == str(landed)
+        finally:
+            app.shutdown()
+
+    def test_the_naming_events_are_the_ones_that_identify_a_chart(self):
+        from poa.feed.recorder import NAMING_EVENTS
+
+        # Every message the source uses to claim an asset has to be here, or
+        # the recorder reloads a page that had in fact already told it.
+        for event in ("changeSymbol", "saveCharts", "loadHistoryPeriodFast"):
+            assert event in NAMING_EVENTS
+        # A price tick is not one of them: it names an instrument but says
+        # nothing about which chart is on screen, and there are thousands.
+        assert "updateStream" not in NAMING_EVENTS

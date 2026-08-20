@@ -68,6 +68,10 @@ class Recording:
     #: Without it a recording only holds what arrived live, which for a half
     #: hour means sub-minute charts and nothing else.
     history_seen: bool = False
+    #: Whether the page ever said which chart it was showing. Without that,
+    #: prices arrive for the whole market and belong to nothing: the replay
+    #: cannot tell which instrument is being followed and builds no candles.
+    named_a_chart: bool = False
     #: Set when the run could not be taken at all — no debuggable browser, no
     #: platform tab. The caller says so; nothing was written.
     error: str | None = None
@@ -95,6 +99,23 @@ class Recording:
         guess about why, printed as though it were a finding, sent the user off
         to change something that was never the problem.
         """
+        if self.frames and not self.candles:
+            # The worst outcome there is: half an hour spent, a file produced,
+            # and nothing in it. Prices arrive for the whole market whether or
+            # not anything says which chart is being followed, so a capture
+            # that missed the naming messages looks busy and builds nothing.
+            if not self.named_a_chart:
+                return (
+                    f"No charts — the page never said which chart it had open, "
+                    f"so all {self.frames:,} price updates belonged to nothing "
+                    "nameable. It announces that when it loads, and this "
+                    "recording now asks it to reload if it has not. Record "
+                    "again."
+                )
+            return (
+                f"No chart had enough candles to export, from "
+                f"{self.frames:,} frames. A longer recording is what this needs."
+            )
         if not self.candles:
             return ""
         if max(self.timeframes, default=0) >= 60:
@@ -243,6 +264,7 @@ def record_session(
         result.history_seen = any(
             "loadHistoryPeriodFast" in name for name in capture.summary.by_event
         )
+        result.named_a_chart = capture.named_a_chart
         lines = ["SOCKETS", "-" * 70]
         lines.extend(f"  {url}" for url in capture.sockets)
         lines += ["", "WHAT CAME THROUGH", "-" * 70, capture.summary.render()]

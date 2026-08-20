@@ -29,6 +29,30 @@ except ImportError:  # pragma: no cover
     websockets = None  # type: ignore[assignment]
 
 
+# The messages in which the page says which chart it is showing. Without one
+# of these a recording is a stream of prices belonging to nothing: the replay
+# never learns which instrument is being followed, so it builds no candles at
+# all, however many ticks arrive.
+NAMING_EVENTS = (
+    "changeSymbol",
+    "saveCharts",
+    "updateCharts",
+    "loadHistoryPeriod",
+    "loadHistoryPeriodFast",
+    "changeTimeFrame",
+    "updateHistoryNewFast",
+)
+
+# How long to wait for the page to name its chart before asking it to reload,
+# and how many times to ask. Matched to the live source, which has always done
+# this. The recorder did not, so a tab that had been open a while — the normal
+# case, since the chart is opened long before anybody thinks to record it —
+# captured half an hour of anonymous ticks and produced an empty file.
+NAMING_GRACE_SECONDS = 8.0
+MAX_RELOADS = 2
+RELOAD_COOLDOWN_SECONDS = 45.0
+
+
 @dataclass
 class Capture:
     """What a recording session produced."""
@@ -36,6 +60,9 @@ class Capture:
     frames: list[Frame]
     summary: Summary
     sockets: list[str]
+    #: Whether the page ever said which chart it was showing. False means the
+    #: frames cannot become candles, however much else went right.
+    named_a_chart: bool = False
 
     def write(self, path: Path) -> Path:
         """Write the redacted frames as JSON lines."""
@@ -70,6 +97,12 @@ async def record(
     loop = asyncio.get_event_loop()
     deadline = loop.time() + seconds
     attempts = 0
+    # Whether the page has said which chart it is showing, and what has been
+    # done about it if not. A chart is opened long before anybody thinks to
+    # record it, so by default those messages are already in the past.
+    named = False
+    reloads = 0
+    reloaded_at: float | None = None
 
     # Reconnect until the time is up. A three-hour capture is worth far more
     # than a thirty-minute one, and over three hours a DevTools socket
@@ -89,12 +122,46 @@ async def record(
                 if attempts:
                     log.info("reconnected to the page, still recording")
 
+                started = loop.time()
+                seen = 0
                 while loop.time() < deadline and len(frames) < max_frames:
+                    # Ask the page to load itself again when it has not said
+                    # what it is showing. The live source has always done this;
+                    # without it a recording taken against a tab that was
+                    # already open collects nothing but anonymous prices, and
+                    # the user finds out half an hour later from an empty file.
+                    now = loop.time()
+                    if (
+                        not named
+                        # At least one message has to have been read first.
+                        # Judging the page before hearing from it would reload
+                        # a tab that was in the middle of naming its chart.
+                        and seen
+                        and reloads < MAX_RELOADS
+                        and now - started > NAMING_GRACE_SECONDS
+                        and (
+                            reloaded_at is None
+                            or now - reloaded_at > RELOAD_COOLDOWN_SECONDS
+                        )
+                    ):
+                        reloads += 1
+                        reloaded_at = now
+                        log.info(
+                            "the page has not named its chart; asking it to reload"
+                        )
+                        await connection.send(
+                            json.dumps({"id": 2, "method": "Page.enable"})
+                        )
+                        await connection.send(
+                            json.dumps({"id": 3, "method": "Page.reload", "params": {}})
+                        )
+
                     remaining = deadline - loop.time()
                     raw = await asyncio.wait_for(
                         connection.recv(), timeout=max(remaining, 0.1)
                     )
 
+                    seen += 1
                     try:
                         message = json.loads(raw)
                     except ValueError:  # pragma: no cover - malformed
@@ -121,6 +188,9 @@ async def record(
                         direction="in" if method.endswith("Received") else "out",
                         opcode=int(response.get("opcode", 1)),
                     )
+                    name = frame.event or frame.announces
+                    if name in NAMING_EVENTS:
+                        named = True
                     if on_frame is None:
                         frames.append(frame)
                     else:
@@ -138,7 +208,9 @@ async def record(
         # The tab may be mid-reload. Waiting a moment beats hammering it.
         await asyncio.sleep(min(2.0, max(0.1, deadline - loop.time())))
 
-    return Capture(frames=frames, summary=summary, sockets=sockets)
+    return Capture(
+        frames=frames, summary=summary, sockets=sockets, named_a_chart=named
+    )
 
 
 def record_platform(

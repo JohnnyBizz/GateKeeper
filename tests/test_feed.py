@@ -2186,3 +2186,112 @@ class TestWhatTheRealCaptureRevealed:
         for _ in range(400):
             source._handle("successcloseOrder", self._closed())
         assert len(source._settled) <= 200
+
+
+class TestAnUnnamedChartMakesTheRecorderAskForOne:
+    """A real capture came back with 15,800 frames and zero candles.
+
+    Prices arrive for the whole market whether or not anything has said which
+    chart is being followed, so the run looks busy the entire time and builds
+    nothing. The page announces its chart when it loads — and the chart is
+    opened long before anybody thinks to record it, so by then those messages
+    are already in the past.
+
+    The live source has always asked the page to reload when it has not been
+    told what it is showing. The recorder had no such thing, which is why half
+    an hour of a falling market produced an empty file.
+    """
+
+    def _run(self, messages, seconds=1.0):
+        import asyncio
+        import types
+
+        from poa.feed import recorder
+
+        sent: list[dict] = []
+
+        class FakeConnection:
+            def __init__(self, queued):
+                self.queued = list(queued)
+
+            async def send(self, message):
+                import json as _json
+                sent.append(_json.loads(message))
+
+            async def recv(self):
+                if self.queued:
+                    return self.queued.pop(0)
+                await asyncio.sleep(10)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_a):
+                return False
+
+        original = recorder.websockets
+        grace = recorder.NAMING_GRACE_SECONDS
+        recorder.websockets = types.SimpleNamespace(
+            connect=lambda *a, **k: FakeConnection(messages)
+        )
+        # The real grace is eight seconds; nobody should wait that long here.
+        recorder.NAMING_GRACE_SECONDS = 0.0
+        try:
+            capture = asyncio.run(recorder.record(
+                types.SimpleNamespace(websocket_url="ws://x", url="http://x"),
+                seconds=seconds, max_frames=10**9,
+            ))
+        finally:
+            recorder.websockets = original
+            recorder.NAMING_GRACE_SECONDS = grace
+        return capture, sent
+
+    def _tick(self):
+        import json
+        return json.dumps({
+            "method": "Network.webSocketFrameReceived",
+            "params": {"response": {
+                "payloadData": '42["updateStream",[["EURUSD_otc",1786663900.0,1.16]]]',
+                "opcode": 1,
+            }},
+        })
+
+    def _named(self):
+        import json
+        return json.dumps({
+            "method": "Network.webSocketFrameSent",
+            "params": {"response": {
+                "payloadData": '42["changeSymbol",{"asset":"EURUSD_otc","period":60}]',
+                "opcode": 1,
+            }},
+        })
+
+    def test_anonymous_prices_make_it_ask_the_page_to_reload(self):
+        capture, sent = self._run([self._tick()] * 6)
+
+        methods = [m.get("method") for m in sent]
+        assert "Page.reload" in methods, "the recorder never asked for a reload"
+        assert not capture.named_a_chart
+
+    def test_a_page_that_named_its_chart_is_left_alone(self):
+        """Reloading a working capture would throw away what it had."""
+        capture, sent = self._run([self._named()] + [self._tick()] * 6)
+
+        assert "Page.reload" not in [m.get("method") for m in sent]
+        assert capture.named_a_chart
+
+    def test_it_asks_a_bounded_number_of_times(self):
+        """A page that says nothing after two reloads will not start on the
+        third, and a tab reloading itself forever is its own failure."""
+        from poa.feed import recorder
+
+        capture, sent = self._run([self._tick()] * 400, seconds=2.0)
+        reloads = sum(1 for m in sent if m.get("method") == "Page.reload")
+
+        assert 0 < reloads <= recorder.MAX_RELOADS
+
+    def test_network_is_still_enabled_first(self):
+        """The reload is an addition, not a replacement."""
+        _capture, sent = self._run([self._tick()] * 4)
+
+        assert sent[0].get("method") == "Network.enable"

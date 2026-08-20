@@ -115,11 +115,25 @@ class TestItPlacesNoTrades:
         # pair of eyes rather than a green build.
         assert sent <= ALLOWED_CDP_METHODS, sorted(sent - ALLOWED_CDP_METHODS)
 
-    def test_the_recorder_only_subscribes(self):
+    def test_the_recorder_only_subscribes_and_reloads(self):
+        """The recorder gained two messages, and both were looked at.
+
+        It used to send ``Network.enable`` and nothing else, and this test
+        pinned exactly that — which is how the addition got noticed rather
+        than waved through.
+
+        ``Page.enable`` subscribes to the page's own events. ``Page.reload``
+        reloads the tab the user already has open, which the live source has
+        always done and which the recorder now needs: a chart is opened long
+        before anybody records it, so the messages naming it are already in
+        the past, and a capture that never hears them builds no candles at
+        all. Neither message reaches the platform, and neither can place a
+        trade — reloading a page is not pressing a button on it.
+        """
         from poa.feed import recorder
 
-        methods = self._sent_methods(Path(recorder.__file__))
-        assert methods == ["Network.enable"]
+        methods = set(self._sent_methods(Path(recorder.__file__)))
+        assert methods == {"Network.enable", "Page.enable", "Page.reload"}
 
     @pytest.mark.parametrize(
         "verb", ["Input.dispatchMouseEvent", "Input.dispatchKeyEvent",

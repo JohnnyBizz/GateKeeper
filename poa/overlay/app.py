@@ -1034,7 +1034,7 @@ class OverlayApp:
         if result.error and result.frames == 0:
             state.error = result.error
             state.message = result.error
-        elif result.bundle is not None:
+        elif result.bundle is not None and result.candles:
             state.bundle = state.last_bundle = str(result.bundle)
             charts = len(result.candles)
             state.message = (
@@ -1046,8 +1046,16 @@ class OverlayApp:
                 state.message += " " + shortfall
             log.info("recording saved to %s", result.bundle)
         else:
-            state.error = result.error or "No chart had enough candles to export."
+            # A bundle holding no candles is not a recording, whatever its
+            # size. Offering it as "SAVED — TAP TO OPEN" is how half an hour
+            # gets spent, sent on, and only then found to be empty.
+            state.error = (
+                result.shortfall()
+                or result.error
+                or "No chart had enough candles to export."
+            )
             state.message = state.error
+            log.warning("recording produced no charts: %s", state.error)
         state.active = False
 
     def _reveal(self, path: Path) -> None:

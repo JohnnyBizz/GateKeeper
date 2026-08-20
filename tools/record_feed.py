@@ -222,16 +222,21 @@ def main() -> int:
         if shortfall:
             print(f"\n  ! {shortfall}")
     else:
-        print(
-            "\nNo chart had enough candles to export. A longer recording,"
-            "\nwith a chart left open on the platform, is what this needs."
-        )
+        print(f"\n  ! {result.shortfall()}")
 
     # One file to send. The candles and the summary answer different questions
     # and both are wanted, but "attach this folder and also that text file" is
     # a step to get wrong at the end of a half-hour wait — and the raw frames
     # sitting beside them are far too large to send and must not be swept up
     # by mistake.
+    if not result.candles:
+        # Never "SEND THIS ONE FILE" over a bundle with no market in it. That
+        # is how half an hour gets spent, sent on, and only then found empty.
+        print("\n" + "=" * 70)
+        print("NOTHING WORTH SENDING — this recording produced no charts.")
+        print("=" * 70)
+        _pause()
+        return 1
     if result.bundle is not None:
         megabytes = result.bundle.stat().st_size / 1_048_576
         print("\n" + "=" * 70)
