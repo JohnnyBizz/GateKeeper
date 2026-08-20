@@ -21,6 +21,7 @@ measurement about the real market.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -28,6 +29,7 @@ from ..logging_setup import get_logger
 from ..models import Series
 from .frames import AttachmentNamer
 from .source import FeedChartSource
+from .ticks import display_symbol
 
 log = get_logger(__name__)
 
@@ -49,11 +51,56 @@ def read_frames(path: str | Path) -> Iterator[dict[str, Any]]:
                 log.debug("line %d of the recording is not readable", number)
 
 
+@dataclass
+class Replayed:
+    """Everything a recording turned into, and which of it was being watched.
+
+    The distinction is not cosmetic. The socket carries the whole market, and
+    a chart is built for every instrument on it — deliberately, so setups can
+    be flagged on pairs nobody is looking at. That means a recording taken
+    while trading EUR/USD also contains AUD/CAD, and the files come out side
+    by side with nothing to tell them apart.
+
+    Which cost real work: a half-hour capture was reported as "a falling
+    market" on the strength of AUD/CAD dropping 0.48%, when the pair actually
+    being traded was flat, and an accuracy figure was quoted from a pool that
+    silently included an instrument the user had never traded. Every recording
+    says which chart was open now.
+    """
+
+    charts: list[tuple[str, int, Series]]
+    #: The instrument the page had open, if it ever said so.
+    focus: str | None = None
+    #: The timeframe that chart was on.
+    focus_timeframe: int | None = None
+
+    def traded(self) -> list[tuple[str, int, Series]]:
+        """Only the charts for the instrument that was actually being watched."""
+        if self.focus is None:
+            return list(self.charts)
+        return [c for c in self.charts if c[0] == self.focus]
+
+
+def replay_recording(
+    path: str | Path,
+    *,
+    max_candles: int = 5000,
+    min_candles: int = 60,
+) -> Replayed:
+    """Replay a recording into charts, and say which one was being watched."""
+    charts = charts_from_recording(
+        path, max_candles=max_candles, min_candles=min_candles, _focus=(focus := [])
+    )
+    asset, timeframe = focus[0] if focus else (None, None)
+    return Replayed(charts=charts, focus=asset, focus_timeframe=timeframe)
+
+
 def charts_from_recording(
     path: str | Path,
     *,
     max_candles: int = 5000,
     min_candles: int = 60,
+    _focus: list | None = None,
 ) -> list[tuple[str, int, Series]]:
     """Every chart a recording contains, as candles.
 
@@ -61,6 +108,9 @@ def charts_from_recording(
     through a second parser written for this purpose. Two parsers would be two
     answers to one question, and the one used offline would be the one nobody
     notices has drifted.
+
+    Every instrument the socket carried comes back, not only the one on
+    screen. Use :func:`replay_recording` when it matters which was which.
     """
     source = FeedChartSource(port=0, min_candles=min_candles, max_candles=max_candles)
     # The platform's larger messages arrive as a header naming the event and
@@ -84,6 +134,14 @@ def charts_from_recording(
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("frame %d could not be replayed: %s", seen, exc)
         seen += 1
+
+    if _focus is not None:
+        # Whatever the page last said it had open. ``_asset`` is the source's
+        # own answer to that question, so this is the same answer the live
+        # panel would have given rather than a second guess at it.
+        focused = getattr(source, "_asset", None)
+        if focused:
+            _focus.append((display_symbol(focused), getattr(source, "_period", None)))
 
     charts = [
         (asset, timeframe, series)

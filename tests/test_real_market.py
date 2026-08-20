@@ -29,7 +29,7 @@ from poa.chart_detection.csv_source import load_csv
 
 RECORDED = Path(__file__).resolve().parent.parent / "data/recorded"
 CAPTURE = RECORDED / "2026-08-19-pocketoption"
-FALLING = RECORDED / "2026-08-20-falling"
+SECOND = RECORDED / "2026-08-20-eurusd"
 
 
 def _timeframe(path: Path) -> int:
@@ -60,30 +60,39 @@ class TestTheRecordingIsIntact:
         span = series[-1].timestamp - series[0].timestamp
         assert span > datetime.timedelta(hours=3)
 
-    def test_the_same_pair_is_captured_going_both_ways(self):
+    def test_the_traded_pair_is_captured_going_both_ways(self):
         """One direction of drift flatters whichever way a tool leans.
 
-        On the first capture the engine called BUY on 80% of its entries and
-        posted a healthy-looking rate, and most of the windows it chose went
-        up. Whether that was analysis or the market carrying it cannot be told
-        from a sample that only moves one way, so the same instrument is here
-        twice, going opposite directions: AUD/CAD rose 0.18% in the first and
-        fell 0.48% in the second.
-
-        Lose that and every accuracy number below silently becomes a
-        measurement of the weather.
+        The pair that has to move both ways is the one being *traded*. Both
+        captures also contain AUD/CAD, which streamed past on the same socket
+        and was never on screen — and reading its 0.48% fall as "the recording
+        was a falling market" is exactly the mistake this asserts against.
+        On EUR/USD the two captures move in opposite directions, which is the
+        thing that makes the pair of them worth having.
         """
-        assert FALLING.is_dir(), "the falling market is missing"
+        assert SECOND.is_dir(), "the second capture is missing"
 
-        def drift(folder: Path) -> float:
-            series = load_csv(folder / "AUD-CAD-OTC-5s.csv", timeframe_seconds=5)
+        def drift(path: Path) -> float:
+            series = load_csv(path, timeframe_seconds=60)
             return (series[-1].close - series[0].close) / series[0].close
 
-        assert drift(CAPTURE) > 0.001
-        assert drift(FALLING) < -0.004
+        first = drift(CAPTURE / "EUR-USD-OTC-60s.csv")
+        second = drift(SECOND / "EUR-USD-60s.csv")
+        assert first > 0, "the first capture's traded pair should end higher"
+        assert second < 0, "the second capture's traded pair should end lower"
+
+    @pytest.mark.parametrize("folder", [CAPTURE, SECOND])
+    def test_each_recording_says_which_chart_was_open(self, folder):
+        """Without this the watchlist reads as the market being traded."""
+        manifest = folder / "WHAT-IS-IN-HERE.txt"
+        assert manifest.exists(), f"{folder.name} does not say what is in it"
+
+        text = manifest.read_text(encoding="utf-8")
+        assert "The chart that was open: EUR/USD" in text
+        assert "AUD-CAD" in text and "not traded" in text
 
     @pytest.mark.parametrize(
-        "path", sorted(CAPTURE.glob("*.csv")) + sorted(FALLING.glob("*.csv"))
+        "path", sorted(CAPTURE.glob("*.csv")) + sorted(SECOND.glob("*.csv"))
     )
     def test_every_candle_is_a_candle(self, path):
         """Real data, so worth checking it is not quietly malformed."""
@@ -105,7 +114,7 @@ class TestTheRecordingIsIntact:
             last = stamp
 
     @pytest.mark.parametrize(
-        "path", sorted(CAPTURE.glob("*.csv")) + sorted(FALLING.glob("*.csv"))
+        "path", sorted(CAPTURE.glob("*.csv")) + sorted(SECOND.glob("*.csv"))
     )
     def test_the_buckets_match_the_name_on_the_file(self, path):
         """A file called 60s holding 5s candles would silently mismeasure."""

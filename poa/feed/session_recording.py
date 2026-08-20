@@ -72,6 +72,13 @@ class Recording:
     #: prices arrive for the whole market and belong to nothing: the replay
     #: cannot tell which instrument is being followed and builds no candles.
     named_a_chart: bool = False
+    #: The instrument that was actually on screen, and its timeframe. The
+    #: socket carries the whole market and a chart is built for every pair on
+    #: it, so a recording taken while trading EUR/USD also contains AUD/CAD —
+    #: and with nothing marking which was which, an accuracy figure was once
+    #: quoted from a pool that included a pair the user had never traded.
+    open_chart: str | None = None
+    open_timeframe: int | None = None
     #: Set when the run could not be taken at all — no debuggable browser, no
     #: platform tab. The caller says so; nothing was written.
     error: str | None = None
@@ -168,7 +175,66 @@ def coverage(seconds: float) -> str:
     return "\n".join(rows)
 
 
-def bundle(storage: Path, summary: Path | None, candles: list[Path]) -> Path | None:
+def _manifest(
+    candles: list[Path], open_chart: str | None, open_timeframe: int | None
+) -> str:
+    """Which of these charts was the one on screen.
+
+    The socket carries the whole market and a chart is built for every
+    instrument on it, on purpose — that is the watchlist. So a recording taken
+    while trading EUR/USD also contains AUD/CAD, and the CSVs come out side by
+    side with nothing to tell them apart.
+
+    Which is not a hypothetical: a capture was read as "a falling market"
+    because AUD/CAD dropped half a percent in it, when the pair actually being
+    traded was flat — and an accuracy figure was quoted from a pool that
+    silently included an instrument the user had never traded. Anyone reading
+    this zip, weeks later, deserves to be told which file is which.
+    """
+    traded, watched = [], []
+    for path in sorted(candles):
+        stem = path.stem.rsplit("-", 1)[0].replace("-", "/")
+        target = traded if open_chart and stem in open_chart.replace(" ", "/") \
+            else watched
+        target.append(path.name)
+
+    lines = ["WHAT IS IN THIS RECORDING", "=" * 60, ""]
+    if open_chart:
+        label = f"{open_chart}"
+        if open_timeframe:
+            label += f" at {open_timeframe}s candles"
+        lines += [f"The chart that was open: {label}", ""]
+    else:
+        lines += ["The page never said which chart was open.", ""]
+
+    if traded:
+        lines += ["TRADED — the chart on screen:"]
+        lines += [f"    candles/{name}" for name in traded]
+        lines.append("")
+    if watched:
+        lines += [
+            "ALSO CAPTURED — these were streaming past on the same socket.",
+            "GateKeeper builds a chart for every instrument it carries so it",
+            "can flag setups on pairs nobody is looking at. Useful data, but",
+            "not what was being traded, and not the same market:",
+        ]
+        lines += [f"    candles/{name}" for name in watched]
+        lines.append("")
+    lines += [
+        "Every file is timestamp,open,high,low,close and nothing else.",
+        "No account details, balances or trades are in here.",
+    ]
+    return "\n".join(lines)
+
+
+def bundle(
+    storage: Path,
+    summary: Path | None,
+    candles: list[Path],
+    *,
+    open_chart: str | None = None,
+    open_timeframe: int | None = None,
+) -> Path | None:
     """Zip the sendable half of a recording into one file.
 
     Named for the moment it was taken, so several recordings do not overwrite
@@ -183,6 +249,11 @@ def bundle(storage: Path, summary: Path | None, candles: list[Path]) -> Path | N
                 archive.write(candle_file, f"candles/{candle_file.name}")
             if summary is not None and summary.exists():
                 archive.write(summary, summary.name)
+            if candles:
+                archive.writestr(
+                    "WHAT-IS-IN-HERE.txt",
+                    _manifest(candles, open_chart, open_timeframe),
+                )
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("could not write the bundle: %s", exc)
         return None
@@ -281,12 +352,20 @@ def record_session(
     # market data, and the same recording as candles is a fraction of the
     # size — which is the difference between a file that can be sent and one
     # that cannot.
-    from .replay import charts_from_recording, export_candles
+    from .replay import export_candles, replay_recording
 
     folder = storage / "candles"
     try:
-        charts = charts_from_recording(sample)
-        result.timeframes = sorted({timeframe for _, timeframe, _ in charts})
+        replayed = replay_recording(sample)
+        charts = replayed.charts
+        result.open_chart = replayed.focus
+        result.open_timeframe = replayed.focus_timeframe
+        # Reported for the chart being traded, not for whatever else the
+        # socket happened to carry. A watchlist pair reaching a minute says
+        # nothing about whether the pair on screen did.
+        result.timeframes = sorted(
+            {timeframe for asset, timeframe, _ in charts if asset == replayed.focus}
+        ) or sorted({timeframe for _, timeframe, _ in charts})
         result.candles = export_candles(charts, folder)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("could not build candles: %s", exc)
@@ -295,5 +374,8 @@ def record_session(
     # Built even with no candles: the summary alone still answers what the
     # platform sent, and a recording that produced nothing sendable should
     # say so by being empty rather than by being absent.
-    result.bundle = bundle(storage, result.summary, result.candles)
+    result.bundle = bundle(
+        storage, result.summary, result.candles,
+        open_chart=result.open_chart, open_timeframe=result.open_timeframe,
+    )
     return result

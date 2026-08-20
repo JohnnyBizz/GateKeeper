@@ -1,0 +1,17 @@
+WHAT IS IN THIS RECORDING
+============================================================
+
+The chart that was open: EUR/USD OTC at 60s candles
+
+TRADED — the chart on screen:
+    candles/EUR-USD-OTC-10s.csv
+    candles/EUR-USD-OTC-15s.csv
+    candles/EUR-USD-OTC-30s.csv
+    candles/EUR-USD-OTC-5s.csv
+    candles/EUR-USD-OTC-60s.csv
+
+ALSO CAPTURED — streaming past on the same socket, not traded:
+    candles/AUD-CAD-OTC-10s.csv
+    candles/AUD-CAD-OTC-15s.csv
+    candles/AUD-CAD-OTC-30s.csv
+    candles/AUD-CAD-OTC-5s.csv

@@ -81,6 +81,7 @@ class TestARecordingBecomesOneSendableFile:
         with zipfile.ZipFile(bundle) as archive:
             names = sorted(archive.namelist())
         assert names == [
+            "WHAT-IS-IN-HERE.txt",
             "candles/EURUSD-otc-60s.csv",
             "candles/GBPUSD-otc-5s.csv",
             "feed-summary.txt",
