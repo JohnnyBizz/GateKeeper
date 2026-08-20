@@ -77,7 +77,25 @@ CALL_MEMORY = 400
 CHART_BARS = 140
 
 WATCH_SWEEP_SECONDS = 15.0
-MIN_WATCH_SWEEP_SECONDS = 4.0
+
+# How often the watchlist is re-read, at the fastest. Reading nine charts
+# costs 51 milliseconds measured, and this floor was four seconds — set when a
+# sweep aggregated every timeframe the platform offers and cost a few hundred
+# milliseconds. It watches two now, and the floor never moved with it.
+#
+# The cost of waiting is the whole point. A setup appears when a bar closes,
+# and on a 5 SEC chart a four-second floor meant it could sit unseen for most
+# of a bar — a sixth of a thirty-second trade spent before anything looked,
+# on top of reading the panel and switching tabs.
+MIN_WATCH_SWEEP_SECONDS = 1.0
+
+# And sample faster than the bar rather than once per bar. Reading a chart
+# once per candle sounds sufficient and is not: it says nothing about *when*
+# in the candle the read happens, so a bar that closed a moment after the last
+# sweep waits a full bar to be noticed. At a quarter of the bar the worst case
+# is a quarter of a bar. Charts whose newest candle has not moved are skipped,
+# so the extra sweeps cost almost nothing.
+SWEEPS_PER_BAR = 4
 
 # How much better the recommended expiry has to score before the tool
 # switches to it. Small preferences would have the panel changing expiry
@@ -699,9 +717,11 @@ class OverlayApp:
     def _sweep_interval(self) -> float:
         """How long to wait before reading everything again.
 
-        Paced by the shortest candle on the watchlist. Waiting fifteen seconds
-        between reads of a five-second chart means two setups in three are
-        finished before anything looks at them.
+        Paced at a fraction of the shortest candle on the watchlist, not at
+        one read per candle. Once per candle leaves *when* in the candle the
+        read lands unspecified, so a bar closing just after a sweep waits a
+        whole bar to be seen — on a 5 SEC chart feeding a 30-second trade,
+        a sixth of the trade gone before anything looked at it.
         """
         periods = [
             int(row.get("timeframe") or 0)
@@ -710,7 +730,8 @@ class OverlayApp:
         ]
         if not periods:
             return WATCH_SWEEP_SECONDS
-        return max(MIN_WATCH_SWEEP_SECONDS, min(float(min(periods)), WATCH_SWEEP_SECONDS))
+        share = float(min(periods)) / SWEEPS_PER_BAR
+        return max(MIN_WATCH_SWEEP_SECONDS, min(share, WATCH_SWEEP_SECONDS))
 
     def _with_other_timeframes(self, charts: Any) -> Any:
         """Read each chart at the platform's other timeframes as well.

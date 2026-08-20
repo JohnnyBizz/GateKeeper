@@ -2470,6 +2470,12 @@ class TestSweepingFastEnoughToMatter:
     two setups in three are over before anything looks. Reading more often is
     only affordable because a chart whose newest candle has not moved cannot
     have changed its mind, and is skipped.
+
+    Once per bar is not enough either. It fixes how often a chart is read and
+    says nothing about *when* in the bar, so a bar closing just after a sweep
+    waits a whole bar to be noticed — on a 5 SEC chart feeding a 30-second
+    trade, a sixth of the trade gone before anything looked at it. Sampling
+    at a fraction of the bar bounds that.
     """
 
     def _app(self, tmp_path):
@@ -2501,11 +2507,36 @@ class TestSweepingFastEnoughToMatter:
         )
 
     def test_the_pace_follows_the_shortest_candle(self, tmp_path):
+        from poa.overlay.app import SWEEPS_PER_BAR
+
         app = self._app(tmp_path)
         try:
             app.vm.watchlist = [{"asset": "E", "timeframe": 5},
                                 {"asset": "E", "timeframe": 60}]
-            assert app._sweep_interval() == 5.0
+            # The 5 SEC chart sets the pace, and it is read several times a
+            # bar so a close is seen within a fraction of one.
+            assert app._sweep_interval() == 5.0 / SWEEPS_PER_BAR
+        finally:
+            app.shutdown()
+
+    def test_a_closing_bar_is_seen_within_a_fraction_of_itself(self, tmp_path):
+        """The number that decides how much of a short trade is already gone."""
+        app = self._app(tmp_path)
+        try:
+            for period in (5, 15, 60):
+                app.vm.watchlist = [{"asset": "E", "timeframe": period}]
+                assert app._sweep_interval() <= period / 2.0
+        finally:
+            app.shutdown()
+
+    def test_a_slow_chart_is_still_not_swept_pointlessly_often(self, tmp_path):
+        """Sampling faster than the bar has a ceiling as well as a floor."""
+        from poa.overlay.app import WATCH_SWEEP_SECONDS
+
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = [{"asset": "E", "timeframe": 3600}]
+            assert app._sweep_interval() == WATCH_SWEEP_SECONDS
         finally:
             app.shutdown()
 
