@@ -744,3 +744,91 @@ class TestLearningFromLosses:
 
         report = attribute([self._trade("flat", {"macd": 0.9}) for _ in range(20)])
         assert report.winners == 0 and report.losers == 0
+
+
+class TestTheNumberOnThePanelClearsTheMinimum:
+    """A "minimum 85" that displays 80 is not strict, it is wrong.
+
+    ``min_confidence`` gates the direction score. What the panel shows is
+    ``direction x 0.6 + duration x 0.4``, capped at the weaker plus twelve —
+    always the lower figure. So raising min_confidence to 85 gated an internal
+    number at 85 and left the panel free to show 80.1 on a call that passed,
+    and somebody told to trade at 85 would have taken calls in the high
+    seventies without ever seeing a number that said so.
+
+    Walked with the backtester rather than by hand: a directional call is
+    about seven per cent of bars, so sampling every seventh one finds none and
+    proves nothing.
+    """
+
+    def _calls(self, shown_floor, gate=75.0):
+        from pathlib import Path
+
+        from poa.backtesting.paper import Backtester
+        from poa.chart_detection.csv_source import load_csv
+        from poa.signals import GateSettings
+
+        root = Path(__file__).resolve().parent.parent / "data/recorded"
+        charts = sorted(root.glob("*/*-60s.csv"))
+        assert charts, "no recorded minute charts to check against"
+
+        trades = []
+        for path in charts:
+            series = load_csv(path, timeframe_seconds=60)
+            result = Backtester(
+                window=120, payout=0.92,
+                settings=GateSettings(
+                    min_confidence=gate, min_shown_confidence=shown_floor,
+                    require_measured_edge=False,
+                ),
+            ).run(series, trade_duration=180, asset=path.stem, step=1)
+            trades += result.trades
+        return trades
+
+    def test_no_call_ever_displays_under_its_own_floor(self):
+        """The property that was false, over every chart on record."""
+        calls = self._calls(85.0)
+
+        assert calls, "nothing passed, so nothing was tested"
+        assert min(t.confidence for t in calls) >= 85.0
+
+    def test_the_floor_is_what_removed_them(self):
+        """Without it, the same run shows calls beneath the same number."""
+        loose = self._calls(0.0)
+        strict = self._calls(85.0)
+
+        assert [t for t in loose if t.confidence < 85.0], (
+            "no low-reading calls existed, so the floor was never exercised"
+        )
+        assert len(strict) < len(loose)
+
+    def test_a_floor_nothing_can_clear_silences_it_and_says_why(self):
+        from poa.chart_detection.csv_source import load_csv
+        from poa.chart_detection.quality import validate_series
+        from poa.models import Direction, Series
+        from poa.signals import GateSettings, SignalEngine, SignalRequest
+        from pathlib import Path
+
+        assert self._calls(99.0) == []
+
+        # And the refusal is stated, not silent.
+        path = sorted(
+            (Path(__file__).resolve().parent.parent / "data/recorded").glob("*/*-60s.csv")
+        )[0]
+        series = load_csv(path, timeframe_seconds=60)
+        seen = []
+        for end in range(121, len(series)):
+            window = Series(candles=list(series)[end - 120:end],
+                            symbol=series.symbol, timeframe_seconds=60)
+            signal = SignalEngine().evaluate(SignalRequest(
+                series=window, asset="EUR/USD", chart_timeframe=60,
+                trade_duration=180,
+                quality=validate_series(window, min_candles=60),
+                settings=GateSettings(min_confidence=75.0,
+                                      min_shown_confidence=99.0,
+                                      require_measured_edge=False)))
+            assert signal.direction not in (Direction.CALL, Direction.PUT)
+            if "BELOW YOUR MINIMUM" in signal.headline:
+                seen.append(signal)
+        assert seen, "the floor removed calls without ever saying so"
+        assert "under the 99 you set" in seen[0].reason

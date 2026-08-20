@@ -74,7 +74,24 @@ NEVER_ADVISORY = frozenset({"data_quality"})
 
 @dataclass
 class GateSettings:
+    #: Minimum *direction score*. An internal number, not the one on the
+    #: panel — ``min_shown_confidence`` below is that one.
     min_confidence: float = 85.0
+    #: Minimum for the number the panel actually shows.
+    #:
+    #: These were one setting, and that was a trap. Raising min_confidence to
+    #: 85 gated the direction score at 85 and left the panel free to display
+    #: 80.1 on a call that passed, because what it shows is
+    #: ``direction x 0.6 + duration x 0.4`` capped at the weaker plus twelve —
+    #: always the lower figure. Somebody told to trade at 85 would have been
+    #: shown, and taken, calls in the high seventies.
+    #:
+    #: Off by default *here* and set to 85 in the shipped config. The
+    #: distinction matters: this dataclass is what a caller constructing
+    #: ``GateSettings()`` directly gets, and a gate that silences the engine
+    #: unless argued out of it would make every such caller quietly agree to
+    #: a product decision it never asked about. Zero disables it.
+    min_shown_confidence: float = 0.0
     min_duration_compatibility: float = 65.0
     min_data_confidence: float = 70.0
     min_component_agreement: float = 0.55
@@ -102,6 +119,9 @@ class GateSettings:
         defaults = cls()
         return cls(
             min_confidence=float(section.get("min_confidence", defaults.min_confidence)),
+            min_shown_confidence=float(
+                section.get("min_shown_confidence", defaults.min_shown_confidence)
+            ),
             min_duration_compatibility=float(
                 section.get(
                     "min_duration_compatibility", defaults.min_duration_compatibility

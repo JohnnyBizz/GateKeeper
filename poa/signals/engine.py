@@ -338,6 +338,25 @@ class SignalEngine:
                     f"the engine prefers {duration.recommended_label.lower()}."
                 )
 
+        # And the number on the panel has to clear its own minimum, because
+        # that is the number anybody acts on. Gating only the direction score
+        # let a call pass at 86 and display 80.1 — the user reads the panel,
+        # not the internals, so a "minimum 85" that shows 80 is not a strict
+        # setting, it is a wrong one.
+        if signal.direction in (Direction.CALL, Direction.PUT):
+            floor = getattr(request.settings, "min_shown_confidence", 0.0)
+            shown = signal.overall_confidence
+            if floor and shown < floor:
+                signal.headline = f"{candidate.value} SETUP — BELOW YOUR MINIMUM"
+                signal.direction = Direction.WAIT
+                signal.reason = (
+                    f"Reads {shown:.0f}/100 overall, under the {floor:.0f} you "
+                    f"set. Direction scores {direction_confidence:.0f} and the "
+                    f"{duration.selected_label.lower()} expiration scores "
+                    f"{duration.selected_score:.0f}; the combined reading is "
+                    "what this is judged on."
+                )
+
         if signal.direction in (Direction.CALL, Direction.PUT):
             signal.expires_at = now + _timedelta(request.trade_duration)
 

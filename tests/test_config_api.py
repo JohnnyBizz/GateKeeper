@@ -609,8 +609,22 @@ class TestASettingsFileIsBroughtUpToDate:
         path = self._write(tmp_path, {"signals": {"min_confidence": 75}})
         config = load_config(path)
 
-        assert config.get("signals.min_confidence") == 85
+        # The gate that matters is on the number the panel shows.
+        assert config.get("signals.min_shown_confidence") == 85
         assert config.get("signals.auto_tune") is False
+
+    def test_the_85_is_taken_off_the_wrong_gate(self, tmp_path):
+        """An earlier migration put it on min_confidence, which gates the
+        direction score rather than the displayed number — so "trade at 85"
+        gated something the user could not see and left the panel free to
+        show 80.1."""
+        from poa.config import load_config
+
+        path = self._write(tmp_path, {"signals": {"min_confidence": 85}})
+        config = load_config(path)
+
+        assert config.get("signals.min_confidence") == 75
+        assert config.get("signals.min_shown_confidence") == 85
 
     def test_and_the_change_is_written_back(self, tmp_path):
         """Otherwise it is applied again, and again, every single start."""
@@ -623,7 +637,7 @@ class TestASettingsFileIsBroughtUpToDate:
 
         with path.open(encoding="utf-8") as handle:
             saved = yaml.safe_load(handle)
-        assert saved["signals"]["min_confidence"] == 85
+        assert saved["signals"]["min_shown_confidence"] == 85
         assert saved["config_version"] == CONFIG_VERSION
 
     def test_a_number_the_user_chose_is_left_alone(self, tmp_path):
@@ -657,7 +671,7 @@ class TestASettingsFileIsBroughtUpToDate:
 
         config = load_config(tmp_path / "nothing-here.yaml")
 
-        assert config.get("signals.min_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 85
         assert config.data["config_version"] == CONFIG_VERSION
 
     def test_an_unreadable_file_does_not_take_the_migration_with_it(self, tmp_path):
@@ -668,7 +682,7 @@ class TestASettingsFileIsBroughtUpToDate:
         path.write_text("signals: [this is not a mapping\n", encoding="utf-8")
 
         config = load_config(path)
-        assert config.get("signals.min_confidence") == 85
+        assert config.get("signals.min_shown_confidence") == 85
 
 
 class TestWatchingOnlyTheChartsYouTrade:

@@ -128,7 +128,8 @@ signals:
   # straddled break-even and 85 cleared it — on a threshold chosen by
   # looking at the same data, so treat it as a hypothesis. The table is in
   # data/recorded/README.md.
-  min_confidence: 85              # setup score needed before a direction is shown
+  min_confidence: 75              # direction score gate — an internal number
+  min_shown_confidence: 85        # the number the PANEL shows must clear this
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
   min_data_confidence: 70         # chart-reading confidence needed to analyse
 

@@ -232,7 +232,15 @@ DEFAULTS: dict[str, Any] = {
         # old 75 straddled break-even and 85 cleared it — on a threshold
         # chosen by looking at the same data, so it is a hypothesis rather
         # than a settled number. data/recorded/README.md has the table.
-        "min_confidence": 85,
+        # The direction score gate. An internal number, and not the one on
+        # the panel.
+        "min_confidence": 75,
+        # The gate on what the panel actually shows — direction and duration
+        # combined, always the lower reading. This is the one under test.
+        # Setting min_confidence to 85 gated the internals at 85 and still
+        # displayed calls at 80.1, so "trade at 85" meant something the user
+        # could not see and had not agreed to.
+        "min_shown_confidence": 85,
         "min_duration_compatibility": 65,
         "min_data_confidence": 70,
         # Structural gates. Every one of these must pass before a direction is
@@ -530,9 +538,20 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         # hypothesis under test rather than a settled number — see
         # data/recorded/README.md. Moved only where the install is still on
         # the old default; a number the user picked is left alone.
-        if float(config.get("signals.min_confidence", 75)) == 75.0:
-            config.set("signals.min_confidence", 85)
-            changed.append("signals.min_confidence 75 -> 85")
+        # Written explicitly rather than left to the default. ``get`` reads
+        # through to the defaults, so testing it against 85 is always true on
+        # a file that has never heard of the key — the migration would decide
+        # it had nothing to do and write nothing, and every later ``save``
+        # would keep overlaying the old file.
+        if "min_shown_confidence" not in (file_data.get("signals") or {}):
+            config.set("signals.min_shown_confidence", 85)
+            changed.append("signals.min_shown_confidence -> 85")
+        # An earlier version of this migration put the 85 on min_confidence,
+        # which gates the direction score rather than the displayed number and
+        # therefore did not do what it was set to do. Put it back.
+        if float(config.get("signals.min_confidence", 75)) == 85.0:
+            config.set("signals.min_confidence", 75)
+            changed.append("signals.min_confidence 85 -> 75 (wrong gate)")
         # And pinned, because a gate under test cannot also be moving on its
         # own. Auto-tune travels between 55 and 90 in steps of five, which
         # would quietly answer a different question than the one being asked.
