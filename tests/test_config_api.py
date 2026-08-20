@@ -669,3 +669,84 @@ class TestASettingsFileIsBroughtUpToDate:
 
         config = load_config(path)
         assert config.get("signals.min_confidence") == 85
+
+
+class TestWatchingOnlyTheChartsYouTrade:
+    """Reading the same pair at eleven lengths is not eleven times the news.
+
+    It is ten extra rows to scroll past, each a verdict about a chart nobody
+    is looking at — and acting on one of those by mistake is a trade the
+    engine never scored for that expiry.
+    """
+
+    def _app_charts(self, tmp_path, monkeypatch, wanted):
+        from poa.config import load_config
+        from poa.models import Candle, Series
+        from poa.overlay import app as app_module
+        from poa.overlay.app import OverlayApp
+        import datetime
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("capture.source_chosen", True)
+        config.set("market.scan_timeframes", wanted)
+        config.set("market.min_candles", 20)
+        monkeypatch.setattr(app_module, "data_root", lambda: tmp_path)
+
+        start = datetime.datetime(2026, 8, 20, tzinfo=datetime.timezone.utc)
+        candles = [
+            Candle(timestamp=start + datetime.timedelta(seconds=5 * n),
+                   open=1.1, high=1.2, low=1.0, close=1.1 + n * 0.0001)
+            for n in range(1200)
+        ]
+        series = Series(candles=candles, symbol="EUR/USD", timeframe_seconds=5)
+
+        app = OverlayApp(config)
+        try:
+            return {tf for _a, tf, _s in app._with_other_timeframes(
+                [("EUR/USD", 5, series)])}
+        finally:
+            app.shutdown()
+
+    def test_a_list_watches_only_what_is_on_it(self, tmp_path, monkeypatch):
+        found = self._app_charts(tmp_path, monkeypatch, [5, 60])
+
+        assert 60 in found
+        # The chart itself always survives; the rest were asked not to.
+        assert found <= {5, 60}
+
+    def test_true_still_watches_everything(self, tmp_path, monkeypatch):
+        """The old setting has to keep meaning what it meant."""
+        found = self._app_charts(tmp_path, monkeypatch, True)
+
+        assert len(found) > 3
+        assert {10, 15, 30, 60} <= found
+
+    def test_false_watches_only_the_open_chart(self, tmp_path, monkeypatch):
+        assert self._app_charts(tmp_path, monkeypatch, False) == {5}
+
+    def test_an_old_config_is_narrowed_by_the_migration(self, tmp_path):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump({"market": {"scan_timeframes": True}}, handle)
+
+        assert load_config(path).get("market.scan_timeframes") == [5, 60]
+
+    def test_but_a_list_the_user_wrote_is_kept(self, tmp_path):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump({"market": {"scan_timeframes": [15, 300]}}, handle)
+
+        assert load_config(path).get("market.scan_timeframes") == [15, 300]

@@ -96,6 +96,12 @@ market:
   min_candles: 60          # below this, data quality is reported as poor
   max_candles: 600         # how much history to keep in memory
 
+  # Chart lengths to also read the same pair at, on top of the one your chart
+  # is open on. true = every length available, false = none, or a list.
+  # [5, 60] is a 5 SEC chart and a 1 MIN chart — the two most people trade.
+  # More lengths is not more information, it is more rows to read past.
+  scan_timeframes: [5, 60]
+
   # Broker payout on a win, as a fraction (0.92 = 92%). Not cosmetic: it sets
   # the break-even win rate shown everywhere. 92% payout -> 52.1% break-even;
   # 80% payout -> 55.6%.

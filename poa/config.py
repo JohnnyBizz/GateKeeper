@@ -173,6 +173,16 @@ DEFAULTS: dict[str, Any] = {
         "higher_timeframe_multiple": 5,
         "entry_timeframe_multiple": 1,
         "min_candles": 60,
+        # Which chart lengths to also read the same pair at, on top of the one
+        # the chart is open on. true = every length below, false = none, or a
+        # list to watch only some.
+        #
+        # Defaulted to the two pairings this is actually used for — a 5 SEC
+        # chart taken at 30 seconds, and a 1 MIN chart taken at 3 minutes.
+        # Watching M15 as well is not more information, it is more rows to
+        # read past, and one more chance to act on a verdict about a chart
+        # nobody is trading. Set true to watch everything again.
+        "scan_timeframes": [5, 60],
         # Every candle kept is a candle the replay can learn from, and the
         # measurement scales almost linearly with them: 600 bars yields a
         # few dozen settled trades, 2400 yields a couple of hundred — the
@@ -529,6 +539,14 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         if bool(config.get("signals.auto_tune", True)):
             config.set("signals.auto_tune", False)
             changed.append("signals.auto_tune on -> off")
+        # And watch only the two chart lengths actually traded. Reading the
+        # same pair at eleven lengths is not eleven times the information; it
+        # is ten extra rows to scroll past, each one a verdict about a chart
+        # nobody is looking at, and acting on one of those by mistake is a
+        # trade the engine never scored.
+        if config.get("market.scan_timeframes") is True:
+            config.set("market.scan_timeframes", [5, 60])
+            changed.append("market.scan_timeframes all -> [5, 60]")
 
     config.data["config_version"] = CONFIG_VERSION
     if not changed:

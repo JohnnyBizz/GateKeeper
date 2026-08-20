@@ -731,8 +731,21 @@ class OverlayApp:
         from ..analysis.resample import resample
         from ..config import SCAN_TIMEFRAMES
 
-        if not bool(self.config.get("market.scan_timeframes", True)):
+        # ``true`` for every length the platform offers, ``false`` for none,
+        # or a list to watch only some. The list is the useful one: somebody
+        # who trades 5 SEC charts at 30 seconds and 1 MIN charts at 3 minutes
+        # has no use for a setup on M15, and every extra row is one more
+        # verdict to read past — and one more chance to act on a number that
+        # was never about the chart in front of them.
+        wanted = self.config.get("market.scan_timeframes", True)
+        if isinstance(wanted, (list, tuple, set)):
+            allowed = {int(t) for t in wanted}
+            if not allowed:
+                return charts
+        elif not bool(wanted):
             return charts
+        else:
+            allowed = set(SCAN_TIMEFRAMES)
 
         minimum = int(self.config.get("market.min_candles", 60))
         out = list(charts)
@@ -742,6 +755,8 @@ class OverlayApp:
             if series is None or timeframe <= 0:
                 continue
             for target in SCAN_TIMEFRAMES:
+                if target not in allowed:
+                    continue
                 if target <= timeframe or target % timeframe or (asset, target) in seen:
                     continue
                 # Enough aggregated bars to read, or there is nothing to say.

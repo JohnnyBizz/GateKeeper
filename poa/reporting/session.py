@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from ..backtesting.stats import breakeven_rate
+from ..backtesting.stats import breakeven_rate, wilson_interval
 from ..logging_setup import get_logger
 from ..models import format_duration, utcnow
 
@@ -210,10 +210,50 @@ def _result_section(report: SessionReport) -> list[str]:
         return lines
 
     lines.append(f"Win rate                  {rate:.1f}%")
+    interval = wilson_interval(report.wins, report.wins + report.losses)
+    if interval is not None:
+        low, high = interval
+        # A rate without an interval reads as a finding. Over one session it
+        # is usually consistent with a working tool and a losing one at the
+        # same time, and saying so costs less than finding out with money.
+        verdict = (
+            "clears break-even" if low > report.breakeven
+            else "below break-even" if high < report.breakeven
+            else "straddles break-even — cannot tell them apart yet"
+        )
+        lines.append(f"95% interval              {low:.1f}% .. {high:.1f}%   {verdict}")
     lines.append(
         f"Break-even at {report.payout * 100:.0f}% payout   {report.breakeven:.1f}%"
         f"   ({'above' if rate >= report.breakeven else 'below'})"
     )
+
+    # What the same calls would have paid with no opinion at all. Derived from
+    # the calls themselves: a CALL that won means price rose and a PUT that
+    # won means it fell, so which way the market went is already recorded.
+    #
+    # This is the number that says whether the analysis did anything. Over a
+    # rising session a tool that mostly says BUY posts a healthy rate for a
+    # reason with nothing to do with its reading of the chart, and only this
+    # comparison shows it.
+    ups = downs = 0
+    for call in report.settled:
+        rose = (str(call.get("direction")) == "CALL") == (call.get("outcome") == "win")
+        if rose:
+            ups += 1
+        else:
+            downs += 1
+    decided = ups + downs
+    if decided:
+        for name, count in (("always BUY", ups), ("always SELL", downs)):
+            base = count / decided * 100
+            gap = rate - base
+            note = (
+                "the tool is ahead" if gap > 0
+                else "level" if gap == 0
+                else f"BEAT the tool by {-gap:.1f} points"
+            )
+            lines.append(f"  vs {name:<20}{base:.1f}%   {note}")
+
     lines.append(f"Notional stake            ${report.stake:,.2f} per call")
     lines.append(f"Notional return           {_money(report.notional)}  (not placed)")
 

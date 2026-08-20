@@ -2315,7 +2315,15 @@ class TestTheSamePairAtSeveralTimeframes:
         )
 
     def test_a_one_minute_chart_yields_the_minutes_above_it(self, tmp_path):
+        """The resampling itself, with every length asked for.
+
+        The shipped default now watches only [5, 60], because reading one
+        pair at eleven lengths is ten extra rows to scroll past rather than
+        ten times the information. That is a default, not a limit, and this
+        asks for the old behaviour to check the machinery still does it.
+        """
         app = self._app(tmp_path)
+        app.config.set("market.scan_timeframes", True)
         try:
             charts = app._with_other_timeframes(
                 [("EUR/USD OTC", 60, self._series())]
@@ -2327,6 +2335,7 @@ class TestTheSamePairAtSeveralTimeframes:
 
     def test_the_aggregated_candles_are_the_right_count(self, tmp_path):
         app = self._app(tmp_path)
+        app.config.set("market.scan_timeframes", True)
         try:
             charts = dict(
                 (tf, s)
