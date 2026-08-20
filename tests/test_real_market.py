@@ -29,6 +29,7 @@ from poa.chart_detection.csv_source import load_csv
 
 RECORDED = Path(__file__).resolve().parent.parent / "data/recorded"
 CAPTURE = RECORDED / "2026-08-19-pocketoption"
+FALLING = RECORDED / "2026-08-20-falling"
 
 
 def _timeframe(path: Path) -> int:
@@ -59,7 +60,31 @@ class TestTheRecordingIsIntact:
         span = series[-1].timestamp - series[0].timestamp
         assert span > datetime.timedelta(hours=3)
 
-    @pytest.mark.parametrize("path", sorted(CAPTURE.glob("*.csv")))
+    def test_the_same_pair_is_captured_going_both_ways(self):
+        """One direction of drift flatters whichever way a tool leans.
+
+        On the first capture the engine called BUY on 80% of its entries and
+        posted a healthy-looking rate, and most of the windows it chose went
+        up. Whether that was analysis or the market carrying it cannot be told
+        from a sample that only moves one way, so the same instrument is here
+        twice, going opposite directions: AUD/CAD rose 0.18% in the first and
+        fell 0.48% in the second.
+
+        Lose that and every accuracy number below silently becomes a
+        measurement of the weather.
+        """
+        assert FALLING.is_dir(), "the falling market is missing"
+
+        def drift(folder: Path) -> float:
+            series = load_csv(folder / "AUD-CAD-OTC-5s.csv", timeframe_seconds=5)
+            return (series[-1].close - series[0].close) / series[0].close
+
+        assert drift(CAPTURE) > 0.001
+        assert drift(FALLING) < -0.004
+
+    @pytest.mark.parametrize(
+        "path", sorted(CAPTURE.glob("*.csv")) + sorted(FALLING.glob("*.csv"))
+    )
     def test_every_candle_is_a_candle(self, path):
         """Real data, so worth checking it is not quietly malformed."""
         with path.open(encoding="utf-8") as handle:
@@ -79,7 +104,9 @@ class TestTheRecordingIsIntact:
                 assert stamp > last
             last = stamp
 
-    @pytest.mark.parametrize("path", sorted(CAPTURE.glob("*.csv")))
+    @pytest.mark.parametrize(
+        "path", sorted(CAPTURE.glob("*.csv")) + sorted(FALLING.glob("*.csv"))
+    )
     def test_the_buckets_match_the_name_on_the_file(self, path):
         """A file called 60s holding 5s candles would silently mismeasure."""
         timeframe = _timeframe(path)

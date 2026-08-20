@@ -45,6 +45,77 @@ sent and dropped, and the symptom looked like the platform never sending them.
 `tests/test_recording.py` guards it now; this folder is the data that showed
 it.
 
+### `2026-08-20-falling/`
+
+A second thirty-minute capture, 16:40–17:10 UTC, taken specifically because
+everything above happened while price rose — and a rising market flatters any
+tool that leans towards BUY. Here **AUD/CAD OTC fell 0.46%** over the window.
+
+| chart | candles | span | direction |
+|---|---|---|---|
+| `EUR-USD-60s.csv` | 350 | 10:03 → 17:10 (7.1h) | −0.08% |
+| `AUD-CAD-OTC-5s.csv` | 359 | 16:40 → 17:10 | **−0.48%** |
+| `AUD-CAD-OTC-10s.csv` | 180 | 16:40 → 17:10 | −0.46% |
+| `AUD-CAD-OTC-15s.csv` | 120 | 16:40 → 17:10 | −0.46% |
+| `AUD-CAD-OTC-30s.csv` | 61 | 16:40 → 17:10 | −0.46% |
+| `EUR-USD-5s.csv` | 359 | 16:40 → 17:10 | +0.01% |
+| `EUR-USD-10s.csv` | 180 | 16:40 → 17:10 | +0.01% |
+| `EUR-USD-15s.csv` | 120 | 16:40 → 17:10 | +0.01% |
+| `EUR-USD-30s.csv` | 61 | 16:40 → 17:10 | +0.01% |
+
+This one also cost a wasted half hour before it worked. The first attempt
+captured 15,800 frames and produced nothing: the page announces which chart it
+is showing when it *loads*, the chart had been open for hours, and the
+recorder — unlike the live source — never asked it to reload. Prices arrive
+for the whole market regardless, so the run looked busy the entire time and
+built no candles at all.
+
+## The two together
+
+Pooled across both regimes, at the chart-and-expiry pairings actually traded
+(5s → 30s, 1m → 3min, 1m → 5min):
+
+```
+rising market     33/52   63.5%   CI [49.9 .. 75.2]   said CALL 80%
+falling market    27/50   54.0%   CI [40.4 .. 67.0]   said CALL 18%
+POOLED           60/102   58.8%   CI [49.1 .. 67.9]   said CALL 50%
+                                  break-even 52.1%
+
+AUC 62.2%   CI [51.3 .. 73.0]     50% = the score says nothing
+```
+
+Two things follow, and only two.
+
+**The engine is not stuck on BUY.** It called BUY 80% of the time when price
+rose and 18% when it fell. The single-regime capture made that look like a
+permanent bias; it is not.
+
+**The score carries some information.** With the direction split near even
+across the pool, the drift that confounded the first reading largely cancels,
+and the AUC interval clears 50 — the first evidence here that the number on
+the panel is doing anything at all. It clears it by 1.3 points, on 102 calls,
+so it is the beginning of an answer rather than one.
+
+The win rate still straddles break-even. **This does not show a profitable
+tool.**
+
+## The open hypothesis
+
+Filtering the same pool by score:
+
+| threshold | calls | win rate | 95% interval |
+|---|---|---|---|
+| 75+ (the current gate) | 100 | 59.0% | 49.2 .. 68.1 |
+| 80+ | 86 | 61.6% | 51.1 .. 71.2 |
+| **85+** | **53** | **73.6%** | **60.4 .. 83.6** |
+| 90+ | 25 | 68.0% | 48.4 .. 82.8 |
+
+85 clears break-even and 75 does not. But 85 was chosen by looking at this
+table, which is how a threshold gets fitted to the noise in the sample that
+produced it — and 90 falling back is what that looks like. Nothing has been
+changed on the strength of it. The test is whether it holds on a recording
+that had no part in choosing it.
+
 ## What is not here
 
 Only `timestamp,open,high,low,close`. The recording also produced a protocol
