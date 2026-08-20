@@ -2887,3 +2887,123 @@ class TestThePanelSaysAThingOnce:
         )
 
         assert data["warnings"] == extras
+
+
+class TestASetupOnAWatchedChartIsACall:
+    """It names a pair, a direction and an expiry. That is a call.
+
+    Until now it was announced and then forgotten — never journalled, never
+    settled, never counted. And it is most of what the tool produces: the open
+    chart alone speaks every few minutes on a 5 SEC chart and every two hours
+    on a 1 MIN one, while the eight charts behind it speak constantly.
+
+    Ten consecutive sessions reported "0 calls" with that going on, which is
+    what sent two days into tuning a threshold that was never the problem.
+    """
+
+    def _app(self, tmp_path):
+        return TestOverlayAppLogic()._app(tmp_path)
+
+    class _Signal:
+        actionable = True
+        id = "sig-1"
+
+        def __init__(self, asset, timeframe):
+            self.asset = asset
+            self.chart_timeframe = timeframe
+
+    def _rows(self, app, *, actionable=True):
+        return [{
+            "asset": "GBP/USD", "timeframe": 5, "direction": "BUY",
+            "argued": "CALL", "score": 88.0, "duration_score": 80.0,
+            "expiry": 30, "actionable": actionable,
+            "_signal": self._Signal("GBP/USD", 5),
+        }]
+
+    def test_it_is_written_to_the_journal(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            written = []
+            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.emit_alert = lambda **kw: None
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
+
+            app._announce_watchlist(self._rows(app))
+
+            assert len(written) == 1
+            assert written[0].asset == "GBP/USD"
+        finally:
+            app.shutdown()
+
+    def test_the_chart_already_on_screen_is_not_recorded_twice(self, tmp_path):
+        """The engine journals the open chart itself; this must not double it."""
+        app = self._app(tmp_path)
+        try:
+            written = []
+            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.emit_alert = lambda **kw: None
+            app.vm.asset, app.vm.chart_timeframe = "GBP/USD", 5
+
+            app._announce_watchlist(self._rows(app))
+
+            assert written == []
+        finally:
+            app.shutdown()
+
+    def test_a_setup_that_has_not_passed_the_gates_is_not_a_call(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            written = []
+            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.emit_alert = lambda **kw: None
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
+
+            app._announce_watchlist(self._rows(app, actionable=False))
+
+            assert written == []
+        finally:
+            app.shutdown()
+
+    def test_it_is_recorded_once_and_not_on_every_sweep(self, tmp_path):
+        """The watchlist is re-read every few seconds while a setup stands."""
+        app = self._app(tmp_path)
+        try:
+            written = []
+            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.emit_alert = lambda **kw: None
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
+
+            rows = self._rows(app)
+            for _ in range(5):
+                app._announce_watchlist(rows)
+
+            assert len(written) == 1
+        finally:
+            app.shutdown()
+
+    def test_a_journal_that_refuses_does_not_lose_the_alert(self, tmp_path):
+        """Recording is the new part; the announcement is what already worked."""
+        app = self._app(tmp_path)
+        try:
+            alerts = []
+            def boom(*a, **k):
+                raise RuntimeError("disk full")
+            app.engine.journal.record = boom
+            app.engine.emit_alert = lambda **kw: alerts.append(kw)
+            app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
+
+            app._announce_watchlist(self._rows(app))
+
+            assert len(alerts) == 1
+        finally:
+            app.shutdown()
+
+    def test_the_signal_never_reaches_the_rendered_panel(self, tmp_path):
+        """It rides in the row; the view model builds from named keys only."""
+        app = self._app(tmp_path)
+        try:
+            app.vm.watchlist = self._rows(app)
+            for row in app.vm.render()["watchlist"]:
+                assert "_signal" not in row
+        finally:
+            app.shutdown()

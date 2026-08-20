@@ -861,6 +861,10 @@ class OverlayApp:
                     "duration_score": round(signal.duration_confidence, 0),
                     "actionable": bool(signal.actionable),
                     "candles": len(series),
+                    # Kept so a setup found here can be journalled as the call
+                    # it is. Read by ``_announce_watchlist`` and never by the
+                    # view model, which builds its rows from named keys.
+                    "_signal": signal,
                 }
                 rows.append(row)
                 if newest is not None:
@@ -928,6 +932,25 @@ class OverlayApp:
             direction = str(row.get("direction", ""))
             where = f"{asset} {format_duration(timeframe)}" if timeframe else asset
             expiry = int(row.get("expiry") or 0)
+            # Record it. A setup on a watched chart is a call the tool made —
+            # it named a pair, a direction and an expiry — and until now it was
+            # announced and then forgotten, so it never appeared in a report,
+            # never settled, and taught the score bands nothing.
+            #
+            # That is most of what the tool produces. The open chart alone
+            # speaks every few minutes on a 5 SEC chart and every two hours on
+            # a 1 MIN one; the eight charts behind it speak constantly, and
+            # ten consecutive sessions reported "0 calls" while that was going
+            # on.
+            watched = row.get("_signal")
+            if watched is not None:
+                try:
+                    self.engine.journal.record(
+                        watched, None,
+                        source=getattr(self.engine.source, "name", None),
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.warning("could not journal a watchlist call: %s", exc)
             # The expiry belongs in the alert, not just the panel: it is the
             # one thing the user has to change on the platform before the
             # setup being described is the trade they would place.
