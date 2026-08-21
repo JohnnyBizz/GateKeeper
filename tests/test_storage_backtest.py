@@ -1809,3 +1809,105 @@ class TestAChartCanBeAskedWhatItWasShowing:
         from poa.models import Series
 
         assert Series([], 5, "T").price_at(datetime.now(tz=timezone.utc)) is None
+
+
+class TestGhostTradesAreSweptOnce:
+    """Builds before the deal-clock fix stamped hand trades on the broker's
+    clock — an hour ahead one session, two the next — so a trade placed in the
+    afternoon was filed into the evening, landed inside the next session's
+    window, and reappeared dash for dash in that report's "TRADES YOU PLACED".
+    Seventeen of them did exactly that, EUR/HUF included, in a session that
+    never watched EUR/HUF.
+    """
+
+    BEFORE = "2026-08-21T15:06:00+00:00"
+    AFTER = "2026-08-21T18:00:00+00:00"
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _manual(self, journal, stamp, confidence):
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, "
+            "outcome, notes, source) VALUES (?, ?, 'EURUSD_otc', 5, 30, "
+            "'PUT', 'SETTLED', ?, ?, ?, 'MANUAL', 'win', 'manual', 'feed')",
+            (f"manual-{stamp}-{confidence}", stamp, confidence, confidence,
+             confidence),
+        )
+        journal._connection.commit()
+
+    def _reopen(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _manual_stamps(self, journal):
+        return [
+            row["timestamp"]
+            for row in journal._connection.execute(
+                "SELECT timestamp FROM signals WHERE notes = 'manual'"
+            )
+        ]
+
+    def _age_to_pre_fix_build(self, journal):
+        """Make the file look like an old build wrote it: no data version."""
+        journal._connection.execute("PRAGMA user_version = 0")
+        journal._connection.commit()
+
+    def test_a_ghost_row_is_removed_and_a_real_one_kept(self, tmp_path):
+        journal = self._journal(tmp_path)
+        self._manual(journal, self.BEFORE, 0.0)   # the ghost: pre-fix, no score
+        self._manual(journal, self.AFTER, 0.0)    # post-fix dash: stamp is real
+        self._manual(journal, self.BEFORE, 77.0)  # scored: not a ghost
+        self._age_to_pre_fix_build(journal)
+        journal.close()
+
+        reopened = self._reopen(tmp_path)
+        try:
+            rows = reopened._connection.execute(
+                "SELECT timestamp, direction_confidence FROM signals "
+                "WHERE notes = 'manual' ORDER BY timestamp"
+            ).fetchall()
+            kept = {(r["timestamp"], r["direction_confidence"]) for r in rows}
+            assert kept == {(self.BEFORE, 77.0), (self.AFTER, 0.0)}
+        finally:
+            reopened.close()
+
+    def test_the_sweep_runs_once_per_journal(self, tmp_path):
+        """A row matching the ghost shape but written after the sweep ran must
+        survive: the sweep is a one-off correction for known-bad stamps, not a
+        standing rule that manual rows may never score zero."""
+        journal = self._journal(tmp_path)  # fresh file: already at version 1
+        self._manual(journal, self.BEFORE, 0.0)
+        journal.close()
+        reopened = self._reopen(tmp_path)
+        try:
+            assert self._manual_stamps(reopened) == [self.BEFORE]
+        finally:
+            reopened.close()
+
+    def test_signals_that_are_not_manual_are_untouched(self, tmp_path):
+        journal = self._journal(tmp_path)
+        self._age_to_pre_fix_build(journal)
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, source) "
+            "VALUES ('x', ?, 'EURUSD_otc', 5, 30, 'PUT', 'ACTIVE', 0, 0, 0, "
+            "'WEAK', 'feed')",
+            (self.BEFORE,),
+        )
+        journal._connection.commit()
+        journal.close()
+        reopened = self._reopen(tmp_path)
+        try:
+            count = reopened._connection.execute(
+                "SELECT COUNT(*) FROM signals"
+            ).fetchone()[0]
+            assert count == 1
+        finally:
+            reopened.close()

@@ -448,3 +448,49 @@ not, and neither does the score. What has not been tried is conditioning on
 something that is not price shape — time of day, the spread, which instrument,
 whether the payout itself moves — and a recording long enough that five-minute
 windows stop overlapping each other.
+
+---
+
+## 2026-08-21 — a third live session leans the same way, and the ghosts got a name
+
+**Session:** 16:58–21:11 UTC on the pre-fix build (its report lacks the edge
+section and still mislabels a tie, which dates the executable). 94 calls in the
+first 54 minutes across five pairs, 93 decided, then silence to the end.
+
+| | this session | session 2 | session 1 |
+|---|---|---|---|
+| Settled | 42W/51L — 45.2% | 38.7% | 32.7% |
+| AUC(score → win) | **43.3** | 38.0 | 30.3 |
+| AUC 95% (72 episodes) | **[32.3, 54.6]** | [28.0, 48.0] | [18.3, 44.4] |
+| AUC ≥ 50 in resamples | **12.4%** | 0.9% | 0.6% |
+
+Bands, fixed in advance: 80–84 at 57.1%, 85–89 at 44.4%, 90–94 at 42.1%. The
+decline again — and AUD/USD OTC again the archetype: 16 CALL, 1 PUT, 94%
+one-way, 35.3%.
+
+Read honestly: the direction repeats a third time, but this session alone is
+the weakest of the three — its interval touches fifty, so on its own it would
+not clear the rule. The three point the same way; the third points more
+quietly. Always-SELL beat the tool by 12.9 points at an 88% payout.
+
+### The seventeen ghosts
+
+The report lists seventeen hand trades, all dashes — and they are the
+*previous* session's seventeen, byte for byte, EUR/HUF included, a pair this
+session never watched. The pre-fix builds stamped hand trades on the broker's
+clock, so an afternoon's trades were filed into the evening, and any evening
+session's window now inherits them. Every future report overlapping 13:10–13:28
+or 17:06–17:45 would have re-listed the same dead rows.
+
+Fixed as a one-off journal sweep: manual rows with no score stamped before the
+first corrected build shipped are removed, once, tracked in the journal's own
+version. Deleted rather than re-stamped, because the offset varied by session
+and is not recoverable per row — and by the report's own words those rows
+taught the score bands nothing. Zero-score rows written after the fix keep
+their real stamps and stay.
+
+### Left open
+
+Why 94 calls in 54 minutes and none in the following three hours and twenty.
+The report cannot say; the panel at the time could have. Worth watching for on
+the fixed build.
