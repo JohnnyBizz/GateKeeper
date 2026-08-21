@@ -218,4 +218,10 @@ refs/pull/8/head:pr8` in that repo retrieves them if they are ever wanted.
 
 CI: `.github/workflows/build.yml` runs the suite and publishes `GateKeeper.exe`
 and `RecordFeed.exe` to the `latest` release on every push to `main`, so an
-executable only ever comes from a build where every test passed.
+executable only ever comes from a build where every test passed. The release is
+marked `--latest` rather than `--prerelease`, because GitHub's "latest release"
+address excludes prereleases and so resolved to nothing while it was one.
+
+**This repository is private and stays that way.** The release is a second copy
+of a finished build at a fixed address, not a distribution channel — the links
+in `README.md` return 404 for anyone without access, by design.

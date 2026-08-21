@@ -162,6 +162,15 @@ jobs:
       # cannot stop a finished build reaching anyone. It is also a stable
       # address: the same link after every push, rather than a fresh one
       # buried in whichever run happened to produce it.
+      #
+      # Marked --latest rather than --prerelease. GitHub's "latest release"
+      # excludes prereleases entirely, so while this was a prerelease the
+      # /releases/latest/ address — the one people paste and the one every
+      # download badge resolves — returned nothing at all, and the release
+      # page carried a "Pre-release" label on the only build there was. The
+      # per-tag link worked and was the only one that did. This is a rolling
+      # build published from every push, which is exactly what the release
+      # already said it was; the flag was describing something else.
       - name: Publish the build
         shell: bash
         env:
@@ -178,7 +187,7 @@ jobs:
               "**If the browser refuses the .exe** (\"couldn't download - virus detected\"), take the .zip beside it instead and extract it. These builds are not code-signed, so a brand-new unsigned executable is judged on reputation it has not had time to earn." \
               "" \
               "GateKeeper can record a chart on its own — the RECORD button on the panel — so RecordFeed.exe is only needed if you would rather run it separately.")" \
-            --prerelease
+            --latest
 
       # Kept as a second copy, and no longer able to fail the build: the
       # release above is the download, and an artifact allowance problem must
