@@ -126,16 +126,26 @@ def acquire(data_dir: Path) -> InstanceLock:
     return InstanceLock(lock_path, handle)
 
 
+# Where the held byte lives, on the platform that locks byte ranges. Windows
+# range locks are *mandatory* — while byte 0 was the one held, any attempt to
+# read the PID note was denied with the file's first byte, so the note was
+# unreadable exactly while its process was alive, which is the only time it
+# says anything true. The held byte now sits far past any note the file will
+# ever hold; a range can be locked beyond the end of the file, and reads stop
+# at the end of the file, so the two never meet. Found by the Windows CI job
+# this module ships with, which is why that job exists.
+LOCK_BYTE_OFFSET = 4096
+
 if sys.platform == "win32":  # pragma: no cover - exercised only on Windows
     import msvcrt
 
     def _lock(handle: IO[bytes]) -> None:
         # msvcrt locks a byte range from the current position, so pin it.
-        handle.seek(0)
+        handle.seek(LOCK_BYTE_OFFSET)
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
 
     def _unlock(handle: IO[bytes]) -> None:
-        handle.seek(0)
+        handle.seek(LOCK_BYTE_OFFSET)
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 else:
