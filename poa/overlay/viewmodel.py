@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -233,6 +234,10 @@ class OverlayViewModel:
     """Everything the panel renders, as plain data."""
 
     signal: Signal | None = None
+    #: When the live call crossed the gate, and at what price — from the
+    #: tracker, which is the only thing that knows a re-read from a new call.
+    call_opened_at: datetime | None = None
+    call_open_price: float | None = None
     session: SessionStats = field(default_factory=SessionStats)
     payout: float = 0.92
     balance: float = 1000.0
@@ -408,6 +413,7 @@ class OverlayViewModel:
                 "collapsed": self.risk_collapsed,
             },
             "entry": self._entry(scanning, signal),
+            "validity": self._validity(scanning, signal),
             "recording": self.recording.to_dict(),
             "chart": self._chart(scanning),
             "details": self._details(),
@@ -514,6 +520,74 @@ class OverlayViewModel:
             "color": COLORS["call"] if beats else COLORS["put"],
             "ready": True,
             "beats": beats,
+        }
+
+    def _validity(self, scanning: bool, signal: Signal | None) -> dict[str, Any]:
+        """How long the call on screen has been alive, and what entering now
+        costs against entering when it opened.
+
+        The score is the whole of "whether"; this is "when", and it is the
+        half a slow hand actually loses on. The call described the market from
+        the moment it crossed the gate, at the price it crossed at. A trade
+        placed now is that read entered late, at whatever price the lateness
+        bought — usually worse, because the call fires in the direction price
+        is already going.
+
+        The gauge runs over one trade duration, because that is the horizon
+        the call describes: thirty seconds into a 30 SEC call, the window it
+        argued about is already over. Nothing here invents a threshold — the
+        drain is the trade's own clock.
+        """
+        blank = {
+            "show": False, "age": 0.0, "fraction": 0.0, "age_text": "",
+            "drift_text": "", "drift_against": False, "stale": False,
+        }
+        if (
+            scanning
+            or signal is None
+            or not signal.actionable
+            or self.call_opened_at is None
+        ):
+            return blank
+
+        now = datetime.now(tz=timezone.utc)
+        opened = self.call_opened_at
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        age = max(0.0, (now - opened).total_seconds())
+        horizon = max(1.0, float(self.trade_duration))
+        fraction = max(0.0, 1.0 - age / horizon)
+
+        drift_text, against = "", False
+        open_price, price_now = self.call_open_price, signal.price
+        if open_price is not None and price_now is not None:
+            drift = price_now - open_price
+            if abs(drift) >= 1e-12:
+                # For a CALL a higher entry needs a bigger rise to win, so
+                # drift up is against it; for a PUT the mirror.
+                against = (drift > 0) == (signal.direction is Direction.CALL)
+                drift_text = (
+                    f"{format_price(abs(drift))} "
+                    f"{'against' if against else 'with'} the call since it opened"
+                )
+            else:
+                drift_text = "price is where the call opened"
+
+        return {
+            "show": True,
+            "age": age,
+            "fraction": fraction,
+            "age_text": (
+                f"opened {age:.0f}s ago"
+                if age < 100
+                else f"opened {age / 60:.1f}m ago"
+            ),
+            "drift_text": drift_text,
+            "drift_against": against,
+            # Past one full trade duration the window the call described is
+            # over. Not a rule and not a block — a statement of what the
+            # clock says, coloured so it can be seen without being read.
+            "stale": age >= horizon,
         }
 
     def _entry(self, scanning: bool, signal: Signal | None) -> dict[str, Any]:

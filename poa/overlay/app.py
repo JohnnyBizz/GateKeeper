@@ -359,6 +359,11 @@ class OverlayApp:
             self._pending_signal = signal
         else:
             self.vm.signal = signal
+            # Alongside the signal, when its call opened and at what price.
+            # The tracker is the only thing that can tell a re-read from a
+            # new call, so freshness reads from it rather than from repaints.
+            self.vm.call_opened_at = self.engine.tracker.open_since
+            self.vm.call_open_price = self.engine.tracker.open_price
 
     # -- measuring the engine against the chart in front of you --------------
 
@@ -1543,6 +1548,11 @@ class OverlayApp:
 
     def _finish_scan(self) -> None:
         self.vm.signal = self._pending_signal or self.engine.state.signal
+        # When the live call opened and at what price — the tracker is the
+        # only thing that can tell a re-read from a new call, so the panel's
+        # freshness gauge reads from it rather than guessing from repaints.
+        self.vm.call_opened_at = self.engine.tracker.open_since
+        self.vm.call_open_price = self.engine.tracker.open_price
         self._pending_signal = None
 
     def _reset(self) -> None:

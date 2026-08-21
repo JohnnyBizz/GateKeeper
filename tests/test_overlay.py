@@ -3357,3 +3357,90 @@ class TestASetupOnAWatchedChartIsACall:
                 assert "_signal" not in row
         finally:
             app.shutdown()
+
+
+class TestHowLongTheCallHasBeenValid:
+    """The score is the whole of "whether"; this is "when".
+
+    A call describes the market from the moment it crossed the gate, at the
+    price it crossed at. Entering later is that read taken late, at whatever
+    price the lateness bought — and the gauge drains over one trade duration
+    because that is the horizon the call argued about, not a threshold anyone
+    invented.
+    """
+
+    #: A 3 MIN trade on a 1 MIN chart, because that combination passes the
+    #: duration-fit gate in the fixture engine. The gauge's arithmetic is the
+    #: same at any horizon — that is the point of draining over the trade's
+    #: own clock rather than a number picked for one chart.
+    DURATION = 180
+
+    def _vm(self, age_seconds=5.0, open_price=1.2000, direction=1):
+        from datetime import timedelta
+
+        from conftest import pullback_trend
+        from poa.models import utcnow
+
+        vm = OverlayViewModel(
+            session=SessionStats(), asset="EUR/USD OTC",
+            chart_timeframe=60, trade_duration=self.DURATION,
+        )
+        vm.signal = make_signal(
+            pullback_trend(400, direction=direction), trade_duration=self.DURATION
+        )
+        assert vm.signal.actionable, "the fixture must produce a live call"
+        vm.call_opened_at = utcnow() - timedelta(seconds=age_seconds)
+        vm.call_open_price = open_price
+        return vm
+
+    def _validity(self, vm):
+        return vm.render()["validity"]
+
+    def test_a_fresh_call_reads_nearly_full(self):
+        validity = self._validity(self._vm(age_seconds=3.0))
+        assert validity["show"]
+        assert validity["fraction"] > 0.8
+        assert not validity["stale"]
+        assert "opened 3s ago" in validity["age_text"]
+
+    def test_the_gauge_drains_over_one_trade_duration(self):
+        validity = self._validity(self._vm(age_seconds=90.0))
+        assert 0.4 < validity["fraction"] < 0.6
+
+    def test_past_the_horizon_it_says_the_window_is_over(self):
+        validity = self._validity(self._vm(age_seconds=270.0))
+        assert validity["stale"]
+        assert validity["fraction"] == 0.0
+
+    def test_drift_against_a_call_is_price_above_its_open(self):
+        """A CALL entered higher needs a bigger rise to win."""
+        vm = self._vm(open_price=0.0001, direction=1)
+        validity = self._validity(vm)
+        assert "against" in validity["drift_text"]
+        assert validity["drift_against"]
+
+    def test_drift_with_a_call_is_price_below_its_open(self):
+        vm = self._vm(open_price=9999.0, direction=1)
+        validity = self._validity(vm)
+        assert "with" in validity["drift_text"]
+        assert not validity["drift_against"]
+
+    def test_no_open_call_shows_nothing(self):
+        vm = self._vm()
+        vm.call_opened_at = None
+        assert not self._validity(vm)["show"]
+
+    def test_a_wait_verdict_shows_nothing(self):
+        vm = self._vm()
+        vm.signal = make_signal(choppy_series(400))
+        if not vm.signal.actionable:
+            assert not self._validity(vm)["show"]
+
+    def test_it_disappears_rather_than_showing_stale_zeros(self):
+        """The card must not spend height, or attention, on charts that are
+        waiting — the strip exists only while a call is live."""
+        shown = self._vm(age_seconds=3.0).render()
+        hidden_vm = self._vm()
+        hidden_vm.call_opened_at = None
+        hidden = hidden_vm.render()
+        assert shown["validity"]["show"] and not hidden["validity"]["show"]
