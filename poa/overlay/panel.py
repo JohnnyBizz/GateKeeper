@@ -312,6 +312,39 @@ class OverlayPanel:
     def _clickable(self, tag: str, command: Callable[[], None]) -> None:
         self.c.tag_bind(tag, "<Button-1>", lambda _e: command())
 
+    def _fitted(self, text: str, width: int, *fonts: Any) -> Any:
+        """The largest of ``fonts`` this text fits inside ``width``.
+
+        The verdict is one word for three of its four values and two for the
+        fourth, and "NO TRADE" in the verdict face is wider than the panel: it
+        ran off the right edge and was clipped mid-letter.
+
+        This had already happened once, to "SCANNING", and was fixed there by
+        hard-coding a smaller face for that one string — which fixed the
+        instance and left the cause, so the next long word did it again.
+        Measuring is the fix; the panel is a fixed 340 pixels and any label
+        can be too long for it.
+        """
+        for font in fonts[:-1]:
+            if self._width_of(text, font) <= width:
+                return font
+        return fonts[-1]
+
+    @staticmethod
+    def _width_of(text: str, font: Any) -> float:
+        """How wide this string renders, asked of Tk where there is a display."""
+        try:
+            return float(font.measure(text))
+        except Exception:
+            # Headless, or a stubbed font. Estimate from the point size, and
+            # lean high: bold capitals are the wide case, and the cost of
+            # overestimating is one size smaller rather than a clipped word.
+            try:
+                size = float(font["size"])
+            except Exception:
+                size = 12.0
+            return len(text) * size * 0.85
+
     # -- rendering ----------------------------------------------------------
 
     def refresh(self) -> None:
@@ -486,8 +519,11 @@ class OverlayPanel:
             self._image(PAD + 118, y + 42,
                         ("glyph", verdict["direction"], colour),
                         lambda: gfx.direction_glyph(26, verdict["direction"], colour))
-            self._text(PAD + 152, y + 58, verdict["direction_label"],
-                       self.f_verdict, colour, "w")
+            label = verdict["direction_label"]
+            self._text(PAD + 152, y + 58, label,
+                       self._fitted(label, PANEL_WIDTH - PAD - (PAD + 152),
+                                    self.f_verdict, self.f_score, self.f_button),
+                       colour, "w")
 
             badge, badge_colour = verdict["badge"], verdict["badge_color"]
             if badge and badge != "--":

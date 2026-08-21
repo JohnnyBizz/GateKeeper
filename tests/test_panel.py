@@ -736,3 +736,78 @@ class TestTheRecordButton:
         record = _find(panel, "RECORDING —")[0]
         scan = _find(panel, "SCAN")[0]
         assert record["y"] > scan["y"]
+
+
+class TestTheVerdictFitsThePanel:
+    """"NO TRADE" ran off the right edge and was clipped mid-letter.
+
+    The panel is a fixed 340 pixels and the verdict starts 162 in, so a label
+    has 168 to live in. Three of the four values are one short word; the
+    fourth is two, and in the verdict face it does not fit.
+
+    This had already happened to "SCANNING" and was fixed there by hard-coding
+    a smaller face for that one string — which fixed the instance and left the
+    cause, so the next long word did it again. These tests are about the
+    measurement, not about the two words that have been caught so far.
+    """
+
+    def _label(self, panel_module, direction, label):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        rendered = vm.render()
+        panel = _panel(panel_module, vm=vm)
+        # Draw the verdict directly, so the test is about the label and not
+        # about arranging a market that produces one.
+        rendered["verdict"].update(
+            direction=direction, direction_label=label, blanked=False,
+            actionable=False, score=58.0, state="ACTIVE",
+        )
+        rendered["scan"]["scanning"] = False
+        panel._draw_signal(rendered, 0)
+        return panel
+
+    def _drawn_font(self, panel, text):
+        hits = [i for i in _drawn(panel) if i["kind"] == "text" and i["text"] == text]
+        assert hits, f"{text!r} was never drawn"
+        return hits[0]["font"]
+
+    def test_a_short_verdict_keeps_the_big_face(self, panel_module):
+        panel = self._label(panel_module, "CALL", "BUY")
+
+        assert self._drawn_font(panel, "BUY") is panel.f_verdict
+
+    def test_the_long_one_steps_down_rather_than_overflowing(self, panel_module):
+        panel = self._label(panel_module, "NO_TRADE", "NO TRADE")
+
+        assert self._drawn_font(panel, "NO TRADE") is not panel.f_verdict
+
+    def test_every_verdict_the_tool_can_show_fits(self, panel_module):
+        """The four are BUY, SELL, WAIT and NO TRADE. All of them, measured."""
+        from poa.overlay.panel import PAD, PANEL_WIDTH
+
+        room = PANEL_WIDTH - PAD - (PAD + 152)
+        panel = _panel(panel_module)
+        for label in ("BUY", "SELL", "WAIT", "NO TRADE"):
+            font = panel._fitted(label, room, panel.f_verdict, panel.f_score,
+                                 panel.f_button)
+            assert panel._width_of(label, font) <= room, label
+
+    def test_a_word_too_long_for_any_face_still_picks_the_smallest(self, panel_module):
+        """Better a squeezed word than a crash or a clipped one."""
+        panel = _panel(panel_module)
+        font = panel._fitted("ABSOLUTELY ENORMOUS", 168, panel.f_verdict,
+                             panel.f_score, panel.f_button)
+
+        assert font is panel.f_button
+
+    def test_it_measures_rather_than_matching_known_words(self, panel_module):
+        """The bug was fixed twice by naming a string. Not a third time."""
+        panel = _panel(panel_module)
+        wide = panel._fitted("NO TRADE", 168, panel.f_verdict, panel.f_score)
+        roomy = panel._fitted("NO TRADE", 900, panel.f_verdict, panel.f_score)
+
+        # Same word, different room, different answer — so the decision is
+        # about width and not about the word.
+        assert wide is not roomy
+        assert roomy is panel.f_verdict
