@@ -747,23 +747,25 @@ class TestTheRecordRemembersRealTrades:
         return Journal(tmp_path / "j.db")
 
     def _record(self, journal, *, score, won, asset="EUR/USD", duration=180):
-        from datetime import timedelta
-
-        from poa.models import Direction, utcnow
-
-        signal = make_signal(pullback_trend(200, direction=1), asset=asset)
-        signal.direction = Direction.CALL
-        signal.direction_confidence = score
-        signal.trade_duration = duration
-        signal.price = 1.10
-        row_id = journal.record(signal, source="feed")
-        journal.resolve_outcomes(
-            1.11 if won else 1.09,
-            utcnow() + timedelta(seconds=duration + 30),
-            source="feed",
+        # Through record_manual, the path a placed trade actually takes. This
+        # used to go through journal.record() — the engine's own path — which
+        # quietly asserted that the tool's notional calls count as "your
+        # settled trades". They do not, and calibration_records now refuses
+        # them: twenty-eight of the tool's own calls on one chart were enough
+        # to build a record marked from_real_trades, the one rank allowed to
+        # veto live setups.
+        return journal.record_manual(
             asset=asset,
+            chart_timeframe=60,
+            trade_duration=duration,
+            direction="CALL",
+            direction_confidence=score,
+            duration_confidence=score,
+            won=won,
+            market_regime="STRONG_UPTREND",
+            source="feed",
+            price=1.10,
         )
-        return row_id
 
     def test_settled_trades_become_calibration_records(self, tmp_path):
         journal = self._journal(tmp_path)
@@ -799,6 +801,37 @@ class TestTheRecordRemembersRealTrades:
             signal.direction = Direction.CALL
             journal.record(signal, source="feed")
             assert journal.calibration_records() == []
+        finally:
+            journal.close()
+
+    def test_the_tools_own_settled_calls_are_not_your_trades(self, tmp_path):
+        """The regression. calibration_records swept up every journalled call
+        with an outcome, and the panel reported the tool's own notional record
+        as "your 28 settled trades on this chart" — marked from_real_trades,
+        which is the one rank the gates allow to veto live setups. A record
+        that can silence the tool must be built only from trades a person
+        placed."""
+        from datetime import timedelta
+
+        from poa.models import Direction, utcnow
+
+        journal = self._journal(tmp_path)
+        try:
+            signal = make_signal(pullback_trend(200, direction=1), asset="EUR/USD")
+            signal.direction = Direction.CALL
+            signal.direction_confidence = 88.0
+            signal.trade_duration = 180
+            signal.price = 1.10
+            journal.record(signal, source="feed")
+            journal.resolve_outcomes(
+                1.11,
+                utcnow() + timedelta(seconds=210),
+                source="feed",
+                asset="EUR/USD",
+            )
+            settled = journal.recent(limit=1)[0]
+            assert settled["outcome"] == "win", "the call itself settles fine"
+            assert journal.calibration_records(asset="EUR/USD") == []
         finally:
             journal.close()
 

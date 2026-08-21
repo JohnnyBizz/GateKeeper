@@ -579,7 +579,16 @@ class Journal:
             # journal; what it must not do is teach the score bands, because
             # the score it would teach them with is a zero standing in for
             # "unknown" — and this record outranks the replay and holds a veto.
-            "AND direction_confidence > 0"
+            "AND direction_confidence > 0 "
+            # And only trades somebody actually placed. Without this the query
+            # swept up the tool's own settled calls — every journalled setup
+            # with an outcome — and handed them back as "your settled trades".
+            # Twenty-eight of its own notional calls on one chart were enough
+            # to build a record marked from_real_trades, which is the one rank
+            # the gates allow to veto live setups — a privilege the gate's own
+            # comment reserves for trades that were placed precisely so the
+            # tool cannot silence itself on the strength of its own opinion.
+            "AND notes = 'manual'"
         )
         params: list[Any] = []
         for column, value in (
