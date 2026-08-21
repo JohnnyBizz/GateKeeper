@@ -363,3 +363,131 @@ class TestMultiTimeframe:
         deep = build_multi_timeframe(trending_series(500, step=0.0003), 5, 1)
         assert deep.higher is not deep.current
         assert deep.higher_is_distinct is True
+
+
+class TestHowFarTheMoveHasAlreadyGone:
+    """The readings that do not say which way.
+
+    Seventy of the score's hundred points measure direction of travel, five
+    ways, and agree with each other by construction. These are unsigned on
+    purpose: a market stretched far above its centre and one stretched far
+    below score the same. That is the only reason adding them could change an
+    answer rather than restate one.
+    """
+
+    def _series(self, closes, timeframe=5):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 21, 11, 0, tzinfo=timezone.utc)
+        candles = [
+            Candle(
+                timestamp=start + timedelta(seconds=timeframe * i),
+                open=c, high=c + 0.02, low=c - 0.02, close=c, volume=1.0,
+            )
+            for i, c in enumerate(closes)
+        ]
+        return Series(candles, timeframe, "TEST")
+
+    def test_a_run_up_and_the_same_run_down_read_alike(self):
+        """Unsigned is the whole point. If these could tell up from down they
+        would be a sixth copy of the trend."""
+        from poa.analysis import analyze_extension
+
+        up = analyze_extension(self._series([100 + i * 0.1 for i in range(40)]))
+        down = analyze_extension(self._series([100 - i * 0.1 for i in range(40)]))
+        assert round(up.stretch, 2) == round(down.stretch, 2)
+        assert up.run_length == down.run_length
+        assert up.signed_stretch > 0 and down.signed_stretch < 0
+
+    def test_a_market_going_nowhere_is_not_stretched(self):
+        from poa.analysis import analyze_extension
+
+        flat = [100.0 + (0.01 if i % 2 else -0.01) for i in range(40)]
+        assert analyze_extension(self._series(flat)).stretch < 1.0
+
+    def test_a_long_climb_is_stretched(self):
+        from poa.analysis import analyze_extension
+
+        reading = analyze_extension(self._series([100 + i * 0.1 for i in range(40)]))
+        assert reading.stretch > 1.0
+        assert reading.run_length >= 5
+
+    def test_the_run_is_the_one_ending_now(self):
+        """Twenty up then three down is a run of three, not twenty-three."""
+        from poa.analysis import analyze_extension
+
+        closes = [100 + i * 0.1 for i in range(20)] + [101.8, 101.7, 101.6]
+        assert analyze_extension(self._series(closes)).run_length == 3
+
+    def test_a_price_repeated_does_not_break_the_run(self):
+        """A bar closing exactly where the last one did has gone neither way,
+        and counting it as a change would end a run that never turned."""
+        from poa.analysis import analyze_extension
+
+        closes = [100 + i * 0.1 for i in range(20)] + [101.9, 102.0, 102.1]
+        assert analyze_extension(self._series(closes)).run_length == 21
+
+    def test_a_series_too_short_says_so_rather_than_raising(self):
+        """An exception in the analysis path stops a panel that could still
+        show a price."""
+        from poa.analysis import analyze_extension
+
+        reading = analyze_extension(self._series([100.0, 100.1, 100.2]))
+        assert reading.stretch == 0.0
+        assert "not enough history" in " ".join(reading.notes)
+
+    def test_it_survives_a_series_that_never_moves(self):
+        from poa.analysis import analyze_extension
+
+        reading = analyze_extension(self._series([100.0] * 40))
+        assert reading.run_length == 0
+        assert reading.stretch == 0.0
+
+    def test_nothing_here_is_wired_into_the_score(self):
+        """It has not earned a weight against real outcomes yet, and
+        FINDINGS.md records that extension did not predict on the recordings."""
+        from poa.signals.scoring import WEIGHTS
+
+        for name in WEIGHTS:
+            assert "stretch" not in name and "extension" not in name
+
+
+class TestTheHorizonMeasurement:
+    def test_a_market_that_always_rises_reads_as_always_rising(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        from horizon import measure
+
+        series = TestHowFarTheMoveHasAlreadyGone()._series(
+            [100 + i * 0.05 for i in range(200)]
+        )
+        counts = measure(series, bars=6)
+        total = sum(t for t, _ in counts.values())
+        ups = sum(u for _, u in counts.values())
+        assert total > 0 and ups == total
+
+    def test_the_buckets_are_fixed_in_advance_and_tile(self):
+        """A bucket edge chosen after seeing the outcomes finds an edge in
+        noise, which is the mistake the whole file exists to prevent."""
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        from horizon import BUCKETS
+
+        for (_, high, _), (low, _, _) in zip(BUCKETS, BUCKETS[1:]):
+            assert low == high, "the buckets must tile without a gap or overlap"
+
+    def test_a_tie_decides_nothing_either_way(self):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        from horizon import measure
+
+        series = TestHowFarTheMoveHasAlreadyGone()._series([100.0] * 200)
+        assert sum(t for t, _ in measure(series, bars=6).values()) == 0

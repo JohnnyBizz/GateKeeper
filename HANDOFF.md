@@ -153,6 +153,29 @@ session.
 
 ---
 
+## 5b. The measurement that reframes the rest
+
+Over six bars, on the four committed recordings, price finished higher **48.3%**
+of the time across 1,299 bars — 95% interval **[45.6, 51.0]**. That contains
+fifty. Twelve and twenty-four bars say the same. **Direction over a trade
+horizon is a coin toss on this data**, and every other number here is an
+attempt to beat it.
+
+Against it: a 60% payout needs 62.5%, an 80% payout 55.6%, a 92% payout 52.1%.
+
+`tools/horizon.py` produces this, ungated — which is why it has a sample worth
+reading at all. At the gate the four recordings yield 33 calls between them;
+ungated they yield 1,299 bars. The question is about the market, not the tool's
+opinion of it.
+
+`poa/analysis/extension.py` was written to test whether *how far price has
+already travelled* conditions that coin toss. It does not: every bucket's
+interval contains the base rate and the per-recording columns disagree. It is
+exported, tested, and deliberately carries **no weight in the score** — a test
+asserts that. Do not wire it in without evidence it has not yet earned.
+
+---
+
 ## 6. The rule this project runs on
 
 From `FINDINGS.md`, learned the expensive way:

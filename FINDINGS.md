@@ -334,3 +334,117 @@ Why the live path and the replay disagree. Everything above says the score is
 worse than nothing when it is live and says nothing at all when it is
 replayed, and one of those two measurements is answering a different question
 than it appears to. Until that is settled, no weight moves.
+
+---
+
+## 2026-08-21 — over six bars this market is a coin toss, and extension does not change that
+
+Asked how to make the tool smarter. The standing explanation for the two live
+sessions is that seventy of the score's hundred points measure direction of
+travel — trend 20, structure 15, Heikin Ashi 15, momentum 10, EMA alignment 10
+— which are five ways of measuring one thing, so the score is not a committee
+but one opinion counted five times. Its confidence peaks when the five have
+least to disagree about, which is the middle of an obvious move.
+
+The proposed fix was an axis that is not direction: how far price has already
+travelled from its own centre. Nothing in the score can currently say *"yes it
+is trending, and that is precisely why this is a bad entry"*.
+
+`poa/analysis/extension.py` measures it and `tools/horizon.py` judges it,
+ungated — which matters, because at the gate the four recordings produce
+thirty-three calls between them and ungated they produce 1,299 usable bars.
+The question is about the market, not about the tool's opinion of it.
+
+```
+python tools/horizon.py --bars 6
+```
+
+### The base rate
+
+| | |
+|---|---|
+| Any bar, price higher 6 bars later | **48.3%** of 1,299 |
+| 95% interval | **[45.6, 51.0]** |
+
+That interval contains fifty. **Over six bars, on this data, direction is a
+coin toss** — and that is the most important number this project has measured,
+because everything else is an attempt to beat it.
+
+Against it: 62.5% is needed at a 60% payout, 55.6% at 80%, 52.1% at 92%. A
+coin toss clears none of them. Any edge has to come from conditioning, and the
+next table is what conditioning on extension is worth.
+
+### Extension, measured against the base rate rather than against fifty
+
+| state | rate | 95% interval | vs base | per recording |
+|---|---|---|---|---|
+| below centre by 2+ ATR | 50.0% of 246 | 43.8 .. 56.2 | +1.7 | 46 54 54 45 |
+| below by 1–2 | 52.8% of 212 | 46.1 .. 59.4 | +4.6 | 73 45 56 37 |
+| below by 0.35–1 | 43.5% of 147 | 35.8 .. 51.6 | −4.7 | 48 47 44 32 |
+| near its centre | 53.3% of 167 | 45.7 .. 60.7 | +5.0 | 56 43 43 77 |
+| above by 0.35–1 | 45.8% of 155 | 38.2 .. 53.7 | −2.5 | 40 45 29 74 |
+| above by 1–2 | 45.1% of 184 | 38.1 .. 52.3 | −3.2 | 45 48 27 55 |
+| above centre by 2+ ATR | 45.2% of 188 | 38.3 .. 52.4 | −3.1 | 55 51 48 27 |
+
+Every interval contains the base rate. Nothing is monotone. The per-recording
+columns disagree flatly with each other — "below by 1–2" reads 73, 45, 56 and
+37 across four charts, which is one market sampled four ways and answering
+differently each time.
+
+**Extension does not predict direction over this horizon.** The reversion
+hypothesis is not supported, and neither is continuation. The three points of
+lean in the "above" rows are inside the noise and do not replicate.
+
+The buckets were fixed before the data was looked at and tile without a gap, so
+this is not a slope that failed to survive a search — there was no search.
+
+### What this means for the score
+
+It does not rescue the score and it does not condemn it further. It says the
+thing the score is trying to predict may not be predictable from price shape
+over six bars at all, in which case no reweighting of five direction measures,
+and no sixth measure of distance travelled, will produce a rate that clears a
+60% payout.
+
+That is a claim about this data — 1,299 bars from four charts in two half-hour
+windows — and not about markets in general. It is also the first measurement
+here with a sample large enough to say anything, because dropping the gate
+multiplied the evidence by forty.
+
+### What was built and deliberately not wired in
+
+`analyze_extension` is exported and tested and carries no weight in the score.
+A test asserts that: it has not earned one, and this file is the reason. It
+stays because the measurement is cheap, the journal can record it alongside
+everything else, and a question asked over more sessions may answer
+differently than one asked over two half-hours.
+
+### A longer horizon does not rescue it either
+
+Asked immediately, because it is one flag:
+
+| horizon | base rate | reading |
+|---|---|---|
+| 6 bars (30 SEC) | 48.3% of 1,299 | coin toss |
+| 12 bars (1 MIN) | 48.9% of 1,283 | coin toss |
+| 24 bars (2 MIN) | 49.1% of 1,246 | coin toss |
+| 60 bars (5 MIN) | 45.0% of 1,104 | see below |
+
+At twelve bars the buckets behave exactly as they do at six: every interval
+contains the base rate, nothing is monotone, and the per-recording columns
+disagree — "above by 1–2" reads 54, 56, 23 and 57.
+
+The 60-bar row is not the exception it looks like. Sixty bars on a 5 SEC chart
+is five minutes, and 1,104 overlapping five-minute windows drawn from two
+half-hour recordings are very nearly the same window counted again and again.
+That 45% is those two half-hours drifting down, not a horizon becoming
+predictable. Reading it as a finding would be the independence mistake this
+file has already caught twice, at a longer wavelength.
+
+### The question left open
+
+Whether anything conditions this market at all over minutes. Extension does
+not, and neither does the score. What has not been tried is conditioning on
+something that is not price shape — time of day, the spread, which instrument,
+whether the payout itself moves — and a recording long enough that five-minute
+windows stop overlapping each other.
