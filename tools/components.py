@@ -40,7 +40,6 @@ answers itself in a few hours of ordinary use.
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +47,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from poa.backtesting.paper import Backtester  # noqa: E402
+from poa.backtesting.stats import auc  # noqa: E402,F401  (re-exported)
 from poa.chart_detection.csv_source import load_csv  # noqa: E402
 from poa.signals import GateSettings  # noqa: E402
 
@@ -67,29 +67,6 @@ GATES_OFF = GateSettings(
     require_measured_edge=False,
     avoid_weak_regimes=False,
 )
-
-
-def auc(pairs: list[tuple[float, bool]]) -> tuple[float, float] | None:
-    """Ranking power and its standard error, by Hanley–McNeil.
-
-    An AUC without an interval is a number pretending to be a fact, and at
-    these sample sizes the interval is usually wide enough to contain fifty.
-    """
-    wins = [value for value, won in pairs if won]
-    losses = [value for value, won in pairs if not won]
-    if not wins or not losses:
-        return None
-    better = sum(
-        1.0 if a > b else 0.5 if a == b else 0.0 for a in wins for b in losses
-    )
-    a = better / (len(wins) * len(losses))
-    q1, q2 = a / (2 - a), 2 * a * a / (1 + a)
-    variance = (
-        a * (1 - a)
-        + (len(wins) - 1) * (q1 - a * a)
-        + (len(losses) - 1) * (q2 - a * a)
-    ) / (len(wins) * len(losses))
-    return a * 100, math.sqrt(variance) * 100
 
 
 # A gap this long between calls starts a new session. Sessions are the unit

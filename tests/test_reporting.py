@@ -512,3 +512,61 @@ class TestAnEmptySessionSaysWhetherThatWasExpected:
         ))
 
         assert "expected outcome, not a fault" not in text
+
+
+class TestTheReportAsksTheChartQuestionSeparately:
+    """Payout decides whether a rate is worth money. It says nothing about
+    whether the reading of the chart was any good, and mixing the two hid the
+    thing that matters — a session can clear break-even because the payout was
+    generous and the market trended, with the analysis contributing nothing.
+    """
+
+    def _scored(self, score, outcome, asset="EUR/USD OTC", direction="CALL"):
+        return _call(30, asset=asset, direction=direction, score=score,
+                     outcome=outcome)
+
+    def _session(self):
+        """A score wired backwards: the high band loses, the low band wins."""
+        calls = [self._scored(86, "win", asset=f"P{i}") for i in range(9)]
+        calls += [self._scored(86, "loss", asset=f"Q{i}") for i in range(3)]
+        calls += [self._scored(93, "loss", asset=f"R{i}") for i in range(9)]
+        calls += [self._scored(93, "win", asset=f"S{i}") for i in range(3)]
+        return _report(calls)
+
+    def test_it_says_how_many_reads_the_calls_really_were(self):
+        text = build_report(_report([
+            self._scored(90, "win", asset="EUR/USD OTC", direction="PUT"),
+            self._scored(90, "win", asset="EUR/USD OTC", direction="PUT"),
+            self._scored(90, "loss", asset="AUD/CAD OTC", direction="CALL"),
+        ]))
+        assert "3 settled, in 2 episodes" in text
+
+    def test_a_score_pulling_the_wrong_way_is_named_as_that(self):
+        text = build_report(self._session())
+        assert "Ranking power (AUC)" in text
+        assert "worse than nothing" in text
+
+    def test_the_band_column_shows_the_direction_of_travel(self):
+        text = build_report(self._session())
+        assert "BY SCORE BAND" in text
+        assert "85-89" in text and "90-94" in text
+
+    def test_a_pair_called_only_one_way_is_flagged(self):
+        calls = [self._scored(90, "loss", asset="AUD/USD OTC") for _ in range(4)]
+        calls += [self._scored(90, "win", asset="EUR/USD OTC", direction="PUT")]
+        text = build_report(_report(calls))
+        assert "one-way" in text
+        assert "4C/0P" in text
+
+    def test_the_chart_question_does_not_mention_payout(self):
+        """It is asked without reference to what a win pays, on purpose."""
+        from poa.reporting.session import _edge_section
+
+        block = "\n".join(_edge_section(self._session()))
+        assert "payout" not in block.lower()
+        assert "break-even" not in block.lower()
+
+    def test_too_few_calls_says_nothing_rather_than_something_thin(self):
+        from poa.reporting.session import _edge_section
+
+        assert _edge_section(_report([self._scored(90, "win")])) == []

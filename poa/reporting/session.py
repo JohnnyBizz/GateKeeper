@@ -23,7 +23,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from ..backtesting.stats import breakeven_rate, wilson_interval
+from ..backtesting.stats import (
+    Outcome,
+    auc,
+    breakeven_rate,
+    by_asset,
+    cluster_bootstrap,
+    episodes,
+    score_bands,
+    wilson_interval,
+)
 from ..logging_setup import get_logger
 from ..models import format_duration, utcnow
 
@@ -197,6 +206,7 @@ def build_report(report: SessionReport) -> str:
 
     lines += _calls_section(report)
     lines += _result_section(report)
+    lines += _edge_section(report)
     lines += _manual_section(report)
     lines += _learning_section(report)
     lines += _caveats_section(report)
@@ -382,6 +392,104 @@ def _result_section(report: SessionReport) -> list[str]:
             f"needs around {MEANINGFUL} before it says anything about the next one;",
             "below that it is mostly noise, in either direction.",
         ]
+    return lines
+
+
+def _outcomes(report: SessionReport) -> list[Outcome]:
+    """The session's calls as the statistics module counts them."""
+    return [
+        Outcome(
+            direction=str(call.get("direction", "")),
+            outcome=_outcome_of(call),
+            confidence=float(call.get("overall_confidence") or 0.0),
+            trade_duration=int(call.get("trade_duration") or 0),
+            chart_timeframe=int(call.get("chart_timeframe") or 0),
+            asset=str(call.get("asset", "")),
+            timestamp=str(call.get("timestamp", "")),
+        )
+        for call in report.calls
+    ]
+
+
+def _edge_section(report: SessionReport) -> list[str]:
+    """Whether the score did anything, asked without reference to payout.
+
+    Payout decides whether a rate is worth money. It says nothing about
+    whether the reading of the chart was any good, and mixing the two hid the
+    thing that matters: a session can clear break-even because the payout was
+    generous and the market trended, with the analysis contributing nothing.
+
+    So this section asks only chart questions — does the score rank winners
+    above losers, does it rank the right way all the way up, and did it beat
+    holding one direction and never thinking again. What it costs to be wrong
+    is in the section above.
+    """
+    calls = _outcomes(report)
+    decided = [c for c in calls if c.outcome in ("win", "loss")]
+    if len(decided) < 2:
+        return []
+
+    lines = _heading("DID THE SCORE DO ANYTHING")
+    groups = [g for g in episodes(decided) if g]
+    lines += [
+        f"Calls                     {len(decided)} settled, in {len(groups)} episodes",
+        "  A run on one pair in one direction is one read sampled several",
+        "  times, not several reads. Intervals below resample whole episodes,",
+        "  so they are wider — and truer — than counting the rows.",
+        "",
+    ]
+
+    pairs = [(c.confidence, c.outcome == "win") for c in decided]
+    point = auc(pairs)
+    if point is not None:
+        value, _error = point
+        boot = cluster_bootstrap(
+            groups,
+            lambda calls: (
+                auc([(c.confidence, c.outcome == "win") for c in calls]) or (None, 0)
+            )[0],
+        )
+        verdict = (
+            "worse than nothing — the weight is pulling the wrong way"
+            if value < 50 else "says nothing" if value == 50 else "ranks winners higher"
+        )
+        lines.append(f"Ranking power (AUC)       {value:.1f}%   {verdict}")
+        if boot is not None:
+            low, high, draws = boot
+            above = sum(1 for d in draws if d >= 50.0) / len(draws) * 100.0
+            lines.append(f"  95% over episodes       {low:.1f}% .. {high:.1f}%")
+            lines.append(f"  reached 50 in           {above:.1f}% of resamples")
+        lines.append("  50% is a score that says nothing at all.")
+        lines.append("")
+
+    bands = score_bands(decided)
+    if len(bands) > 1:
+        lines.append("BY SCORE BAND")
+        lines.append("  A score worth having wins more as it rises. Watch the")
+        lines.append("  direction of this column, not any single row.")
+        for band in bands:
+            lines.append(
+                f"   {band['low']:>3}-{band['high']:<3}"
+                f"{band['settled']:>6} calls"
+                f"{band['win_rate']:>9.1f}%"
+            )
+        lines.append("")
+
+    rows = by_asset(decided)
+    if len(rows) > 1:
+        lines.append("BY PAIR")
+        lines.append("  ONE-WAY is how much of one mind the tool was. At 100% it")
+        lines.append("  *is* always-BUY or always-SELL, so the comparison above")
+        lines.append("  cannot tell them apart — both sides are the same thing.")
+        for row in rows:
+            mix = f"{row['calls_up']}C/{row['calls_down']}P"
+            lines.append(
+                f"   {row['asset'][:15]:<16}"
+                f"{row['settled']:>4} calls"
+                f"{mix:>10}"
+                f"{row['one_way']:>6.0f}% one-way"
+                f"{row['win_rate']:>8.1f}%"
+            )
     return lines
 
 

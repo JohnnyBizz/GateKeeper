@@ -1475,3 +1475,164 @@ class TestAPriceOnlySettlesItsOwnChart:
             assert rows[0]["outcome"] == "void"
         finally:
             journal.close()
+
+
+class TestCallsAreNotIndependentReads:
+    """A tool watching a pair drift down and saying PUT six times has made one
+    read, not six. They settle together, so counting the rows counts one
+    right-or-wrong answer several times — and every interval printed over them
+    comes out narrower than the evidence deserves.
+
+    A live session made 106 settled calls in 77 episodes. Read as 106 the
+    interval is a claim the session cannot support.
+    """
+
+    def _call(self, asset, direction, score=90.0, outcome="win"):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(
+            direction=direction, outcome=outcome, confidence=score,
+            trade_duration=30, chart_timeframe=5, asset=asset,
+        )
+
+    def test_a_run_on_one_pair_in_one_direction_is_one_episode(self):
+        from poa.backtesting.stats import episodes
+
+        calls = [self._call("EUR/USD", "PUT") for _ in range(6)]
+        assert len(episodes(calls)) == 1
+
+    def test_changing_direction_starts_a_new_one(self):
+        from poa.backtesting.stats import episodes
+
+        calls = [self._call("EUR/USD", "PUT"), self._call("EUR/USD", "CALL")]
+        assert len(episodes(calls)) == 2
+
+    def test_another_pair_in_between_breaks_the_run(self):
+        """Several charts are watched at once, so consecutive rows are not
+        consecutive on one chart."""
+        from poa.backtesting.stats import episodes
+
+        calls = [
+            self._call("EUR/USD", "PUT"),
+            self._call("AUD/CAD", "PUT"),
+            self._call("EUR/USD", "PUT"),
+        ]
+        assert len(episodes(calls)) == 3
+
+    def test_the_interval_over_episodes_is_wider_than_over_rows(self):
+        """The whole point. Six samples of one opinion are not six opinions."""
+        from poa.backtesting.stats import cluster_bootstrap, episodes, wilson_interval
+
+        calls = (
+            [self._call("EUR/USD", "PUT", outcome="win") for _ in range(6)]
+            + [self._call("AUD/CAD", "CALL", outcome="loss") for _ in range(6)]
+            + [self._call("USD/JPY", "PUT", outcome="win") for _ in range(6)]
+            + [self._call("GBP/USD", "CALL", outcome="loss") for _ in range(6)]
+        )
+
+        def rate(rows):
+            wins = sum(1 for c in rows if c.outcome == "win")
+            return wins / len(rows) * 100 if rows else None
+
+        naive = wilson_interval(12, 24)
+        clustered = cluster_bootstrap(episodes(calls), rate)
+        assert naive is not None and clustered is not None
+        low, high, _draws = clustered
+        assert (high - low) > (naive[1] - naive[0])
+
+    def test_the_same_session_prints_the_same_interval_twice(self):
+        """A report whose numbers move when nothing else did cannot be trusted
+        with the ones that are supposed to move."""
+        from poa.backtesting.stats import cluster_bootstrap, episodes
+
+        calls = [
+            self._call(f"P{i}", "PUT", outcome="win" if i % 3 else "loss")
+            for i in range(12)
+        ]
+
+        def rate(rows):
+            return sum(1 for c in rows if c.outcome == "win") / len(rows) * 100
+
+        groups = episodes(calls)
+        first = cluster_bootstrap(groups, rate, rounds=500)
+        second = cluster_bootstrap(groups, rate, rounds=500)
+        assert first[:2] == second[:2]
+
+    def test_one_episode_cannot_be_resampled_into_evidence(self):
+        from poa.backtesting.stats import cluster_bootstrap, episodes
+
+        calls = [self._call("EUR/USD", "PUT") for _ in range(9)]
+        assert cluster_bootstrap(episodes(calls), lambda rows: 1.0) is None
+
+
+class TestTheScoreIsReadInBandsFixedInAdvance:
+    def _call(self, score, outcome):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(direction="CALL", outcome=outcome, confidence=score,
+                       trade_duration=30, chart_timeframe=5, asset="EUR/USD")
+
+    def test_a_backwards_score_shows_as_a_decline(self):
+        """What a score wired the wrong way looks like: worse as it rises."""
+        from poa.backtesting.stats import score_bands
+
+        calls = (
+            [self._call(86, "win") for _ in range(8)]
+            + [self._call(86, "loss") for _ in range(2)]
+            + [self._call(92, "win") for _ in range(2)]
+            + [self._call(92, "loss") for _ in range(8)]
+        )
+        rates = [b["win_rate"] for b in score_bands(calls)]
+        assert rates == [80.0, 20.0]
+
+    def test_the_bands_are_not_chosen_after_seeing_the_outcomes(self):
+        """A split picked to fit a result finds a split in noise."""
+        from poa.backtesting.stats import SCORE_BANDS
+
+        assert SCORE_BANDS[0][0] == 0 and SCORE_BANDS[-1][1] == 100
+        for (_, high), (low, _) in zip(SCORE_BANDS, SCORE_BANDS[1:]):
+            assert low == high + 1, "the bands must tile without a gap"
+
+    def test_unsettled_calls_are_left_out(self):
+        from poa.backtesting.stats import score_bands
+
+        calls = [self._call(86, "win"), self._call(86, "flat"),
+                 self._call(86, "void")]
+        assert [b["settled"] for b in score_bands(calls)] == [1]
+
+
+class TestHowMuchOfOneMindTheToolWas:
+    """A pair called sixteen times one way and never the other *is* always-BUY
+    over that window, so the baseline comparison beside it cannot find an edge
+    — both sides of it are the same strategy. A live session did exactly that
+    on AUD/USD and lost thirteen of sixteen."""
+
+    def _call(self, asset, direction, outcome):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(direction=direction, outcome=outcome, confidence=90.0,
+                       trade_duration=30, chart_timeframe=5, asset=asset)
+
+    def test_one_direction_only_reads_as_fully_one_way(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("AUD/USD", "CALL", "loss") for _ in range(13)]
+        calls += [self._call("AUD/USD", "CALL", "win") for _ in range(3)]
+        row = by_asset(calls)[0]
+        assert row["one_way"] == 100.0
+        assert (row["calls_up"], row["calls_down"]) == (16, 0)
+        assert row["win_rate"] == 18.8
+
+    def test_an_even_split_reads_as_half(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("EUR/USD", "CALL", "win"),
+                 self._call("EUR/USD", "PUT", "loss")]
+        assert by_asset(calls)[0]["one_way"] == 50.0
+
+    def test_pairs_come_back_busiest_first(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("EUR/USD", "CALL", "win")]
+        calls += [self._call("AUD/CAD", "PUT", "win") for _ in range(3)]
+        assert [r["asset"] for r in by_asset(calls)] == ["AUD/CAD", "EUR/USD"]
