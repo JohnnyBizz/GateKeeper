@@ -811,3 +811,47 @@ class TestTheVerdictFitsThePanel:
         # about width and not about the word.
         assert wide is not roomy
         assert roomy is panel.f_verdict
+
+
+class TestTheCallFreshnessStrip:
+    """How late into the call an entry made now would be — drawn only while a
+    call is live, draining over the trade's own clock."""
+
+    def _live_vm(self, age_seconds=5.0):
+        from datetime import timedelta
+
+        from conftest import good_quality, pullback_trend
+        from poa.models import utcnow
+        from poa.overlay.viewmodel import OverlayViewModel
+        from poa.risk import SessionStats
+        from poa.signals import GateSettings, SignalEngine, SignalRequest
+
+        series = pullback_trend(400, direction=1)
+        signal = SignalEngine().evaluate(SignalRequest(
+            series=series, asset="EUR/USD", chart_timeframe=60,
+            trade_duration=180, quality=good_quality(series),
+            settings=GateSettings(),
+        ))
+        vm = OverlayViewModel(session=SessionStats(), asset="EUR/USD",
+                              chart_timeframe=60, trade_duration=180)
+        vm.signal = signal
+        vm.call_opened_at = utcnow() - timedelta(seconds=age_seconds)
+        vm.call_open_price = 1.2000
+        return vm
+
+    def test_a_live_call_draws_its_age(self, panel_module):
+        panel = _panel(panel_module, vm=self._live_vm(age_seconds=12.0))
+        panel.refresh()
+        assert _find(panel, "opened 12s ago")
+
+    def test_a_stale_call_says_the_window_is_over(self, panel_module):
+        panel = _panel(panel_module, vm=self._live_vm(age_seconds=400.0))
+        panel.refresh()
+        assert _find(panel, "the window it called is over")
+
+    def test_no_call_draws_no_strip(self, panel_module):
+        vm = self._live_vm()
+        vm.call_opened_at = None
+        panel = _panel(panel_module, vm=vm)
+        panel.refresh()
+        assert not _find(panel, "opened ")

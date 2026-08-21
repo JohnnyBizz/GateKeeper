@@ -1,5 +1,7 @@
 # GateKeeper
 
+[![Build](https://github.com/JohnnyBizz/GateKeeper/actions/workflows/build.yml/badge.svg)](https://github.com/JohnnyBizz/GateKeeper/actions/workflows/build.yml)
+
 A local, read-only technical-analysis assistant that watches a trading chart on
 your screen, analyses market structure and price action continuously, and tells
 you **CALL**, **PUT**, or **WAIT** — with its full reasoning.
@@ -17,7 +19,58 @@ It is decision support, not a prediction machine and not a bot.
 
 ---
 
+## Download
+
+**Windows, no Python needed.** One file, double-click it.
+
+| | |
+|---|---|
+| **[GateKeeper.exe](https://github.com/JohnnyBizz/GateKeeper/releases/download/latest/GateKeeper.exe)** | the app — this is the one you want |
+| [GateKeeper-windows.zip](https://github.com/JohnnyBizz/GateKeeper/releases/download/latest/GateKeeper-windows.zip) | same thing zipped, for when the browser refuses the .exe |
+| [RecordFeed.exe](https://github.com/JohnnyBizz/GateKeeper/releases/download/latest/RecordFeed.exe) | optional — records a chart to a file. The panel's RECORD button already does this. |
+| [RecordFeed-windows.zip](https://github.com/JohnnyBizz/GateKeeper/releases/download/latest/RecordFeed-windows.zip) | zipped |
+
+All four live on the [`latest` release](https://github.com/JohnnyBizz/GateKeeper/releases/tag/latest),
+which is rebuilt on every push to `main` and always sits at the same address.
+The test suite runs first, so an executable is only ever published from a build
+where every test passed.
+
+Those four links always point at the newest build. To keep a particular one —
+so there is a way back to the exact executable that worked — bump the version
+in `packaging/gatekeeper_version.txt` and push: the next build also publishes a
+`v1.0.0`-style release that is never overwritten. See
+[BUILD.md](BUILD.md#keeping-a-particular-build).
+
+**This repository is private.** The links above resolve for anyone signed in
+with access to it and return 404 for everybody else — that is the intended
+behaviour, not a broken build. Nothing here is published anywhere else, and the
+release exists so there is always a finished, tested executable to fetch from a
+fixed address without rebuilding it.
+
+> **If the browser refuses the download** — *"couldn't download, virus
+> detected"* — take the `.zip` instead and extract it. These builds are not
+> code-signed, so a brand-new unsigned executable is judged on reputation it
+> has not had time to earn. The refusal happens as the file comes down the
+> wire, which is why there is nothing to click past; a zip is not an
+> executable, so it arrives, and Windows judges it on extraction where *keep
+> anyway* is at least offered.
+
+**Prefer to run from source?** Three lines, any platform:
+
+```bash
+git clone https://github.com/JohnnyBizz/GateKeeper && cd GateKeeper
+pip install -r requirements.txt
+python overlay.py
+```
+
+Full details in [Installation](#6-installation) and [Running it](#7-running-it);
+to build the executable yourself see [BUILD.md](BUILD.md).
+
+---
+
 ## Contents
+
+- [Download](#download)
 
 1. [Architecture](#1-architecture)
 2. [How chart data is obtained](#2-how-chart-data-is-obtained)
@@ -301,7 +354,7 @@ suggested one rather than to abandon the setup.
 Requires **Python 3.10+**.
 
 ```bash
-cd pocket-option-assistant
+cd GateKeeper
 
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
@@ -1199,7 +1252,7 @@ Two safety invariants are asserted directly:
 ## 13. Folder structure
 
 ```
-pocket-option-assistant/
+GateKeeper/
 ├── poa/
 │   ├── analysis/          Heikin Ashi, structure, levels, regime, patterns,
 │   │                      volatility, momentum, resampling, multi-timeframe

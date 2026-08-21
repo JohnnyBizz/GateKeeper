@@ -11,6 +11,7 @@ behaviour of the engine on the data it was given, and no more.
 from __future__ import annotations
 
 import math
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
@@ -76,6 +77,167 @@ def wilson_interval(wins: int, total: int) -> tuple[float, float] | None:
         / (1 + z * z / total)
     )
     return (max(0.0, centre - spread) * 100, min(1.0, centre + spread) * 100)
+
+
+def auc(pairs: Sequence[tuple[float, bool]]) -> tuple[float, float] | None:
+    """Ranking power and its standard error, by Hanley–McNeil.
+
+    Given one winning call and one losing call, how often did the score argue
+    harder for the winner? Fifty is a score that says nothing. Below fifty is
+    worse than nothing, because the weight is pulling the wrong way.
+
+    An AUC without an interval is a number pretending to be a fact, and at
+    these sample sizes the interval is usually wide enough to contain fifty.
+
+    The standard error assumes independent calls. It is not, here — a run on
+    one pair in one direction is one read sampled several times — so use
+    ``cluster_bootstrap`` over ``episodes`` for the interval that can be
+    believed, and this one for the point estimate.
+    """
+    wins = [value for value, won in pairs if won]
+    losses = [value for value, won in pairs if not won]
+    if not wins or not losses:
+        return None
+    better = sum(
+        1.0 if a > b else 0.5 if a == b else 0.0 for a in wins for b in losses
+    )
+    a = better / (len(wins) * len(losses))
+    q1, q2 = a / (2 - a), 2 * a * a / (1 + a)
+    variance = (
+        a * (1 - a)
+        + (len(wins) - 1) * (q1 - a * a)
+        + (len(losses) - 1) * (q2 - a * a)
+    ) / (len(wins) * len(losses))
+    return a * 100, math.sqrt(variance) * 100
+
+
+def episodes(outcomes: Sequence[Outcome]) -> list[list[Outcome]]:
+    """Calls grouped into the reads they actually were.
+
+    A tool that says PUT on one pair and keeps saying it while the pair drifts
+    down has not made six calls. It has made one, and sampled it six times.
+    They settle together, so a rate measured over the rows counts one
+    right-or-wrong answer several times and dilutes the independent ones
+    beside it — and every interval printed over them is narrower than the
+    evidence deserves.
+
+    A run is broken by the pair changing, the direction changing, or a call on
+    another pair coming between: the tool watches several charts at once, so
+    consecutive rows are not consecutive on one chart.
+    """
+    grouped: list[list[Outcome]] = []
+    for call in outcomes:
+        key = (call.asset, call.direction)
+        if grouped and (grouped[-1][0].asset, grouped[-1][0].direction) == key:
+            grouped[-1].append(call)
+        else:
+            grouped.append([call])
+    return grouped
+
+
+#: Fixed, so the same session prints the same interval every time it is read.
+#: A report whose numbers move when nothing else did cannot be trusted with
+#: the ones that are supposed to move.
+BOOTSTRAP_SEED = 20260821
+BOOTSTRAP_ROUNDS = 20_000
+
+
+def cluster_bootstrap(
+    groups: Sequence[Sequence[Outcome]],
+    statistic: Any,
+    rounds: int = BOOTSTRAP_ROUNDS,
+) -> tuple[float, float, list[float]] | None:
+    """A 95% interval that resamples whole episodes rather than single calls.
+
+    Resampling rows treats six samples of one opinion as six opinions and
+    reports an interval far too narrow for what was actually observed.
+    Resampling episodes keeps each read whole, which is the unit the tool
+    really produced.
+
+    Returns the interval and the sorted draws, so a caller can ask its own
+    question of them — how often the statistic cleared a threshold, say.
+    """
+    usable = [list(g) for g in groups if g]
+    if len(usable) < 2:
+        return None
+    rng = random.Random(BOOTSTRAP_SEED)
+    draws: list[float] = []
+    for _ in range(rounds):
+        picked = [usable[rng.randrange(len(usable))] for _ in usable]
+        value = statistic([call for group in picked for call in group])
+        if value is not None:
+            draws.append(value)
+    if not draws:
+        return None
+    draws.sort()
+    low = draws[int(0.025 * len(draws))]
+    high = draws[min(len(draws) - 1, int(0.975 * len(draws)))]
+    return low, high, draws
+
+
+#: The bands the score is read in. Fixed in advance and never chosen to fit a
+#: result: a split picked after seeing the outcomes finds a split in noise.
+#: Narrower near the top because that is where a gate puts the calls: a
+#: session run at 85 lands entirely in the last three, and two fat bands
+#: would hide a decline running through them.
+SCORE_BANDS: tuple[tuple[int, int], ...] = (
+    (0, 69), (70, 79), (80, 84), (85, 89), (90, 94), (95, 100),
+)
+
+
+def score_bands(outcomes: Sequence[Outcome]) -> list[dict[str, Any]]:
+    """Win rate by score band.
+
+    The question a single AUC cannot answer: not "does the score rank" but
+    "does it rank the *right way all the way up*". A monotone decline across
+    fixed bands is much harder to read as noise than one split that happened
+    to look good, and it is what a score wired backwards looks like.
+    """
+    rows = []
+    for low, high in SCORE_BANDS:
+        band = [
+            o for o in outcomes
+            if o.outcome in ("win", "loss") and low <= o.confidence <= high
+        ]
+        if not band:
+            continue
+        wins = sum(1 for o in band if o.outcome == "win")
+        rows.append({
+            "low": low, "high": high, "settled": len(band), "wins": wins,
+            "win_rate": round(wins / len(band) * 100.0, 1),
+        })
+    return rows
+
+
+def by_asset(outcomes: Sequence[Outcome]) -> list[dict[str, Any]]:
+    """Per pair: how it settled, and how much of one mind the tool was.
+
+    Direction concentration is the number that explains an unbeatable-looking
+    baseline. A pair called sixteen times in one direction and never the other
+    *is* always-BUY over that window, so the baseline comparison beside it
+    cannot find an edge — both sides of it are the same strategy.
+    """
+    rows: dict[str, list[Outcome]] = defaultdict(list)
+    for call in outcomes:
+        rows[call.asset or "—"].append(call)
+    out = []
+    for asset, calls in rows.items():
+        decided = [c for c in calls if c.outcome in ("win", "loss")]
+        if not decided:
+            continue
+        wins = sum(1 for c in decided if c.outcome == "win")
+        ups = sum(1 for c in calls if c.direction == "CALL")
+        out.append({
+            "asset": asset,
+            "calls": len(calls),
+            "settled": len(decided),
+            "wins": wins,
+            "win_rate": round(wins / len(decided) * 100.0, 1),
+            "calls_up": ups,
+            "calls_down": len(calls) - ups,
+            "one_way": round(max(ups, len(calls) - ups) / len(calls) * 100.0, 1),
+        })
+    return sorted(out, key=lambda r: -r["calls"])
 
 
 @dataclass

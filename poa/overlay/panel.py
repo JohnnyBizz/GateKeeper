@@ -472,9 +472,12 @@ class OverlayPanel:
 
     def _draw_signal(self, data: dict[str, Any], y: int) -> int:
         verdict, entry = data["verdict"], data["entry"]
+        validity = data.get("validity") or {}
         scanning = data["scan"]["scanning"]
         colour = verdict["color"]
-        height = 214
+        # The freshness strip only exists while a call is live, so the card
+        # does not spend the height on charts that are waiting.
+        height = 214 + (34 if validity.get("show") else 0)
 
         # The border breathes only while there is something to act on, so the
         # movement means "this one" rather than "the app is running".
@@ -565,6 +568,34 @@ class OverlayPanel:
             fill=COLORS["dim"], anchor="nw",
             width=PANEL_WIDTH - PAD - 24 - text_x, tags="frame",
         )
+
+        # How long this call has been alive, against the horizon it argued
+        # about. The ring above answers "when does this read get re-derived";
+        # this answers "how late into the call is an entry made now" — the
+        # half of timing the score says nothing about. It drains over one
+        # trade duration, because that is the window the call described, and
+        # past it the ring sits empty rather than pretending otherwise.
+        if validity.get("show"):
+            vy = y + 200
+            stale = validity.get("stale", False)
+            v_tone = COLORS["wait"] if stale or validity.get("drift_against") else colour
+            self._image(
+                PAD + 24, vy + 4,
+                ("fresh", round(validity["fraction"] * RING_STEPS) / RING_STEPS, v_tone),
+                lambda: gfx.countdown_ring(
+                    22, validity["fraction"], color=v_tone,
+                    track="#1c2739", thickness=3,
+                ),
+            )
+            age_line = validity["age_text"] + ("  —  the window it called is over" if stale else "")
+            self._text(PAD + 56, vy + 8, age_line, self.f_label, v_tone, "w")
+            drift = validity.get("drift_text")
+            if drift:
+                self._text(
+                    PAD + 56, vy + 22, drift, self.f_label,
+                    COLORS["wait"] if validity.get("drift_against") else COLORS["dim"],
+                    "w",
+                )
         return y + height + 8
 
     def _draw_trend(self, data: dict[str, Any], y: int) -> int:

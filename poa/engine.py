@@ -304,7 +304,12 @@ class AnalysisEngine:
         try:
             if signal.price is not None:
                 self.journal.resolve_outcomes(
-                    signal.price, source=source_name, asset=asset
+                    signal.price,
+                    source=source_name,
+                    asset=asset,
+                    # The chart's own history, so a row is decided at the
+                    # moment it expired rather than the moment this looked.
+                    price_at=visible.price_at,
                 )
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("outcome resolution failed: %s", exc)

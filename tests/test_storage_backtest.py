@@ -1475,3 +1475,337 @@ class TestAPriceOnlySettlesItsOwnChart:
             assert rows[0]["outcome"] == "void"
         finally:
             journal.close()
+
+
+class TestCallsAreNotIndependentReads:
+    """A tool watching a pair drift down and saying PUT six times has made one
+    read, not six. They settle together, so counting the rows counts one
+    right-or-wrong answer several times — and every interval printed over them
+    comes out narrower than the evidence deserves.
+
+    A live session made 106 settled calls in 77 episodes. Read as 106 the
+    interval is a claim the session cannot support.
+    """
+
+    def _call(self, asset, direction, score=90.0, outcome="win"):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(
+            direction=direction, outcome=outcome, confidence=score,
+            trade_duration=30, chart_timeframe=5, asset=asset,
+        )
+
+    def test_a_run_on_one_pair_in_one_direction_is_one_episode(self):
+        from poa.backtesting.stats import episodes
+
+        calls = [self._call("EUR/USD", "PUT") for _ in range(6)]
+        assert len(episodes(calls)) == 1
+
+    def test_changing_direction_starts_a_new_one(self):
+        from poa.backtesting.stats import episodes
+
+        calls = [self._call("EUR/USD", "PUT"), self._call("EUR/USD", "CALL")]
+        assert len(episodes(calls)) == 2
+
+    def test_another_pair_in_between_breaks_the_run(self):
+        """Several charts are watched at once, so consecutive rows are not
+        consecutive on one chart."""
+        from poa.backtesting.stats import episodes
+
+        calls = [
+            self._call("EUR/USD", "PUT"),
+            self._call("AUD/CAD", "PUT"),
+            self._call("EUR/USD", "PUT"),
+        ]
+        assert len(episodes(calls)) == 3
+
+    def test_the_interval_over_episodes_is_wider_than_over_rows(self):
+        """The whole point. Six samples of one opinion are not six opinions."""
+        from poa.backtesting.stats import cluster_bootstrap, episodes, wilson_interval
+
+        calls = (
+            [self._call("EUR/USD", "PUT", outcome="win") for _ in range(6)]
+            + [self._call("AUD/CAD", "CALL", outcome="loss") for _ in range(6)]
+            + [self._call("USD/JPY", "PUT", outcome="win") for _ in range(6)]
+            + [self._call("GBP/USD", "CALL", outcome="loss") for _ in range(6)]
+        )
+
+        def rate(rows):
+            wins = sum(1 for c in rows if c.outcome == "win")
+            return wins / len(rows) * 100 if rows else None
+
+        naive = wilson_interval(12, 24)
+        clustered = cluster_bootstrap(episodes(calls), rate)
+        assert naive is not None and clustered is not None
+        low, high, _draws = clustered
+        assert (high - low) > (naive[1] - naive[0])
+
+    def test_the_same_session_prints_the_same_interval_twice(self):
+        """A report whose numbers move when nothing else did cannot be trusted
+        with the ones that are supposed to move."""
+        from poa.backtesting.stats import cluster_bootstrap, episodes
+
+        calls = [
+            self._call(f"P{i}", "PUT", outcome="win" if i % 3 else "loss")
+            for i in range(12)
+        ]
+
+        def rate(rows):
+            return sum(1 for c in rows if c.outcome == "win") / len(rows) * 100
+
+        groups = episodes(calls)
+        first = cluster_bootstrap(groups, rate, rounds=500)
+        second = cluster_bootstrap(groups, rate, rounds=500)
+        assert first[:2] == second[:2]
+
+    def test_one_episode_cannot_be_resampled_into_evidence(self):
+        from poa.backtesting.stats import cluster_bootstrap, episodes
+
+        calls = [self._call("EUR/USD", "PUT") for _ in range(9)]
+        assert cluster_bootstrap(episodes(calls), lambda rows: 1.0) is None
+
+
+class TestTheScoreIsReadInBandsFixedInAdvance:
+    def _call(self, score, outcome):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(direction="CALL", outcome=outcome, confidence=score,
+                       trade_duration=30, chart_timeframe=5, asset="EUR/USD")
+
+    def test_a_backwards_score_shows_as_a_decline(self):
+        """What a score wired the wrong way looks like: worse as it rises."""
+        from poa.backtesting.stats import score_bands
+
+        calls = (
+            [self._call(86, "win") for _ in range(8)]
+            + [self._call(86, "loss") for _ in range(2)]
+            + [self._call(92, "win") for _ in range(2)]
+            + [self._call(92, "loss") for _ in range(8)]
+        )
+        rates = [b["win_rate"] for b in score_bands(calls)]
+        assert rates == [80.0, 20.0]
+
+    def test_the_bands_are_not_chosen_after_seeing_the_outcomes(self):
+        """A split picked to fit a result finds a split in noise."""
+        from poa.backtesting.stats import SCORE_BANDS
+
+        assert SCORE_BANDS[0][0] == 0 and SCORE_BANDS[-1][1] == 100
+        for (_, high), (low, _) in zip(SCORE_BANDS, SCORE_BANDS[1:]):
+            assert low == high + 1, "the bands must tile without a gap"
+
+    def test_unsettled_calls_are_left_out(self):
+        from poa.backtesting.stats import score_bands
+
+        calls = [self._call(86, "win"), self._call(86, "flat"),
+                 self._call(86, "void")]
+        assert [b["settled"] for b in score_bands(calls)] == [1]
+
+
+class TestHowMuchOfOneMindTheToolWas:
+    """A pair called sixteen times one way and never the other *is* always-BUY
+    over that window, so the baseline comparison beside it cannot find an edge
+    — both sides of it are the same strategy. A live session did exactly that
+    on AUD/USD and lost thirteen of sixteen."""
+
+    def _call(self, asset, direction, outcome):
+        from poa.backtesting.stats import Outcome
+
+        return Outcome(direction=direction, outcome=outcome, confidence=90.0,
+                       trade_duration=30, chart_timeframe=5, asset=asset)
+
+    def test_one_direction_only_reads_as_fully_one_way(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("AUD/USD", "CALL", "loss") for _ in range(13)]
+        calls += [self._call("AUD/USD", "CALL", "win") for _ in range(3)]
+        row = by_asset(calls)[0]
+        assert row["one_way"] == 100.0
+        assert (row["calls_up"], row["calls_down"]) == (16, 0)
+        assert row["win_rate"] == 18.8
+
+    def test_an_even_split_reads_as_half(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("EUR/USD", "CALL", "win"),
+                 self._call("EUR/USD", "PUT", "loss")]
+        assert by_asset(calls)[0]["one_way"] == 50.0
+
+    def test_pairs_come_back_busiest_first(self):
+        from poa.backtesting.stats import by_asset
+
+        calls = [self._call("EUR/USD", "CALL", "win")]
+        calls += [self._call("AUD/CAD", "PUT", "win") for _ in range(3)]
+        assert [r["asset"] for r in by_asset(calls)] == ["AUD/CAD", "EUR/USD"]
+
+
+class TestATradeIsSettledAtItsOwnExpiry:
+    """A binary settles on where price sat when it expired.
+
+    The journal used whatever price was current when the check ran, and the
+    grace on that is ``max(2 x duration, 180s)`` — so a thirty-second trade
+    could be decided by a price nearly three minutes past its expiry and filed
+    as a clean win, with nothing marking it. On a 5 SEC chart feeding a 30 SEC
+    trade even two seconds of lateness is a large share of the horizon.
+
+    The chart's own candles can answer exactly, so they do.
+    """
+
+    def _series(self, closes, timeframe=5):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 21, 11, 0, tzinfo=timezone.utc)
+        return Series(
+            [
+                Candle(
+                    timestamp=start + timedelta(seconds=timeframe * i),
+                    open=c, high=c, low=c, close=c, volume=1.0,
+                )
+                for i, c in enumerate(closes)
+            ],
+            timeframe,
+            "EUR/USD",
+        )
+
+    def _journalled(self, tmp_path, direction, entry, duration=30):
+        """One pending CALL/PUT at ``entry``, timed to the series above."""
+        from datetime import datetime, timezone
+
+        from poa.storage.journal import Journal
+
+        journal = Journal(str(tmp_path / "j.db"))
+        start = datetime(2026, 8, 21, 11, 0, tzinfo=timezone.utc)
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, price, "
+            "source) VALUES ('x', ?, 'EUR/USD', 5, ?, ?, 'ACTIVE', 90, 90, 90, "
+            "'STRONG', ?, 'feed')",
+            (start.isoformat(), duration, direction, entry),
+        )
+        journal._connection.commit()
+        return journal, start
+
+    def test_the_price_at_expiry_decides_it_not_the_price_now(self, tmp_path):
+        """Price is below entry at expiry and above it by the time the app
+        looks. The trade lost."""
+        from datetime import timedelta
+
+        # 30s expiry = bar 6. Down at bar 6, up long afterwards.
+        closes = [1.0] * 6 + [0.9] * 6 + [1.5] * 20
+        series = self._series(closes)
+        journal, start = self._journalled(tmp_path, "CALL", 1.0)
+        journal.resolve_outcomes(
+            1.5,  # what the app can see now
+            now=start + timedelta(seconds=170),
+            source="feed",
+            asset="EUR/USD",
+            price_at=series.price_at,
+        )
+        row = journal.recent(limit=1)[0]
+        assert row["outcome"] == "loss", "settled on the move it was betting on"
+        assert float(row["outcome_price"]) == 0.9
+
+    def test_without_the_history_it_still_settles_as_before(self, tmp_path):
+        """The fallback has to keep working: not every caller has candles."""
+        from datetime import timedelta
+
+        journal, start = self._journalled(tmp_path, "CALL", 1.0)
+        journal.resolve_outcomes(
+            1.5, now=start + timedelta(seconds=35), source="feed", asset="EUR/USD"
+        )
+        assert journal.recent(limit=1)[0]["outcome"] == "win"
+
+    def test_a_row_the_history_cannot_reach_falls_back(self, tmp_path):
+        """A chart that does not go back far enough is not an answer."""
+        from datetime import timedelta
+
+        far_future = self._series([2.0] * 5)
+        journal, start = self._journalled(tmp_path, "CALL", 1.0)
+        journal.resolve_outcomes(
+            1.5,
+            now=start + timedelta(seconds=35),
+            source="feed",
+            asset="EUR/USD",
+            price_at=lambda when: far_future.price_at(when + timedelta(days=400)),
+        )
+        assert journal.recent(limit=1)[0]["outcome"] == "win"
+
+    def test_lateness_cannot_void_a_row_the_history_decided(self, tmp_path):
+        """Being slow to look is not a reason to destroy an answer that the
+        candles hold exactly."""
+        from datetime import timedelta
+
+        series = self._series([1.0] * 6 + [1.4] * 30)
+        journal, start = self._journalled(tmp_path, "CALL", 1.0)
+        journal.resolve_outcomes(
+            1.4,
+            now=start + timedelta(seconds=3600),  # an hour late
+            source="feed",
+            asset="EUR/USD",
+            price_at=series.price_at,
+        )
+        row = journal.recent(limit=1)[0]
+        assert row["outcome"] == "win", "the candles knew, however late this was"
+
+    def test_a_put_reads_the_same_way_round(self, tmp_path):
+        from datetime import timedelta
+
+        series = self._series([1.0] * 6 + [0.9] * 30)
+        journal, start = self._journalled(tmp_path, "PUT", 1.0)
+        journal.resolve_outcomes(
+            0.9,
+            now=start + timedelta(seconds=40),
+            source="feed",
+            asset="EUR/USD",
+            price_at=series.price_at,
+        )
+        assert journal.recent(limit=1)[0]["outcome"] == "win"
+
+
+class TestAChartCanBeAskedWhatItWasShowing:
+    def _series(self):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 21, 11, 0, tzinfo=timezone.utc)
+        return Series(
+            [
+                Candle(timestamp=start + timedelta(seconds=5 * i),
+                       open=1.0 + i, high=1.0 + i, low=1.0 + i,
+                       close=1.0 + i, volume=1.0)
+                for i in range(6)
+            ],
+            5,
+            "T",
+        )
+
+    def test_a_moment_inside_a_bar_reads_that_bar(self):
+        from datetime import timedelta
+
+        series = self._series()
+        start = series.candles[0].timestamp
+        assert series.price_at(start + timedelta(seconds=12)) == 3.0
+
+    def test_before_the_history_is_not_a_price(self):
+        from datetime import timedelta
+
+        series = self._series()
+        assert series.price_at(series.candles[0].timestamp - timedelta(seconds=1)) is None
+
+    def test_beyond_the_history_is_not_a_price(self):
+        """Answering with the last close would silently settle a trade that
+        expires in the future at today's price."""
+        from datetime import timedelta
+
+        series = self._series()
+        assert series.price_at(series.candles[-1].timestamp + timedelta(hours=1)) is None
+
+    def test_an_empty_chart_answers_nothing(self):
+        from datetime import datetime, timezone
+
+        from poa.models import Series
+
+        assert Series([], 5, "T").price_at(datetime.now(tz=timezone.utc)) is None

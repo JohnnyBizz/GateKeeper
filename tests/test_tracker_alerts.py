@@ -300,3 +300,68 @@ class TestAlerts:
         signal = make_signal(pullback_trend(400, direction=1))
         manager.evaluate(signal, tracker.update(signal))
         assert working.sent  # the failure was contained
+
+
+class TestACallKnowsWhenItOpened:
+    """Timing is the half of an entry the score says nothing about.
+
+    The call described the market from the moment it crossed the gate, at the
+    price it crossed at. The panel's freshness gauge reads both from here, so
+    they have to survive everything a running call goes through: re-reads,
+    window re-arms, score drift — one stamp, from the transition, until the
+    run ends.
+    """
+
+    def _live(self, direction=1, **kwargs):
+        return make_signal(pullback_trend(400, direction=direction), **kwargs)
+
+    def test_the_stamp_is_taken_on_the_transition(self):
+        tracker = SignalTracker()
+        now = utcnow()
+        tracker.update(self._live(), now=now)
+        assert tracker.open_since == now
+        assert tracker.open_price is not None
+
+    def test_a_re_read_does_not_move_it(self):
+        """A re-read above the gate is the same call. Moving the stamp would
+        make every entry look fresh, which is the lie the gauge exists to
+        stop."""
+        tracker = SignalTracker()
+        now = utcnow()
+        tracker.update(self._live(trade_duration=60), now=now)
+        first_price = tracker.open_price
+        tracker.update(self._live(trade_duration=60),
+                       now=now + timedelta(seconds=90))
+        assert tracker.open_since == now, "the call is 90s old, not new"
+        assert tracker.open_price == first_price
+
+    def test_the_call_ending_clears_it(self):
+        tracker = SignalTracker()
+        tracker.update(self._live())
+        tracker.update(make_signal(choppy_series(400)))
+        assert tracker.open_since is None
+        assert tracker.open_price is None
+
+    def test_a_new_call_stamps_afresh(self):
+        tracker = SignalTracker()
+        now = utcnow()
+        tracker.update(self._live(), now=now)
+        tracker.update(make_signal(choppy_series(400)),
+                       now=now + timedelta(seconds=30))
+        later = now + timedelta(seconds=60)
+        tracker.update(self._live(), now=later)
+        assert tracker.open_since == later
+
+    def test_a_flip_restamps_because_it_is_a_new_call(self):
+        tracker = SignalTracker()
+        now = utcnow()
+        tracker.update(self._live(direction=1), now=now)
+        later = now + timedelta(seconds=45)
+        tracker.update(self._live(direction=-1), now=later)
+        assert tracker.open_since == later
+
+    def test_reset_clears_the_stamp_too(self):
+        tracker = SignalTracker()
+        tracker.update(self._live())
+        tracker.reset()
+        assert tracker.open_since is None and tracker.open_price is None

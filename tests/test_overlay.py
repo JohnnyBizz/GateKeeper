@@ -2917,6 +2917,198 @@ class TestTwoClocksMatchingOneTrade:
             app.shutdown()
 
 
+class TestTheDealClockInAnotherTimezone:
+    """The whole of a session's hand trades came back with no score, twice.
+
+    Not because nothing was live on those charts — the calls were there, at
+    the right pairs, in the right direction, settling the same way. The
+    platform stamps its deals on a clock an hour from this machine's, so every
+    trade landed an hour past the call it was taken on, outside a window
+    measured in minutes, and the report printed five trades after the moment
+    the session ended.
+
+    Widening the window is not the fix and would be a worse bug: a deal an
+    hour after a call is either that call seen through an offset or a call
+    from an hour earlier, and the trade's open time alone cannot tell those
+    apart. The offset is measured from the trade's own close instead, and the
+    window stays where it was.
+    """
+
+    HOUR = 3600.0
+
+    def _app(self, tmp_path):
+        return TestLearningFromRealTrades()._app(tmp_path)
+
+    def _trade(self, opened, closed, *, direction="PUT", asset="USDJPY_otc"):
+        return {
+            "asset": asset, "direction": direction, "won": True,
+            "open_price": 158.611, "close_price": 158.597,
+            "payout": 0.88, "duration": 30,
+            "opened_at": opened, "closed_at": closed,
+        }
+
+    def _manual_row(self, app):
+        rows = app.engine.journal.recent(limit=10)
+        manual = [r for r in rows if str(r.get("notes")) == "manual"]
+        assert manual, "the trade itself must still be recorded"
+        return manual[0]
+
+    def _score_filed(self, app):
+        return float(self._manual_row(app)["overall_confidence"])
+
+    def test_a_deal_clock_an_hour_ahead_still_finds_the_call(self, tmp_path):
+        """The regression, as it actually happened."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade(now + self.HOUR - 2.0, now + self.HOUR)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_deal_clock_an_hour_behind_still_finds_the_call(self, tmp_path):
+        """The offset has a sign, and the other one is just as possible."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade(now - self.HOUR - 2.0, now - self.HOUR)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_call_an_hour_earlier_is_still_refused_when_the_clocks_agree(
+        self, tmp_path
+    ):
+        """The guarantee the fix must not trade away. Same hour, opposite
+        meaning: here the clocks agree, so the trade really was taken an hour
+        after this call and belongs to none."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            # Closed about now: the clocks agree, so nothing is shifted.
+            app.engine.source.take_settled = lambda: [
+                self._trade(now + self.HOUR, now)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 0.0, "unattributable, and says so"
+        finally:
+            app.shutdown()
+
+    def test_clocks_that_agree_cost_nothing(self, tmp_path):
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [self._trade(now - 30.0, now)]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+            assert app._deal_clock_seconds == 0.0
+        finally:
+            app.shutdown()
+
+    def test_being_slow_to_notice_a_trade_is_not_a_timezone(self, tmp_path):
+        """A missed poll leaves a trade minutes old. Shifting by that would
+        move it away from the call it belongs to, which is the failure this
+        exists to prevent rather than cause."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade(now - 12.0, now - 300.0)  # noticed five minutes late
+            ]
+            app._collect_real_trades()
+            assert app._deal_clock_seconds == 0.0
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_stamp_from_no_timezone_at_all_is_left_alone(self, tmp_path):
+        """Forty hours is not an offset, it is a broken number."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app.engine.source.take_settled = lambda: [
+                self._trade(now + 40 * self.HOUR, now + 40 * self.HOUR)
+            ]
+            app._collect_real_trades()
+            assert app._deal_clock_seconds == 0.0
+        finally:
+            app.shutdown()
+
+    def test_the_time_filed_is_corrected_too(self, tmp_path):
+        """The report printed trades after the session had ended, which is
+        what made the offset visible in the first place."""
+        from datetime import datetime, timezone
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            opened = now + self.HOUR - 30.0
+            app.engine.source.take_settled = lambda: [
+                self._trade(opened, now + self.HOUR)
+            ]
+            app._collect_real_trades()
+            filed = datetime.fromisoformat(self._manual_row(app)["timestamp"])
+            expected = datetime.fromtimestamp(opened - self.HOUR, tz=timezone.utc)
+            assert abs((filed - expected).total_seconds()) < 1.0
+        finally:
+            app.shutdown()
+
+    def test_a_half_hour_zone_is_read_as_one(self, tmp_path):
+        """Not every offset is a whole hour."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade(now + 1800.0 - 2.0, now + 1800.0)
+            ]
+            app._collect_real_trades()
+            assert app._deal_clock_seconds == 1800.0
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_trade_with_no_close_leaves_the_clock_alone(self, tmp_path):
+        """Nothing to measure from is not evidence of an offset."""
+        app = self._app(tmp_path)
+        try:
+            trade = self._trade(0, 0)
+            trade.pop("closed_at")
+            trade["opened_at"] = None
+            app.engine.source.take_settled = lambda: [trade]
+            app._collect_real_trades()  # must not raise
+            assert app._deal_clock_seconds == 0.0
+        finally:
+            app.shutdown()
+
+
 class TestThePayoutComesFromThePlatform:
     """It differs per instrument and moves through the day. Typed in once it
     goes stale silently, and in the flattering direction — a stale high payout
@@ -3165,3 +3357,90 @@ class TestASetupOnAWatchedChartIsACall:
                 assert "_signal" not in row
         finally:
             app.shutdown()
+
+
+class TestHowLongTheCallHasBeenValid:
+    """The score is the whole of "whether"; this is "when".
+
+    A call describes the market from the moment it crossed the gate, at the
+    price it crossed at. Entering later is that read taken late, at whatever
+    price the lateness bought — and the gauge drains over one trade duration
+    because that is the horizon the call argued about, not a threshold anyone
+    invented.
+    """
+
+    #: A 3 MIN trade on a 1 MIN chart, because that combination passes the
+    #: duration-fit gate in the fixture engine. The gauge's arithmetic is the
+    #: same at any horizon — that is the point of draining over the trade's
+    #: own clock rather than a number picked for one chart.
+    DURATION = 180
+
+    def _vm(self, age_seconds=5.0, open_price=1.2000, direction=1):
+        from datetime import timedelta
+
+        from conftest import pullback_trend
+        from poa.models import utcnow
+
+        vm = OverlayViewModel(
+            session=SessionStats(), asset="EUR/USD OTC",
+            chart_timeframe=60, trade_duration=self.DURATION,
+        )
+        vm.signal = make_signal(
+            pullback_trend(400, direction=direction), trade_duration=self.DURATION
+        )
+        assert vm.signal.actionable, "the fixture must produce a live call"
+        vm.call_opened_at = utcnow() - timedelta(seconds=age_seconds)
+        vm.call_open_price = open_price
+        return vm
+
+    def _validity(self, vm):
+        return vm.render()["validity"]
+
+    def test_a_fresh_call_reads_nearly_full(self):
+        validity = self._validity(self._vm(age_seconds=3.0))
+        assert validity["show"]
+        assert validity["fraction"] > 0.8
+        assert not validity["stale"]
+        assert "opened 3s ago" in validity["age_text"]
+
+    def test_the_gauge_drains_over_one_trade_duration(self):
+        validity = self._validity(self._vm(age_seconds=90.0))
+        assert 0.4 < validity["fraction"] < 0.6
+
+    def test_past_the_horizon_it_says_the_window_is_over(self):
+        validity = self._validity(self._vm(age_seconds=270.0))
+        assert validity["stale"]
+        assert validity["fraction"] == 0.0
+
+    def test_drift_against_a_call_is_price_above_its_open(self):
+        """A CALL entered higher needs a bigger rise to win."""
+        vm = self._vm(open_price=0.0001, direction=1)
+        validity = self._validity(vm)
+        assert "against" in validity["drift_text"]
+        assert validity["drift_against"]
+
+    def test_drift_with_a_call_is_price_below_its_open(self):
+        vm = self._vm(open_price=9999.0, direction=1)
+        validity = self._validity(vm)
+        assert "with" in validity["drift_text"]
+        assert not validity["drift_against"]
+
+    def test_no_open_call_shows_nothing(self):
+        vm = self._vm()
+        vm.call_opened_at = None
+        assert not self._validity(vm)["show"]
+
+    def test_a_wait_verdict_shows_nothing(self):
+        vm = self._vm()
+        vm.signal = make_signal(choppy_series(400))
+        if not vm.signal.actionable:
+            assert not self._validity(vm)["show"]
+
+    def test_it_disappears_rather_than_showing_stale_zeros(self):
+        """The card must not spend height, or attention, on charts that are
+        waiting — the strip exists only while a call is live."""
+        shown = self._vm(age_seconds=3.0).render()
+        hidden_vm = self._vm()
+        hidden_vm.call_opened_at = None
+        hidden = hidden_vm.render()
+        assert shown["validity"]["show"] and not hidden["validity"]["show"]

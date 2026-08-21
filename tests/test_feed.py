@@ -772,6 +772,85 @@ class TestWhichChartIsOpen:
         )
         assert source._period == 60
 
+    def test_one_pair_at_several_lengths_is_several_charts(self):
+        """The grid that took the panel off the chart being traded.
+
+        EUR/USD at 1, 5 and 15 minutes in one workspace read as a single
+        chart — instruments were counted, not charts — at whichever period
+        the walk of the settings nest hit last. The claim carried the rank
+        of the page naming its own chart, so every periodic save yanked the
+        panel to the 15 MIN pane while the user traded the 1 MIN one.
+        """
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        source._handle(
+            "saveCharts",
+            [
+                "saveCharts",
+                {"settings": [
+                    {"symbol": "EURUSD_otc", "chartPeriod": 60},
+                    {"symbol": "EURUSD_otc", "chartPeriod": 300},
+                    {"symbol": "EURUSD_otc", "chartPeriod": 900},
+                ]},
+            ],
+        )
+        assert source._asset == "EURUSD_otc"
+        assert source._period == 60, "the grid must not move the panel"
+
+    def test_a_pinned_tab_survives_the_grid_being_saved(self):
+        """The pin is the user's way of choosing the trading chart, and the
+        grid's housekeeping saves were clearing it several times a minute."""
+        from poa.feed.ticks import CandleBuilder
+
+        source = self._source()
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 900}]
+        )
+        source._charts[("EURUSD_otc", 60)] = CandleBuilder(
+            period_seconds=60, symbol="EURUSD_otc"
+        )
+        assert source.focus("EURUSD_otc", 60)
+        source._handle(
+            "saveCharts",
+            [
+                "saveCharts",
+                {"settings": [
+                    {"symbol": "EURUSD_otc", "chartPeriod": 60},
+                    {"symbol": "EURUSD_otc", "chartPeriod": 300},
+                    {"symbol": "EURUSD_otc", "chartPeriod": 900},
+                ]},
+            ],
+        )
+        assert source._focus == ("EURUSD_otc", 60), "the pin is the user's"
+
+    def test_one_pair_one_length_still_names_the_chart(self):
+        """The single-chart case is the common one and must not be lost to
+        the grid fix: one symbol at one period is still an answer."""
+        from poa.feed.protocol import parse_displayed_chart
+
+        asset, period = parse_displayed_chart(
+            ["saveCharts", {"settings": [
+                {"symbol": "CADJPY_otc", "chartPeriod": 300},
+                {"symbol": "CADJPY_otc", "chartPeriod": 300},
+            ]}]
+        )
+        assert (asset, period) == ("CADJPY_otc", 300)
+
+    def test_the_grid_still_counts_as_workspace(self):
+        """Giving up on "which chart is open" must not shrink "which charts
+        does the user keep" — the watchlist filter reads the same nest."""
+        from poa.feed.protocol import parse_workspace_charts
+
+        charts = parse_workspace_charts(
+            ["saveCharts", {"settings": [
+                {"symbol": "EURUSD_otc", "chartPeriod": 60},
+                {"symbol": "EURUSD_otc", "chartPeriod": 900},
+            ]}]
+        )
+        assert charts == {"EURUSD_otc"}
+
     def test_a_history_request_names_the_chart_being_drawn(self):
         source = self._source()
         source._handle(
@@ -2144,6 +2223,16 @@ class TestWhatTheRealCaptureRevealed:
         assert trade["won"] is True
         assert trade["duration"] == 180
         assert trade["payout"] == 0.88
+
+    def test_both_ends_of_the_trade_are_kept(self):
+        """The close is the only anchor for how far the platform's deal clock
+        sits from this machine's, and without it a session's hand trades are
+        matched against a clock that may be a timezone away."""
+        from poa.feed.protocol import parse_settled_trade
+
+        trade = parse_settled_trade(self._closed())[0]
+        assert trade["opened_at"] == 1786923484
+        assert trade["closed_at"] == 1786923664
 
     def test_a_losing_trade_reads_as_one(self):
         from poa.feed.protocol import parse_settled_trade

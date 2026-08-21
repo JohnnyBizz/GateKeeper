@@ -144,3 +144,86 @@ class TestTheBuildPublishesSomethingDownloadable:
         text = self.WORKFLOW.read_text(encoding="utf-8")
         uploads = text.count("uses: actions/upload-artifact@v4")
         assert uploads == text.count("continue-on-error: true") - 1  # + the tidy step
+
+
+class TestAVersionCanBeKept:
+    """`latest` is recreated on every push, so nothing published there
+    survives the next one. A version somebody is running has to outlive the
+    build after it, or there is no way back to an executable that worked."""
+
+    WORKFLOW = ROOT / ".github/workflows/build.yml"
+
+    def _versioned_release(self) -> str:
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        start = text.index('gh release create "$version"')
+        return text[start:]
+
+    def test_the_version_is_read_from_the_resource_that_ships(self):
+        """Not a second copy free to disagree with the one inside the .exe."""
+        import sys
+
+        sys.path.insert(0, str(ROOT / "tools"))
+        from version import product_version
+
+        seen: dict = {}
+        helper = TestTheVersionResourcesParse()
+        eval(
+            compile(
+                (ROOT / "packaging/gatekeeper_version.txt").read_text(encoding="utf-8"),
+                "gatekeeper_version.txt",
+                "eval",
+            ),
+            helper._namespace(seen),
+        )
+        fields = {entry["name"]: entry["val"] for entry in seen["StringStruct"]}
+        assert fields["ProductVersion"].startswith(product_version() + ".")
+
+    def test_the_tag_is_three_parts(self):
+        import sys
+
+        sys.path.insert(0, str(ROOT / "tools"))
+        from version import product_version
+
+        assert len(product_version().split(".")) == 3
+
+    def test_the_numbers_and_the_string_agree(self):
+        """``filevers=(1, 0, 0, 0)`` and ``'1.0.0.0'`` are edited separately
+        and drift silently: the build stays green and the .exe reports one
+        version in its properties and another in its resource."""
+        seen: dict = {}
+        helper = TestTheVersionResourcesParse()
+        for path in sorted(set(SPECS.values())):
+            seen = {}
+            eval(
+                compile((ROOT / path).read_text(encoding="utf-8"), path, "eval"),
+                helper._namespace(seen),
+            )
+            fields = {entry["name"]: entry["val"] for entry in seen["StringStruct"]}
+            fixed = seen["FixedFileInfo"][0]
+            assert ".".join(str(n) for n in fixed["filevers"]) == fields["FileVersion"]
+            assert ".".join(str(n) for n in fixed["prodvers"]) == fields["ProductVersion"]
+
+    def test_a_published_version_is_never_deleted(self):
+        """Only the rolling release is torn down and rebuilt."""
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        deletes = re.findall(r"gh release delete (\S+)", text)
+        assert deletes == ["latest"], f"something else is deleted: {deletes}"
+
+    def test_it_publishes_the_same_four_files(self):
+        release = self._versioned_release()
+        for asset in (
+            "dist/GateKeeper.exe",
+            "dist/RecordFeed.exe",
+            "dist/GateKeeper-windows.zip",
+            "dist/RecordFeed-windows.zip",
+        ):
+            assert asset in release, f"{asset} is not kept with the version"
+
+    def test_it_does_not_take_the_download_link_from_the_rolling_build(self):
+        """The rolling release is what people are pointed at."""
+        assert "--latest=false" in self._versioned_release()
+
+    def test_an_existing_version_is_left_alone(self):
+        """Ordinary pushes between versions must cost nothing."""
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        assert 'gh release view "$version"' in text

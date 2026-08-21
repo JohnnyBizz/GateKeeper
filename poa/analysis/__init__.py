@@ -1,5 +1,6 @@
 """Price-action analysis: structure, Heikin Ashi, levels, regime, timeframes."""
 
+from .extension import ExtensionReading, analyze_extension
 from .heikin_ashi import HeikinAshiReading, analyze_heikin_ashi, heikin_ashi
 from .levels import LevelsReading, detect_levels
 from .momentum import MomentumReading, analyze_momentum
@@ -12,6 +13,7 @@ from .timeframe import TimeframeAnalysis, analyze_timeframe
 from .volatility import VolatilityReading, analyze_volatility
 
 __all__ = [
+    "ExtensionReading",
     "HeikinAshiReading",
     "LevelsReading",
     "MomentumReading",
@@ -23,6 +25,7 @@ __all__ = [
     "Swing",
     "TimeframeAnalysis",
     "VolatilityReading",
+    "analyze_extension",
     "analyze_heikin_ashi",
     "analyze_momentum",
     "analyze_structure",

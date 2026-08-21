@@ -79,6 +79,14 @@ class SignalTracker:
     #: The direction of the call currently considered open, or None while no
     #: setup is live. One call spans one unbroken run above the gate.
     open_direction: Direction | None = None
+    #: When the open call crossed the gate, and the price it crossed at.
+    #: Timing is the half of an entry the score says nothing about: the call
+    #: described the market from this moment at this price, and every second
+    #: since is the trade being entered later than the read that argued for
+    #: it. Stamped once, on the transition, and held while the run continues —
+    #: a re-read that stays above the gate is the same call, not a fresh one.
+    open_since: datetime | None = None
+    open_price: float | None = None
 
     def update(self, signal: Signal, now: datetime | None = None) -> TrackedChange:
         """Fold a fresh evaluation into the tracked state.
@@ -97,9 +105,14 @@ class SignalTracker:
         if signal.actionable:
             change.opens_a_call = was_open is not signal.direction
             self.open_direction = signal.direction
+            if change.opens_a_call:
+                self.open_since = now
+                self.open_price = signal.price
         else:
             change.opens_a_call = False
             self.open_direction = None
+            self.open_since = None
+            self.open_price = None
         return change
 
     def _classify(self, signal: Signal, now: datetime) -> TrackedChange:
@@ -277,6 +290,8 @@ class SignalTracker:
         self.current = None
         self.last_emitted_at = None
         self.open_direction = None
+        self.open_since = None
+        self.open_price = None
         self.history.clear()
 
 

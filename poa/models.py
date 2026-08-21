@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Iterable, Sequence
 
@@ -342,6 +342,35 @@ class Series:
     @property
     def last_price(self) -> float | None:
         return self.candles[-1].close if self.candles else None
+
+    def price_at(self, when: datetime) -> float | None:
+        """The price this chart was showing at ``when``, or None.
+
+        For settling a trade at the moment it actually expired rather than at
+        the moment the app got round to noticing. A binary settles on where
+        price sat at expiry; using whatever price is current when the check
+        runs measures a longer move than the one that was bet on, and on a
+        thirty-second trade a few seconds of lateness is a large fraction of
+        the whole horizon.
+
+        The bar covering ``when`` is the one that answers, and its close is
+        taken: within a bar there is no finer information here. None when the
+        moment is outside the history held, which is a real answer — it means
+        this series cannot decide the row and something else must.
+        """
+        if not self.candles:
+            return None
+        first = self.candles[0].timestamp
+        period = timedelta(seconds=self.timeframe_seconds)
+        if when < first or when > self.candles[-1].timestamp + period:
+            return None
+        chosen: Candle | None = None
+        for candle in self.candles:
+            if candle.timestamp <= when:
+                chosen = candle
+            else:
+                break
+        return float(chosen.close) if chosen is not None else None
 
     def closed(self) -> "Series":
         """Drop a trailing incomplete candle, if present."""

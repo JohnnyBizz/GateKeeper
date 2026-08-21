@@ -134,6 +134,59 @@ class TestTheCallsItMade:
         assert "excluded from the rate" in text
 
 
+class TestAnOutcomeIsNamedAsWhatItWas:
+    """Five ties in one session were reported as "expiry had not elapsed".
+
+    They were made between 11:41 and 12:20 on thirty-second expiries in a
+    session that ran to 12:46, so every one of them had elapsed by minutes at
+    the least. A tie is a refund and a void is undecidable, and neither is an
+    unfinished trade. The same mislabel was fixed once for voids and survived
+    here for everything that was not a win or a loss.
+    """
+
+    def test_a_tie_is_called_a_tie(self):
+        report = _report([_call(30), _call(35, outcome="flat")])
+        assert report.flat == 1
+        assert report.open == 0, "it expired; saying otherwise is untrue"
+        text = build_report(report)
+        assert "Flat" in text
+        assert "a refund" in text
+
+    def test_a_tie_moves_the_rate_neither_way(self):
+        report = _report([_call(30), _call(35, outcome="flat")])
+        assert report.win_rate == 100.0
+
+    def test_an_undecidable_call_says_that_rather_than_unfinished(self):
+        report = _report([_call(30), _call(35, outcome="void")])
+        assert report.undecided == 1
+        assert report.open == 0
+        text = build_report(report)
+        assert "Could not be settled" in text
+        assert "nothing could decide them" in text
+
+    def test_an_unreadable_outcome_counts_with_the_undecidable(self):
+        report = _report([_call(30), _call(35, outcome="unknown")])
+        assert report.undecided == 1
+        assert report.open == 0
+
+    def test_a_call_that_really_has_not_expired_still_says_so(self):
+        """The label is right for exactly one thing and keeps it."""
+        report = _report([_call(30), _call(118, outcome=None)])
+        assert report.open == 1
+        assert report.flat == 0 and report.undecided == 0
+        assert "expiry had not elapsed" in build_report(report)
+
+    def test_the_four_do_not_overlap(self):
+        report = _report([
+            _call(30), _call(31, outcome="loss"), _call(32, outcome="flat"),
+            _call(33, outcome="void"), _call(34, outcome=None),
+        ])
+        assert (report.wins, report.losses) == (1, 1)
+        assert (report.flat, report.undecided, report.open) == (1, 1, 1)
+        assert report.wins + report.losses + report.flat + report.undecided \
+            + report.open == len(report.calls)
+
+
 class TestWhatTheCallsCameTo:
     def test_the_notional_return_is_priced_at_stake_and_payout(self):
         report = _report(
@@ -459,3 +512,61 @@ class TestAnEmptySessionSaysWhetherThatWasExpected:
         ))
 
         assert "expected outcome, not a fault" not in text
+
+
+class TestTheReportAsksTheChartQuestionSeparately:
+    """Payout decides whether a rate is worth money. It says nothing about
+    whether the reading of the chart was any good, and mixing the two hid the
+    thing that matters — a session can clear break-even because the payout was
+    generous and the market trended, with the analysis contributing nothing.
+    """
+
+    def _scored(self, score, outcome, asset="EUR/USD OTC", direction="CALL"):
+        return _call(30, asset=asset, direction=direction, score=score,
+                     outcome=outcome)
+
+    def _session(self):
+        """A score wired backwards: the high band loses, the low band wins."""
+        calls = [self._scored(86, "win", asset=f"P{i}") for i in range(9)]
+        calls += [self._scored(86, "loss", asset=f"Q{i}") for i in range(3)]
+        calls += [self._scored(93, "loss", asset=f"R{i}") for i in range(9)]
+        calls += [self._scored(93, "win", asset=f"S{i}") for i in range(3)]
+        return _report(calls)
+
+    def test_it_says_how_many_reads_the_calls_really_were(self):
+        text = build_report(_report([
+            self._scored(90, "win", asset="EUR/USD OTC", direction="PUT"),
+            self._scored(90, "win", asset="EUR/USD OTC", direction="PUT"),
+            self._scored(90, "loss", asset="AUD/CAD OTC", direction="CALL"),
+        ]))
+        assert "3 settled, in 2 episodes" in text
+
+    def test_a_score_pulling_the_wrong_way_is_named_as_that(self):
+        text = build_report(self._session())
+        assert "Ranking power (AUC)" in text
+        assert "worse than nothing" in text
+
+    def test_the_band_column_shows_the_direction_of_travel(self):
+        text = build_report(self._session())
+        assert "BY SCORE BAND" in text
+        assert "85-89" in text and "90-94" in text
+
+    def test_a_pair_called_only_one_way_is_flagged(self):
+        calls = [self._scored(90, "loss", asset="AUD/USD OTC") for _ in range(4)]
+        calls += [self._scored(90, "win", asset="EUR/USD OTC", direction="PUT")]
+        text = build_report(_report(calls))
+        assert "one-way" in text
+        assert "4C/0P" in text
+
+    def test_the_chart_question_does_not_mention_payout(self):
+        """It is asked without reference to what a win pays, on purpose."""
+        from poa.reporting.session import _edge_section
+
+        block = "\n".join(_edge_section(self._session()))
+        assert "payout" not in block.lower()
+        assert "break-even" not in block.lower()
+
+    def test_too_few_calls_says_nothing_rather_than_something_thin(self):
+        from poa.reporting.session import _edge_section
+
+        assert _edge_section(_report([self._scored(90, "win")])) == []
