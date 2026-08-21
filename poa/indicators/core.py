@@ -24,11 +24,6 @@ def _as_array(values) -> np.ndarray:
     return arr
 
 
-def _nan_prefix(length: int, count: int) -> np.ndarray:
-    out = np.full(length, np.nan, dtype=np.float64)
-    return out if count >= length else out
-
-
 def sma(values, period: int) -> np.ndarray:
     """Simple moving average."""
     arr = _as_array(values)
