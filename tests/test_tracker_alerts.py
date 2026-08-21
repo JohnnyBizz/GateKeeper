@@ -131,6 +131,76 @@ class TestTracker:
         tracker.reset()
         assert tracker.current is None
         assert tracker.history == []
+        assert tracker.open_direction is None
+
+
+class TestOneCallPerSetup:
+    """A setup that stays live is one call, however often it says so.
+
+    Every material update on a running setup used to be journalled as a fresh
+    call: the expiry window re-arming, the score drifting ten points, the
+    regime being relabelled. A twenty-eight-minute session filed fifty-seven
+    calls that way — four in one minute on one pair, at four prices a
+    hundredth of a percent apart. Those settle together, so the win rate
+    counted one right-or-wrong answer four times over and diluted every
+    independent one beside it.
+    """
+
+    def _live(self, direction=1, **kwargs):
+        return make_signal(pullback_trend(400, direction=direction), **kwargs)
+
+    def test_the_first_live_setup_opens_a_call(self):
+        tracker = SignalTracker()
+        assert tracker.update(self._live()).opens_a_call
+
+    def test_an_elapsed_window_does_not_open_a_second_call(self):
+        """The bug, in one test. The window re-arms; the setup has not changed
+        and nothing new has been named."""
+        tracker = SignalTracker()
+        assert tracker.update(self._live(trade_duration=60)).opens_a_call
+
+        later = utcnow() + timedelta(seconds=120)
+        change = tracker.update(self._live(), now=later)
+        assert change.material, "the panel still wants to know the window elapsed"
+        assert not change.opens_a_call, "but it is not a second call"
+
+    def test_a_run_of_updates_opens_exactly_one_call(self):
+        tracker = SignalTracker()
+        now = utcnow()
+        opened = sum(
+            int(
+                tracker.update(
+                    self._live(trade_duration=60),
+                    now=now + timedelta(seconds=60 * step),
+                ).opens_a_call
+            )
+            # Once per expiry window, which is when the re-arm fires.
+            for step in range(12)
+        )
+        assert opened == 1, f"one setup, {opened} calls"
+
+    def test_dropping_below_the_gate_ends_the_call(self):
+        tracker = SignalTracker()
+        assert tracker.update(self._live()).opens_a_call
+        tracker.update(make_signal(choppy_series(400)))
+        assert tracker.open_direction is None
+
+    def test_setting_up_again_afterwards_is_a_new_call(self):
+        """The other half. Suppressing repeats must not suppress the genuine
+        second opportunity, or the tool goes quiet for the rest of the run."""
+        tracker = SignalTracker()
+        assert tracker.update(self._live()).opens_a_call
+        tracker.update(make_signal(choppy_series(400)))
+        assert tracker.update(self._live()).opens_a_call
+
+    def test_a_flip_to_the_other_side_is_a_new_call(self):
+        tracker = SignalTracker()
+        assert tracker.update(self._live(direction=1)).opens_a_call
+        assert tracker.update(self._live(direction=-1)).opens_a_call
+
+    def test_a_setup_that_never_goes_live_opens_nothing(self):
+        tracker = SignalTracker()
+        assert not tracker.update(make_signal(choppy_series(400))).opens_a_call
 
 
 class TestAlerts:

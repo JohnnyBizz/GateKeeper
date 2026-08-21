@@ -150,6 +150,13 @@ def build_report(report: SessionReport) -> str:
         "configured at the time, so the return is what these calls WOULD have",
         "returned had each one been taken — not a record of trades placed. Any",
         "trade actually placed was placed by hand, and is listed separately.",
+        "",
+        "One call is one setup, start to finish. A setup that holds above the",
+        "gate for minutes is listed once, not once per expiry window: it is a",
+        "single read on the market and it wins or loses as one. Counting the",
+        "re-arms instead turned one twenty-eight-minute session into fifty-",
+        "seven calls covering about half that many moves, and every rate",
+        "measured over them counted the long-lived setups several times.",
     ]
 
     lines += _calls_section(report)

@@ -312,15 +312,24 @@ class AnalysisEngine:
         # Only material changes are journalled and alerted, so the log stays
         # readable and the user is not pinged every poll.
         if change.material:
+            # A live setup keeps changing materially without becoming a second
+            # trade — its expiry window re-arms, its score drifts ten points,
+            # its regime is relabelled — and journalling each of those filed the
+            # one move as several calls. They then settle together, so a rate
+            # measured over them counts one right-or-wrong answer several times
+            # and buries the independent ones. One row per call; a setup that
+            # falls below the gate and returns is a new call and gets a new row.
+            opens = change.opens_a_call or not signal.actionable
             screenshot_path = None
-            if capture.screenshot_png:
+            if opens and capture.screenshot_png:
                 screenshot_path = self.screenshots.save(
                     capture.screenshot_png, signal.id, signal.timestamp
                 )
-            try:
-                self.journal.record(signal, screenshot_path, source=source_name)
-            except Exception as exc:  # pragma: no cover - defensive
-                log.warning("journal write failed: %s", exc)
+            if opens:
+                try:
+                    self.journal.record(signal, screenshot_path, source=source_name)
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.warning("journal write failed: %s", exc)
 
             for alert in self.alerts.evaluate(signal, change):
                 try:

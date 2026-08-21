@@ -48,6 +48,23 @@ class TrackedChange:
     description: str
     previous_state: SignalState | None = None
     new_state: SignalState | None = None
+    #: Whether this update *starts a call*, as opposed to reporting on one that
+    #: is already running.
+    #:
+    #: Not the same question as ``material``, and conflating the two put the
+    #: same setup into the record several times a minute. A setup that stays
+    #: above the gate keeps producing material updates — its expiry window
+    #: elapses and re-arms, its confidence moves ten points, its regime is
+    #: relabelled — and every one of those was journalled as though the tool
+    #: had named a fresh trade. It had not. It was still describing one move.
+    #:
+    #: The cost was not cosmetic. Repeats are the same moment sampled again,
+    #: so they win and lose together: a rate computed over them counts one
+    #: setup as several and drowns out the independent evidence beside it. One
+    #: twenty-eight-minute session filed fifty-seven calls covering about
+    #: twenty-five moves, four of them inside a single minute on one pair at
+    #: four prices a hundredth of a percent apart.
+    opens_a_call: bool = False
 
 
 @dataclass
@@ -59,10 +76,33 @@ class SignalTracker:
     last_emitted_at: datetime | None = None
     history: list[Signal] = field(default_factory=list)
     max_history: int = 200
+    #: The direction of the call currently considered open, or None while no
+    #: setup is live. One call spans one unbroken run above the gate.
+    open_direction: Direction | None = None
 
     def update(self, signal: Signal, now: datetime | None = None) -> TrackedChange:
-        """Fold a fresh evaluation into the tracked state."""
+        """Fold a fresh evaluation into the tracked state.
+
+        The lifecycle rules live in :meth:`_classify`. This decides the one
+        thing they cannot see from a single comparison: whether the setup in
+        hand is a new call or the continuation of one already open.
+        """
         now = now or utcnow()
+        was_open = self.open_direction
+        change = self._classify(signal, now)
+
+        # A call runs for as long as the setup stays continuously actionable in
+        # one direction. Dropping below the gate ends it, so the same pair
+        # setting up again afterwards is a new call and counted as one.
+        if signal.actionable:
+            change.opens_a_call = was_open is not signal.direction
+            self.open_direction = signal.direction
+        else:
+            change.opens_a_call = False
+            self.open_direction = None
+        return change
+
+    def _classify(self, signal: Signal, now: datetime) -> TrackedChange:
         previous = self.current
 
         if previous is None:
@@ -236,6 +276,7 @@ class SignalTracker:
     def reset(self) -> None:
         self.current = None
         self.last_emitted_at = None
+        self.open_direction = None
         self.history.clear()
 
 

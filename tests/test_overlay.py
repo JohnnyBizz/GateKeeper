@@ -2790,6 +2790,133 @@ class TestLearningFromRealTrades:
             app.shutdown()
 
 
+class TestTwoClocksMatchingOneTrade:
+    """The trade's opening time is the broker's clock. The call's is this
+    machine's. Nothing keeps the two in step, and the match used to require
+    that the call land at or before the trade to the exact second — so a local
+    clock running a few seconds fast disqualified every call the user had
+    really traded on. One session came back with twenty-one hand trades and a
+    dash where all twenty-one scores belonged, which is also twenty-one
+    outcomes the score bands were never taught from.
+    """
+
+    def _app(self, tmp_path):
+        return TestLearningFromRealTrades()._app(tmp_path)
+
+    def _trade_opened_at(self, when, *, direction="PUT", asset="USDJPY_otc"):
+        return {
+            "asset": asset, "direction": direction, "won": True,
+            "open_price": 158.611, "close_price": 158.597,
+            "payout": 0.88, "duration": 30, "opened_at": when,
+        }
+
+    def _manual_row(self, app):
+        rows = app.engine.journal.recent(limit=10)
+        manual = [r for r in rows if str(r.get("notes")) == "manual"]
+        assert manual, "the trade itself must still be recorded"
+        return manual[0]
+
+    def _score_filed(self, app):
+        return float(self._manual_row(app)["overall_confidence"])
+
+    def test_a_local_clock_running_fast_still_finds_the_call(self, tmp_path):
+        """The regression. The broker stamps the deal three seconds behind
+        this machine; it is the same call either way."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade_opened_at(utcnow().timestamp() - 3.0)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_call_from_far_earlier_is_still_refused(self, tmp_path):
+        """The allowance is for clock skew, not for reaching back through the
+        session to whatever was last said about the pair."""
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade_opened_at(utcnow().timestamp() + 3600)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 0.0, "unattributable, and says so"
+        finally:
+            app.shutdown()
+
+    def test_the_nearest_call_wins_not_the_latest(self, tmp_path):
+        """Under skew, "latest" can reach past the trade to a call made after
+        it. The one closest to the deal is the one it was taken on."""
+        from collections import deque
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            history = app._calls.setdefault("USD/JPY OTC", deque())
+            for at, score in ((now - 2.0, 77.0), (now + 30.0, 44.0)):
+                history.append({
+                    "at": at, "timeframe": 60, "direction": "PUT",
+                    "direction_confidence": score, "duration_confidence": 65.0,
+                    "regime": "TRENDING",
+                })
+            app.engine.source.take_settled = lambda: [self._trade_opened_at(now)]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_the_trade_is_filed_when_it_opened_not_when_it_settled(self, tmp_path):
+        """The report says SCORE is what was being called "at the moment the
+        trade opened", then printed the moment this noticed it settle — an
+        expiry later, in the following minute, lined up against nothing."""
+        from datetime import datetime, timezone
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            opened = utcnow().timestamp() - 300  # five minutes ago
+            app.engine.source.take_settled = lambda: [self._trade_opened_at(opened)]
+            app._collect_real_trades()
+            filed = datetime.fromisoformat(self._manual_row(app)["timestamp"])
+            expected = datetime.fromtimestamp(opened, tz=timezone.utc)
+            assert abs((filed - expected).total_seconds()) < 1.0
+        finally:
+            app.shutdown()
+
+    def test_a_millisecond_timestamp_does_not_land_in_the_year_50000(self, tmp_path):
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app._remember_call("USD/JPY OTC", 60, "PUT", 77.0, 65.0, "TRENDING")
+            app.engine.source.take_settled = lambda: [
+                self._trade_opened_at(utcnow().timestamp() * 1000.0)
+            ]
+            app._collect_real_trades()
+            assert self._score_filed(app) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_a_missing_timestamp_is_survivable(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.engine.source.take_settled = lambda: [self._trade_opened_at(None)]
+            app._collect_real_trades()  # must not raise
+            assert self._score_filed(app) == 0.0
+        finally:
+            app.shutdown()
+
+
 class TestThePayoutComesFromThePlatform:
     """It differs per instrument and moves through the day. Typed in once it
     goes stale silently, and in the flattering direction — a stale high payout

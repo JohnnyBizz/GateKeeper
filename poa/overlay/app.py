@@ -15,6 +15,7 @@ import queue
 import threading
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -66,6 +67,12 @@ MAX_REMEMBERED_CHARTS = 8
 # Long enough to cover reading the panel and pressing the platform's button,
 # short enough that an unrelated call from earlier cannot be mistaken for it.
 CALL_MATCH_SECONDS = 180.0
+# How far the *other* way a call may sit and still count. The trade's opening
+# time is the broker's clock; the call's is this machine's, and nothing keeps
+# the two in step. Without an allowance here the match demanded that the local
+# clock be at or behind the broker's, and on a machine running even a couple of
+# seconds fast every hand trade in a session came back unattributable.
+CALL_MATCH_SKEW_SECONDS = 45.0
 # Calls remembered per instrument. The open chart is re-read every couple of
 # seconds, so this is several minutes of them — comfortably more than the
 # window above, which is what decides whether a match is found.
@@ -1576,24 +1583,35 @@ class OverlayApp:
         — on the very evidence that outranks everything else and holds a veto.
         """
         history = self._calls.get(asset)
-        if not history or not opened_at:
-            return None
-        try:
-            opened = float(opened_at)
-        except (TypeError, ValueError):
+        opened = _epoch_seconds(opened_at)
+        if not history or opened is None:
             return None
 
         best = None
         for entry in history:
-            # A call made after the trade opened did not motivate it, and one
-            # made long before it is a different moment in the session.
-            if not 0.0 <= opened - entry["at"] <= CALL_MATCH_SECONDS:
+            # How long before the trade opened this call was made. The two
+            # numbers come from different clocks — ``opened`` is the broker's
+            # stamp on the deal, ``entry["at"]`` is this machine reading its
+            # own — so a call that really did precede the trade can still land
+            # marginally after it once the two are compared.
+            #
+            # This used to demand ``0.0 <=``, which is that comparison with no
+            # tolerance at all: a broker clock a few seconds behind the local
+            # one disqualified every call the user actually traded on, and the
+            # report filed twenty-one hand trades in a row with no score
+            # against any of them. Skew is allowed for; a call long before the
+            # trade is still a different moment in the session and refused.
+            age = opened - entry["at"]
+            if not -CALL_MATCH_SKEW_SECONDS <= age <= CALL_MATCH_SECONDS:
                 continue
             # A trade taken the other way is not this call's outcome. Filing it
             # as one would teach the record backwards.
             if entry["direction"] != direction:
                 continue
-            if best is None or entry["at"] > best["at"]:
+            # Nearest in time, rather than latest. Under skew "latest" can
+            # reach past the trade to a call made after it, while the call
+            # closest to the moment of the deal is the one it was taken on.
+            if best is None or abs(age) < abs(opened - best["at"]):
                 best = entry
         return best
 
@@ -1647,6 +1665,13 @@ class OverlayApp:
                     won=trade["won"],
                     source=getattr(self.engine.source, "name", None),
                     price=trade.get("open_price"),
+                    # When the trade opened, not when this noticed it settle.
+                    # The report says the score is "what the assistant was
+                    # calling at the moment the trade opened" and then printed
+                    # a time up to an expiry later, so a 30-second trade was
+                    # listed against the minute after the one it was taken in
+                    # and nothing lined up with the calls beside it.
+                    timestamp=_opened_at(trade),
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not file a settled trade: %s", exc)
@@ -2098,6 +2123,37 @@ class OverlayApp:
         except Exception:  # pragma: no cover - best effort
             pass
         self.engine.close()
+
+
+def _epoch_seconds(value: Any) -> float | None:
+    """A broker timestamp as seconds since the epoch, or None if it is not one.
+
+    The platform quotes seconds. Feeds that quote milliseconds exist, and one
+    arriving here unnoticed would put every trade tens of thousands of years
+    into the future — far outside any matching window, so the symptom would be
+    the silent one again: every hand trade unattributable, nothing in the log
+    to say why.
+    """
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    if seconds > 1e11:  # milliseconds; a seconds epoch is around 1.7e9
+        seconds /= 1000.0
+    return seconds
+
+
+def _opened_at(trade: dict[str, Any]) -> datetime | None:
+    """When the broker says this trade opened, or None to fall back to now."""
+    seconds = _epoch_seconds(trade.get("opened_at"))
+    if seconds is None:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def run(config_path: str | None = None) -> None:

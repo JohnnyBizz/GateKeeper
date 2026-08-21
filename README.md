@@ -1253,3 +1253,10 @@ real advantage.
 
 **This is analysis and alerts only.** You make every trading decision, and you
 place every trade yourself.
+
+**No part of the scoring model has been shown to predict anything yet.** One
+live session measured it running *backwards* — 32.7% over 55 settled calls,
+beaten by sixteen points by always buying and never changing your mind — and
+the committed recordings reproduced neither that nor any edge in the other
+direction. [FINDINGS.md](FINDINGS.md) is the running record of what has been
+measured, what replicated, and what did not.
