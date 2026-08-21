@@ -158,6 +158,66 @@ class Journal:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source)"
         )
+        self._sweep_ghost_trades()
+
+    #: Journal data-migration version, tracked in SQLite's ``user_version``.
+    #: Bumped when stored rows themselves have to change, as opposed to the
+    #: schema gaining a column.
+    DATA_VERSION = 1
+
+    #: When the first build that stamps hand trades on this machine's clock
+    #: was published. Every manual row written before it came from a build
+    #: with the deal-clock defect, and its timestamp is the broker's zone
+    #: rather than this machine's.
+    CLOCK_FIX_SHIPPED = "2026-08-21T16:13:00+00:00"
+
+    def _sweep_ghost_trades(self) -> None:
+        """Remove hand trades the clock defect stamped into the wrong hour.
+
+        Builds before the deal-clock fix filed every hand trade at the
+        broker's own timestamp — an hour ahead in one session, two in the
+        next — and could match none of them to a call, so each carries a zero
+        score. The wrong stamps are not cosmetic: a row filed at 17:45 by an
+        afternoon session lands inside any *evening* session's window, so the
+        same seventeen trades reappeared, dash for dash, in the next report's
+        "TRADES YOU PLACED" as though they had been placed again.
+
+        Deleted rather than re-stamped, because the offset varied by session
+        and is not recoverable per row — and by the report's own words these
+        rows teach the score bands nothing: a zero score is excluded from
+        calibration by design, so their only remaining effect was haunting
+        windows they were never in. Rows written after the fix shipped are
+        untouched, including genuinely unattributable ones — their stamps are
+        real, so they stay in the sessions they belong to.
+
+        Runs once per journal file, tracked in ``user_version``.
+        """
+        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+        if version >= self.DATA_VERSION:
+            return
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(signals)")
+        }
+        # A journal old enough to predate these columns predates hand-trade
+        # recording itself, so it holds no ghosts — nothing to sweep, and a
+        # DELETE naming columns it does not have would stop it opening at all.
+        if not {"notes", "direction_confidence", "timestamp"} <= columns:
+            self._connection.execute(f"PRAGMA user_version = {self.DATA_VERSION}")
+            return
+        removed = self._connection.execute(
+            "DELETE FROM signals WHERE notes = 'manual' "
+            "AND direction_confidence = 0 AND timestamp < ?",
+            (self.CLOCK_FIX_SHIPPED,),
+        ).rowcount
+        self._connection.execute(f"PRAGMA user_version = {self.DATA_VERSION}")
+        if removed:
+            log.info(
+                "removed %d hand trade(s) the clock defect had stamped into "
+                "the wrong hour; they carried no score and were reappearing "
+                "in later sessions' reports",
+                removed,
+            )
 
     def close(self) -> None:
         with self._lock:
