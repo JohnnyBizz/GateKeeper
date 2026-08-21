@@ -129,6 +129,15 @@ So nothing was inverted. One group is not a finding, however large the effect
 inside it. **Do not reweight the engine on the strength of that session.** If a
 second live session repeats it, that changes; the point of §4 is to find out.
 
+The mechanism did gain independent support on 2026-08-21, from the recordings
+rather than the session: the tool emits close to a single direction per window
+at either gate (88.7% one-directional at 62, three of four recordings *purely*
+one-directional at 85), which is why it ties the always-BUY / always-SELL
+baseline exactly at 85 — there it is the same strategy. That is the score
+behaving as a trend detector, and it is the strongest evidence yet for the
+mechanism above. It still says nothing about the *inversion*, which remains one
+session.
+
 ---
 
 ## 6. The rule this project runs on
@@ -162,6 +171,10 @@ to it, including the measurements that come back against the tool.
   improve the win rate (66.7% in one recording, 54.8% in another at the same
   setting). The comment above the setting says so. 85 was itself fitted to
   noise. Alerts are now tied to the same gate, with a test asserting they agree.
+  **Re-examined 2026-08-21 and settled** — 85 pooled 6.5 points ahead of 62
+  across all four recordings, but the cluster-bootstrapped interval on that gap
+  is [−9.8, +25.1]. Asking again needs new recordings, not another re-run.
+  See `FINDINGS.md`.
 * **Latency work is done.** Bar-close detection samples four times a bar with a
   one-second floor; chart re-read 2.0s → 0.5s, scan hold 2.4s → 0.6s, silence
   after a signal 60s → 15s, after an alert 120s → 20s. The engine loop never

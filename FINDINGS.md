@@ -132,3 +132,102 @@ python tools/components.py --live
 
 answers it once a few sessions have accumulated. Roughly 465 calls per group
 are needed for a component's AUC to separate from noise.
+
+---
+
+## 2026-08-21 — 85 does not beat 62, and the reason is that neither changes its mind
+
+Asked whether the shown gate should go back to 85. Measured rather than
+argued, on all four committed 5 SEC recordings at 30 SEC expiry, 92% payout:
+
+```
+python tools/backtest.py --csv data/recorded/<recording>/<pair>-5s.csv \
+    --timeframe 5 --duration 30 --window 120 --min-confidence <62|85> --payout 0.92
+```
+
+| gate | settled | win rate | 95% CI | EV per unit |
+|---|---|---|---|---|
+| 62 | 76 | 63.2% | [51.9, 73.1] | +0.213 |
+| 85 | 33 | 69.7% | [52.7, 82.6] | +0.338 |
+
+85 is 6.5 points ahead. Cluster-bootstrapped over whole recordings, 20,000
+resamples, that gap is **[−9.8, +25.1]** and 85 comes out ahead in 79% of them.
+That is not a difference; it is the same number measured twice with less data
+the second time. Per recording it is 100.0 / 71.4 / 50.0 / 75.0 against 65.0 /
+78.3 / 56.2 / 47.1 — neither ordering holds and neither gate replicates.
+
+The gate comparison, then, is the third threshold question in a row to come
+back empty. What came out of it instead was not about the gate.
+
+### The tool does not change its mind inside a session
+
+Direction counts per pair-recording:
+
+| | gate 62 | gate 85 |
+|---|---|---|
+| 2026-08-19 EUR/USD OTC | 15 CALL / 6 PUT | **3 CALL / 0 PUT** |
+| 2026-08-19 AUD/CAD OTC | 22 CALL / 1 PUT | **14 CALL / 0 PUT** |
+| 2026-08-20 EUR/USD | 15 PUT / 1 CALL | **8 PUT / 0 CALL** |
+| 2026-08-20 AUD/CAD OTC | 16 PUT / 1 CALL | 7 PUT / 1 CALL |
+
+At 85, three of the four emit **one direction and nothing else**, and the
+fourth is 7:1. At 62 it is 88.7% one-directional on average, with only the
+first recording anywhere near a mix.
+
+This explains a result that otherwise looked like a coincidence. Against the
+do-nothing baselines on its own entries, gate 85 scored:
+
+```
+    19/EUR-USD   tool 100.0%   best baseline 100.0%    +0.0
+    19/AUD-CAD   tool  71.4%   best baseline  71.4%    +0.0
+    20/EUR-USD   tool  50.0%   best baseline  50.0%    +0.0
+    20/AUD-CAD   tool  75.0%   best baseline  62.5%   +12.5
+```
+
+Three exact ties, and they are exact by construction: a tool that only ever
+says CALL in a window *is* always-BUY over that window. The baseline comparison
+printed in every session report cannot detect an edge that is not there to
+detect, because at 85 the tool and the baseline are the same strategy.
+
+Gate 62 at least dissents often enough to differ — +10.0, +4.4, −6.2, −11.7,
+averaging −0.9. Still no edge, but a measurable one rather than a tautology.
+
+### What this says about the score
+
+The score is behaving as a trend detector, not a setup detector. Raising the
+gate does not select better entries out of a mixed pool; it selects *harder
+trending moments*, and in a trending window never changing your mind wins too.
+That is the same mechanism written down against the live session above — 70 of
+the 100 points are trend-continuation, so a high score is the definition of a
+move that has already travelled — arriving this time from the recordings rather
+than from one session.
+
+It also explains why clustering hurt rather than helped there. Six PUTs on
+EUR/NZD as it drifted down, seven CALLs on USD/MXN up the move: those were
+never six and seven reads. They are one opinion, repeated.
+
+By the replication rule this clears the bar, barely. The concentration holds in
+both recordings independently and in all four pair-recordings, and the live
+session is a third group showing the same behaviour. Two groups is the minimum
+the rule allows and a third recording would settle it properly.
+
+### What was decided
+
+**The gate stays at 62.** Not because 62 is better — nothing here shows that —
+but because 85 is indistinguishable from it on win rate, produces 43% of the
+call volume, and concentrates every call into the band the live session above
+measured going 4W/25L. Restoring 85 on a 6.5-point pooled gap from 33 settled
+calls would be the same error it was dropped for, with the sign reversed.
+
+The rate matters for a reason that has nothing to do with trading: the open
+question needs about 465 calls per group, which is roughly five hours of
+watching at 62 against twelve at 85. The gate is a knob on a device whose
+function is still unknown, and 85 more than doubles the time to find out.
+
+### The question this raises
+
+Whether the score ever disagrees with the prevailing direction, and whether it
+is any good when it does. The minority-direction calls are the only ones that
+are not trend-following, and there are 9 of them among the 77 signals at gate 62 — far too
+few to read, but they are the ones worth counting as sessions accumulate. If
+the score has an edge that is not simply the trend, that is where it lives.
