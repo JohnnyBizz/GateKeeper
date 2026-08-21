@@ -130,13 +130,23 @@ def parse_displayed_chart(payload: Any) -> tuple[str | None, int | None]:
     designed to be read, so this walks it looking for a ``symbol``. If the nest
     names more than one instrument it is a workspace of several charts and
     there is no single answer — better to report nothing than to pick one.
+
+    A chart is a pair *and* a length, so one instrument at several periods is
+    a workspace of several charts too. Counting instruments alone read a grid
+    of EUR/USD at 1, 5 and 15 minutes as a single chart, at whichever period
+    the walk of the settings nest happened to hit last — and since the answer
+    carried the rank of the page naming its own chart, every periodic save
+    yanked the panel to that pane and threw away the tab the user had pinned.
+    The user was following the 1 MIN chart; the panel insisted on the 15.
     """
-    found: dict[str, int | None] = {}
+    found: dict[str, set[int]] = {}
     _collect_symbols(payload, found)
     if len(found) != 1:
         return None, None
-    asset, period = next(iter(found.items()))
-    return asset, period
+    asset, periods = next(iter(found.items()))
+    if len(periods) > 1:
+        return None, None
+    return asset, next(iter(periods)) if periods else None
 
 
 def parse_workspace_charts(payload: Any) -> set[str]:
@@ -149,26 +159,30 @@ def parse_workspace_charts(payload: Any) -> set[str]:
     anyone trades, so without this the watchlist fills with whatever ticked
     first rather than with the pairs actually on screen.
     """
-    found: dict[str, int | None] = {}
+    found: dict[str, set[int]] = {}
     _collect_symbols(payload, found)
     return {symbol for symbol in found if symbol}
 
 
-def _collect_symbols(value: Any, out: dict[str, int | None], depth: int = 0) -> None:
+def _collect_symbols(value: Any, out: dict[str, set[int]], depth: int = 0) -> None:
     # Deep enough for a settings nest nobody designed to be read, shallow
     # enough to stay a bounded walk. Stopping short costs a workspace that is
     # simply further down, and the only cost of going further is the walk.
+    #
+    # Every plausible period is kept, per instrument, rather than the last one
+    # seen: which periods there are is the question that separates one chart
+    # from a grid of the same pair at several lengths.
     if depth > MAX_NEST_DEPTH:
         return
     if isinstance(value, dict):
         symbol = value.get("symbol")
         if isinstance(symbol, str) and symbol:
+            periods = out.setdefault(symbol, set())
             seconds = _plausible_period(value.get("chartPeriod")) or _plausible_period(
                 value.get("period")
             )
-            # A later, more specific entry should not lose a period an earlier
-            # one carried for the same instrument.
-            out[symbol] = seconds or out.get(symbol)
+            if seconds is not None:
+                periods.add(seconds)
         for item in value.values():
             _collect_symbols(item, out, depth + 1)
         return
