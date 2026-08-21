@@ -231,3 +231,106 @@ is any good when it does. The minority-direction calls are the only ones that
 are not trend-following, and there are 9 of them among the 77 signals at gate 62 — far too
 few to read, but they are the ones worth counting as sessions accumulate. If
 the score has an edge that is not simply the trend, that is where it lives.
+
+---
+
+## 2026-08-21 — the score ran backwards again, in a session it was not found in
+
+**Session:** 11:09–12:46 UTC, 1h 36m, six pairs — AED/CNY OTC, AUD/CAD OTC,
+AUD/CHF OTC, AUD/USD OTC, CAD/CHF, MAD/USD OTC — 5 SEC and 1 MIN charts,
+30 SEC expiry, 60% payout. 111 calls, 106 decided.
+
+Four of the six pairs did not appear in the 01:42 session. It is ten hours
+later and three times as long. By the rule at the top of this file, that is a
+second group, and the finding held in it.
+
+### Both sessions, side by side
+
+| | 01:42–02:11 | 11:09–12:46 |
+|---|---|---|
+| Settled | 18W/37L — 32.7% | 41W/65L — **38.7%** |
+| 95% interval | [21.8, 45.9] | [30.0, 48.2] |
+| AUC(score → win) | 0.303 | **0.380** |
+| score ≥ 92 | 4W/25L — 13.8% | **7W/23L — 23.3%** |
+| score < 92 | 14W/12L — 53.8% | **34W/42L — 44.7%** |
+| Break-even | 52.1% at 92% payout | 62.5% at 60% payout |
+| Best do-nothing baseline | beat it by 16 points | beat it by 18.8 points |
+
+Grouping the 106 decided calls into 78 contiguous same-pair, same-direction
+episodes and bootstrapping over whole episodes, 20,000 resamples:
+
+- mean episode win-fraction **34.8%**
+- win rate 95% CI **[29.4, 47.7]**; above break-even in **0.00%** of resamples,
+  above even a coin toss in **0.54%**
+- AUC 95% CI **[28.3, 48.0]**; at or above 0.5 in **0.96%**
+
+The band structure is the part that is hard to read as noise, because it is
+monotone across four bands rather than one split chosen after the fact:
+
+| score | settled | win rate |
+|---|---|---|
+| 85–87 | 26 | 46.2% |
+| 88–90 | 39 | 46.2% |
+| 91–92 | 20 | 40.0% |
+| 93–95 | 21 | **14.3%** |
+
+Every call this session scored 85 or above, so the whole of it sits in the
+band the recordings could not defend. The clearest single case is AUD/USD OTC:
+16 CALL, 0 PUT, 3W/13L. One direction, never reconsidered, thirteen losses —
+the trend-detector behaviour of 2026-08-21 arriving as a live result.
+
+### What still refuses to agree
+
+The four committed recordings, replayed, pool to AUC 0.484 with an interval
+straddling 0.5. Two live sessions say the score is inverted; four replays say
+it is uninformative. That is not a detail to round off — it means the live
+path and the replay path are not measuring the same thing, and until it is
+understood, a reweighting fitted to either could be fitted to the difference
+between them rather than to the market.
+
+The candidates are all in how a moment gets chosen rather than how it is
+scored: live journals a call on the transition above the gate, once, across
+several watched charts, at whatever point in the bar the sweep lands; the
+replay walks a candle file evaluating every Nth bar with no gates and no
+watchlist. The scoring code is the same in both.
+
+**So this is a finding about the score, and not yet a licence to reweight
+it.** What it does license is the question changing from "does the score
+predict anything" to "why does it predict the wrong way when it is live",
+which is a narrower thing to chase.
+
+### Two defects this session exposed
+
+1. **Every hand trade was an hour from the call it was taken on.** All five
+   came back with no score, as all twenty-one did in the first session, and
+   the report printed them at 13:10–13:28 in a session that ended at 12:46.
+   The platform stamps its deals on a clock a timezone from this machine's;
+   the match allows 45 seconds of skew backwards and 180 forwards, so an hour
+   missed by a factor of twenty and said nothing except a dash in a column.
+   Shifted back an hour they land on real calls — AUD/CAD OTC PUT going win,
+   loss, loss against calls of 86, 94 and 94 settling win, loss, loss.
+
+   Widening the window would have been the worse bug: a deal an hour after a
+   call is either that call seen through an offset or a genuine call from an
+   hour earlier, and the open time alone cannot tell those apart. The offset
+   is measured instead, from the trade's own close, and the window is
+   unchanged. Fixed.
+
+2. **Five ties were reported as "expiry had not elapsed".** They were made
+   between 11:41 and 12:20 on thirty-second expiries in a session that ran to
+   12:46. A tie is a refund and belongs out of the rate, which it was, but it
+   is not an unfinished trade. The count was everything that was not a win or
+   a loss, so voids and unreadable outcomes were mislabelled the same way —
+   the same mistake fixed once before for voids, surviving for everything
+   else. Fixed; each is now named as what it was.
+
+The hand trades already filed cannot be recovered. Twenty-six of them are in
+the journal with a zero score against a real outcome, and there is nothing
+left to re-derive them from. From here they will match.
+
+### The question left open
+
+Why the live path and the replay disagree. Everything above says the score is
+worse than nothing when it is live and says nothing at all when it is
+replayed, and one of those two measurements is answering a different question
+than it appears to. Until that is settled, no weight moves.

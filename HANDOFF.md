@@ -98,10 +98,14 @@ refuses to report on a single session outright, by design.
 
 **About 465 calls per group** are needed before a 55% edge clears fifty. The app
 produces roughly ninety an hour with several pairs watched, so a few hours of
-ordinary use settles it. As of the last commit there were four sessions of data
-— not yet enough. The next session should run the app, accumulate calls, and
-then run the tool. Either something real shows up in every group, or the
-scoring approach is finished and that should be said plainly.
+ordinary use settles it.
+
+**This has partly answered itself.** Two live sessions now say the score is
+worse than nothing — see §5 — while the recordings say it is uninformative. So
+the live question has moved on: it is no longer "does the score predict
+anything" but **"why does it predict the wrong way when it is live and nothing
+at all when it is replayed"**. That is the narrower thing to chase, and no
+weight should move until it is answered.
 
 ---
 
@@ -125,9 +129,18 @@ settings, it pooled to AUC 0.484 with an interval straddling 0.5, and per
 recording ran 0.21 / 0.43 / 0.67 / 0.29 — no consistency, no component sitting
 on one side across all four.
 
-So nothing was inverted. One group is not a finding, however large the effect
-inside it. **Do not reweight the engine on the strength of that session.** If a
-second live session repeats it, that changes; the point of §4 is to find out.
+**It then replicated.** A second live session on 2026-08-21 (11:09–12:46, six
+pairs, four of them new, 106 decided calls) came back AUC 0.380, with score ≥92
+at 23.3% against <92 at 44.7% — and a monotone decline across four bands, 46.2
+/ 46.2 / 40.0 / 14.3. Cluster-bootstrapped over 78 episodes, AUC reaches 0.5 in
+0.96% of resamples. By the rule above, that is two groups and the finding
+holds.
+
+**It is still not a licence to reweight.** The four recordings continue to pool
+to AUC 0.484. Two live sessions say inverted, four replays say uninformative,
+and a weighting fitted to either could be fitting the difference between the
+two paths rather than the market. See `FINDINGS.md` for the candidates — all of
+them in how a moment gets *chosen*, not how it is scored.
 
 The mechanism did gain independent support on 2026-08-21, from the recordings
 rather than the session: the tool emits close to a single direction per window

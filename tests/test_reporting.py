@@ -134,6 +134,59 @@ class TestTheCallsItMade:
         assert "excluded from the rate" in text
 
 
+class TestAnOutcomeIsNamedAsWhatItWas:
+    """Five ties in one session were reported as "expiry had not elapsed".
+
+    They were made between 11:41 and 12:20 on thirty-second expiries in a
+    session that ran to 12:46, so every one of them had elapsed by minutes at
+    the least. A tie is a refund and a void is undecidable, and neither is an
+    unfinished trade. The same mislabel was fixed once for voids and survived
+    here for everything that was not a win or a loss.
+    """
+
+    def test_a_tie_is_called_a_tie(self):
+        report = _report([_call(30), _call(35, outcome="flat")])
+        assert report.flat == 1
+        assert report.open == 0, "it expired; saying otherwise is untrue"
+        text = build_report(report)
+        assert "Flat" in text
+        assert "a refund" in text
+
+    def test_a_tie_moves_the_rate_neither_way(self):
+        report = _report([_call(30), _call(35, outcome="flat")])
+        assert report.win_rate == 100.0
+
+    def test_an_undecidable_call_says_that_rather_than_unfinished(self):
+        report = _report([_call(30), _call(35, outcome="void")])
+        assert report.undecided == 1
+        assert report.open == 0
+        text = build_report(report)
+        assert "Could not be settled" in text
+        assert "nothing could decide them" in text
+
+    def test_an_unreadable_outcome_counts_with_the_undecidable(self):
+        report = _report([_call(30), _call(35, outcome="unknown")])
+        assert report.undecided == 1
+        assert report.open == 0
+
+    def test_a_call_that_really_has_not_expired_still_says_so(self):
+        """The label is right for exactly one thing and keeps it."""
+        report = _report([_call(30), _call(118, outcome=None)])
+        assert report.open == 1
+        assert report.flat == 0 and report.undecided == 0
+        assert "expiry had not elapsed" in build_report(report)
+
+    def test_the_four_do_not_overlap(self):
+        report = _report([
+            _call(30), _call(31, outcome="loss"), _call(32, outcome="flat"),
+            _call(33, outcome="void"), _call(34, outcome=None),
+        ])
+        assert (report.wins, report.losses) == (1, 1)
+        assert (report.flat, report.undecided, report.open) == (1, 1, 1)
+        assert report.wins + report.losses + report.flat + report.undecided \
+            + report.open == len(report.calls)
+
+
 class TestWhatTheCallsCameTo:
     def test_the_notional_return_is_priced_at_stake_and_payout(self):
         report = _report(

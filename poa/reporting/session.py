@@ -72,8 +72,39 @@ class SessionReport:
 
     @property
     def open(self) -> int:
-        """Calls whose expiry had not elapsed when the session ended."""
-        return len(self.calls) - len(self.settled)
+        """Calls whose expiry had not elapsed when the session ended.
+
+        Only those. This used to be everything that was not a win or a loss,
+        which swept up three other things and told the reader each of them had
+        not expired yet — of five ties in one session, made between 11:41 and
+        12:20 on thirty-second expiries, all five were reported that way in a
+        session that ran until 12:46. They had elapsed. They were refunds.
+
+        The same mislabel was fixed once already, for voids, and survived here
+        for everything else that is not a win or a loss.
+        """
+        return sum(1 for c in self.calls if _outcome_of(c) == "open")
+
+    @property
+    def flat(self) -> int:
+        """Expired at the price they opened at.
+
+        A binary that settles exactly where it started is a refund: neither
+        side was right. Counting it either way would move the rate for no
+        reason, so it stays out — but it is not an unfinished trade and saying
+        so hides a real outcome behind a wrong explanation.
+        """
+        return sum(1 for c in self.calls if _outcome_of(c) == "flat")
+
+    @property
+    def undecided(self) -> int:
+        """Elapsed, and nothing could say how they came out.
+
+        A wrong data source, an incompatible price scale, an expiry the app
+        slept through. The journal marks these rather than guessing, and the
+        report should repeat that rather than calling them unfinished.
+        """
+        return sum(1 for c in self.calls if _outcome_of(c) in ("void", "unknown"))
 
     @property
     def win_rate(self) -> float | None:
@@ -98,6 +129,11 @@ class SessionReport:
         hours, remainder = divmod(int(seconds), 3600)
         minutes = remainder // 60
         return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def _outcome_of(call: dict[str, Any]) -> str:
+    """A call's outcome, with the absent one named rather than left blank."""
+    return str(call.get("outcome") or "open").lower()
 
 
 def _money(value: float) -> str:
@@ -251,7 +287,7 @@ def _calls_section(report: SessionReport) -> list[str]:
         f"{'EXPIRY':>9}{'ENTRY':>11}{'RESULT':>10}"
     )
     for call in report.calls:
-        outcome = str(call.get("outcome") or "open").upper()
+        outcome = _outcome_of(call).upper()
         if outcome == "OPEN":
             outcome = "UNSETTLED"
         entry = call.get("price")
@@ -275,6 +311,16 @@ def _result_section(report: SessionReport) -> list[str]:
         lines.append(
             f"Still open at close       {report.open}"
             "  (expiry had not elapsed; excluded from the rate)"
+        )
+    if report.flat:
+        lines.append(
+            f"Flat                      {report.flat}"
+            "  (expired where they opened — a refund; excluded from the rate)"
+        )
+    if report.undecided:
+        lines.append(
+            f"Could not be settled      {report.undecided}"
+            "  (expired, but nothing could decide them; excluded from the rate)"
         )
     if rate is None:
         lines.append("Win rate                  — nothing settled")
