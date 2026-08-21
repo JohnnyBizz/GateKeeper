@@ -225,3 +225,10 @@ address excludes prereleases and so resolved to nothing while it was one.
 **This repository is private and stays that way.** The release is a second copy
 of a finished build at a fixed address, not a distribution channel — the links
 in `README.md` return 404 for anyone without access, by design.
+
+`latest` is rolling: deleted and recreated on every push. To keep a build
+permanently, bump `ProductVersion` in `packaging/gatekeeper_version.txt` and
+push — the same four files are then also published as `v<version>`, which is
+never overwritten. `python tools/version.py` prints the next tag. That resource
+is the only place a version is written, because it is the copy that ends up
+inside the executable.

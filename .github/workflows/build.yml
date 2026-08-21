@@ -189,6 +189,48 @@ jobs:
               "GateKeeper can record a chart on its own — the RECORD button on the panel — so RecordFeed.exe is only needed if you would rather run it separately.")" \
             --latest
 
+      # A permanent copy of a build worth keeping.
+      #
+      # `latest` is deleted and recreated on every push, so nothing published
+      # there survives the next one. That is right for a rolling build and
+      # wrong for a version somebody is actually running: there is otherwise
+      # no way to fetch the exact executable a bug was reported against, and
+      # no way to go back to one that worked.
+      #
+      # Cutting a version is therefore bumping ProductVersion in
+      # packaging/gatekeeper_version.txt — the copy that ends up inside the
+      # .exe — and pushing. If that version has no release yet this publishes
+      # one; if it has, this leaves it alone, so ordinary pushes between
+      # versions cost nothing and a published version is never overwritten.
+      #
+      # Not marked latest: the rolling release stays the download people are
+      # pointed at. Allowed to fail the build, unlike the tidying steps around
+      # it — `latest` has already published by this point, so nobody loses an
+      # executable over it, and an archive that quietly did not happen is
+      # worth a red build.
+      - name: Publish the version, if it is a new one
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="v$(python tools/version.py)"
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "$version is already published — leaving it as it is."
+            exit 0
+          fi
+          echo "Publishing $version."
+          gh release create "$version" \
+            dist/GateKeeper.exe dist/RecordFeed.exe \
+            dist/GateKeeper-windows.zip dist/RecordFeed-windows.zip \
+            --title "GateKeeper $version" \
+            --latest=false \
+            --notes "$(printf '%s\n' \
+              "GateKeeper $version, built from ${{ github.sha }} on $(date -u +'%Y-%m-%d %H:%M UTC')." \
+              "" \
+              "A fixed version, kept. The rolling [latest](https://github.com/${{ github.repository }}/releases/tag/latest) release is rebuilt on every push; this one is not touched again." \
+              "" \
+              "**If the browser refuses the .exe** (\"couldn't download - virus detected\"), take the .zip beside it instead and extract it. These builds are not code-signed, so a brand-new unsigned executable is judged on reputation it has not had time to earn.")"
+
       # Kept as a second copy, and no longer able to fail the build: the
       # release above is the download, and an artifact allowance problem must
       # never again be the reason a working executable reaches nobody.

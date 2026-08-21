@@ -35,6 +35,12 @@ which is rebuilt on every push to `main` and always sits at the same address.
 The test suite runs first, so an executable is only ever published from a build
 where every test passed.
 
+Those four links always point at the newest build. To keep a particular one —
+so there is a way back to the exact executable that worked — bump the version
+in `packaging/gatekeeper_version.txt` and push: the next build also publishes a
+`v1.0.0`-style release that is never overwritten. See
+[BUILD.md](BUILD.md#keeping-a-particular-build).
+
 **This repository is private.** The links above resolve for anyone signed in
 with access to it and return 404 for everybody else — that is the intended
 behaviour, not a broken build. Nothing here is published anywhere else, and the

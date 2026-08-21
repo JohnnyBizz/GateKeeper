@@ -49,6 +49,39 @@ Four files are published each time: `GateKeeper.exe`, `RecordFeed.exe`, and a
 `.zip` of each. The workflow runs the test suite first, so an executable is
 only produced from a build where every test passed.
 
+### Keeping a particular build
+
+That release is *rolling*: it is deleted and recreated on every push, so the
+executable at that address is always the newest one and never an older one.
+For ordinary use that is what you want. It does mean there is no way back to
+the exact file a bug was reported against, or to one that worked, unless a
+version is cut.
+
+Cutting one is bumping `ProductVersion` — and `prodvers` beside it — in
+`packaging/gatekeeper_version.txt`, then pushing:
+
+```python
+filevers=(1, 1, 0, 0),
+prodvers=(1, 1, 0, 0),
+...
+StringStruct('FileVersion', '1.1.0.0'),
+StringStruct('ProductVersion', '1.1.0.0'),
+```
+
+The next build publishes the same four files a second time, permanently, at
+
+    https://github.com/JohnnyBizz/GateKeeper/releases/tag/v1.1.0
+
+and never touches that release again. Pushes between versions cost nothing:
+if the version already has a release, the step says so and stops. The rolling
+`latest` release stays the one people are pointed at.
+
+That file is the only place a version is written, because it is the copy that
+ends up inside the `.exe` where it can be read from the file's properties.
+`python tools/version.py` prints what the next tag would be. A test asserts
+the four-number tuples and the strings beside them still agree — they are
+edited separately and drift silently otherwise.
+
 ### When the download itself is refused
 
 Edge refused `RecordFeed.exe` outright — *"Couldn't download — virus
