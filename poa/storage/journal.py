@@ -34,7 +34,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ..logging_setup import get_logger
 from ..models import Direction, utcnow
@@ -278,6 +278,7 @@ class Journal:
         now: datetime | None = None,
         source: str | None = None,
         asset: str | None = None,
+        price_at: Callable[[datetime], float | None] | None = None,
     ) -> int:
         """Settle any directional signals whose expiration has elapsed.
 
@@ -292,6 +293,17 @@ class Journal:
         an expiry the app slept through are marked ``void`` and excluded from
         every statistic. Returns the number of rows that stopped being pending,
         voids included.
+
+        ``price_at`` looks a price up in the chart's own history, and when it
+        can answer it decides the row instead of ``current_price``. That is the
+        difference between settling a trade at its expiry and settling it at
+        the moment the app got round to looking: the second measures a longer
+        move than the one that was bet on, and a thirty-second trade noticed
+        two minutes late was being scored on a two-and-a-half-minute move and
+        filed as a clean win or loss with nothing marking it.
+
+        How late each settlement was is recorded either way, so a rate can be
+        read back against how promptly it was measured.
         """
         now = now or utcnow()
         pending = self.pending_outcomes(now)
@@ -307,14 +319,37 @@ class Journal:
                 if settles_a_different_chart(row, asset):
                     continue
                 entry_price = row["price"]
-                reason = _settlement_block(row, current_price, now, source, asset)
+                # The moment this row was actually betting on.
+                expiry = _expiry_of(row)
+                settled_price: float | None = None
+                if price_at is not None and expiry is not None:
+                    try:
+                        settled_price = price_at(expiry)
+                    except Exception:  # pragma: no cover - defensive
+                        settled_price = None
+                # How far past its own expiry this settlement is being made.
+                # Zero when the history could answer, because then it does not
+                # matter how long ago that was.
+                late = 0.0 if settled_price is not None else _lateness(row, now)
+
+                if settled_price is None:
+                    settled_price = current_price
+                    reason = _settlement_block(row, current_price, now, source, asset)
+                else:
+                    # A price read out of the chart's own history at the right
+                    # moment cannot be too late to be used, so the only bars
+                    # left are the ones about whose chart it belongs to.
+                    reason = _settlement_block(
+                        row, settled_price, now, source, asset, late=0.0
+                    )
+
                 if reason is not None:
                     outcome, change = "void", None
                     voided += 1
                 elif entry_price is None:
                     outcome, change = "unknown", None
                 else:
-                    change = current_price - entry_price
+                    change = settled_price - entry_price
                     if abs(change) < 1e-12:
                         outcome = "flat"
                     elif row["direction"] == Direction.CALL.value:
@@ -327,7 +362,7 @@ class Journal:
                     "notes = COALESCE(notes, ?) WHERE id = ?",
                     (
                         outcome,
-                        None if reason else float(current_price),
+                        None if reason else float(settled_price),
                         now.isoformat(),
                         None if change is None else float(change),
                         reason,
@@ -556,12 +591,30 @@ def settles_a_different_chart(row: sqlite3.Row, asset: str | None) -> bool:
     return bool(asset and row_asset and row_asset != asset)
 
 
+def _expiry_of(row: sqlite3.Row) -> datetime | None:
+    """When this row's trade actually expired."""
+    try:
+        started = datetime.fromisoformat(row["timestamp"])
+    except (TypeError, ValueError):  # pragma: no cover - corrupt row
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return started + timedelta(seconds=float(row["trade_duration"] or 0))
+
+
+def _lateness(row: sqlite3.Row, now: datetime) -> float:
+    """Seconds between the row expiring and this settlement being attempted."""
+    expiry = _expiry_of(row)
+    return 0.0 if expiry is None else max(0.0, (now - expiry).total_seconds())
+
+
 def _settlement_block(
     row: sqlite3.Row,
     current_price: float,
     now: datetime,
     source: str | None,
     asset: str | None,
+    late: float | None = None,
 ) -> str | None:
     """Why ``current_price`` may not settle ``row`` — or None if it may.
 
@@ -595,7 +648,8 @@ def _settlement_block(
             started = started.replace(tzinfo=timezone.utc)
         duration = float(row["trade_duration"] or 0)
         grace = max(SETTLEMENT_GRACE_FACTOR * duration, SETTLEMENT_GRACE_FLOOR_SECONDS)
-        late = (now - started).total_seconds() - duration
+        if late is None:
+            late = (now - started).total_seconds() - duration
         if late > grace:
             return (
                 f"Voided: the expiry passed {late / 60:.0f} minutes before a "

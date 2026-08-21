@@ -913,6 +913,12 @@ class OverlayApp:
                     # it is. Read by ``_announce_watchlist`` and never by the
                     # view model, which builds its rows from named keys.
                     "_signal": signal,
+                    # The chart's own candles, so its calls settle at the
+                    # moment they expired rather than at whatever price this
+                    # sweep happened to read. A watched chart is swept every
+                    # few seconds at best, which on a thirty-second trade is a
+                    # large share of the horizon being measured.
+                    "_series": series,
                 }
                 rows.append(row)
                 if newest is not None:
@@ -969,9 +975,16 @@ class OverlayApp:
             asset = str(row.get("asset") or "")
             if signal is None or not asset or signal.price is None:
                 continue
+            series = row.get("_series")
             try:
                 self.engine.journal.resolve_outcomes(
-                    float(signal.price), source=source, asset=asset
+                    float(signal.price),
+                    source=source,
+                    asset=asset,
+                    # A swept chart carries its own candles, so its calls are
+                    # settled at their expiry rather than at whatever this
+                    # sweep happens to have read.
+                    price_at=getattr(series, "price_at", None),
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.debug("could not settle %s: %s", asset, exc)
