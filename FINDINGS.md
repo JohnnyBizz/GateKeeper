@@ -107,6 +107,16 @@ kills it.
    GateKeeper noticed it close — an expiry later, often in the following
    minute, lined up against nothing.
 
+4. **History for every tab but the front one was thrown away.** The platform
+   loads candles for each chart it draws and sends all of it across the socket
+   once. Anything not belonging to the chart in focus was dropped, so a watched
+   pair started at zero candles and grew one per bar off the live stream — 60
+   bars before it could be read, which on a 1 MIN chart is an hour. Switching
+   to that tab did not help: the browser already held the candles and asked for
+   nothing, so the panel restarted the hour from two candles with a fully drawn
+   chart on screen beside it. It is why a six-pair watchlist filled in minutes
+   on 5 SEC charts and never filled at all on 1 MIN.
+
 Numbers from before this date are inflated by defect 1 and are not comparable
 with what follows.
 

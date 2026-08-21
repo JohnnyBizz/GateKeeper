@@ -2295,3 +2295,124 @@ class TestAnUnnamedChartMakesTheRecorderAskForOne:
         _capture, sent = self._run([self._tick()] * 4)
 
         assert sent[0].get("method") == "Network.enable"
+
+
+class TestHistoryForTheTabsBehind:
+    """The platform loads history for every tab it draws, not only the front
+    one, and all of it crosses this socket exactly once.
+
+    It was being dropped. A watched pair therefore began at zero candles and
+    grew one per bar off the live stream — sixty bars before it could be read,
+    which on a 1 MIN chart is an hour. Switching to that tab did not help: the
+    browser already had the candles and asked for nothing, so the panel started
+    the hour over from two candles with a fully drawn chart on screen beside
+    it.
+    """
+
+    START = 1_786_662_000
+
+    def _source(self):
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        # The user's three tabs. Several charts named at once is the page
+        # describing its workspace, not the chart in front, so it claims none.
+        source._handle(
+            "saveCharts",
+            ["saveCharts", {"settings": [
+                {"symbol": "EURCHF_otc", "chartPeriod": 60},
+                {"symbol": "EURUSD_otc"},
+                {"symbol": "EURAUD_otc"},
+            ]}],
+        )
+        # EUR/CHF is the one in front, and it is trading — so nothing weaker
+        # than the page naming its own chart may take the panel off it.
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURCHF_otc", "period": 60}]
+        )
+        source._handle("updateStream", [["EURCHF_otc", self.START, 0.9353]])
+        return source
+
+    def _history(self, asset, count=90, period=60, price=1.6):
+        """Closed bars running up to START, which is where the stream begins.
+
+        Genuinely in the past, because the builder leaves the bar that is still
+        forming to the tick stream and drops history for it — so backfill that
+        overlapped the live bar would be discarded, correctly, and prove
+        nothing.
+        """
+        rows = [
+            {"time": self.START - (count - i) * period, "open": price,
+             "high": price, "low": price, "close": price, "volume": 1}
+            for i in range(count)
+        ]
+        return ["loadHistoryPeriodFast", {"asset": asset, "period": period,
+                                          "data": rows}]
+
+    def test_history_for_a_tab_behind_is_kept_not_dropped(self):
+        source = self._source()
+        assert source._asset == "EURCHF_otc"
+
+        source._handle("loadHistoryPeriodFast", self._history("EURAUD_otc"))
+
+        builder = source._charts.get(("EURAUD_otc", 60))
+        assert builder is not None, "the tab's history went in the bin"
+        assert len(builder.settled) >= 60, (
+            f"only {len(builder.settled)} candles kept; 60 are needed to read a chart"
+        )
+
+    def test_the_watchlist_offers_it_straight_away(self):
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", self._history("EURAUD_otc"))
+
+        watched = {name: series for name, _p, series in source.watched()}
+        assert "EUR/AUD OTC" in watched
+        assert len(watched["EUR/AUD OTC"]) >= 60
+
+    def test_switching_to_that_tab_arrives_with_its_history(self):
+        """The move that produced two candles and a full chart on screen."""
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", self._history("EURAUD_otc"))
+        source._handle(
+            "saveCharts",
+            ["saveCharts", {"settings": [{"symbol": "EURAUD_otc", "chartPeriod": 60}]}],
+        )
+
+        assert source._asset == "EURAUD_otc"
+        assert len(source._builder.settled) >= 60
+
+    def test_the_open_chart_still_takes_its_own_history(self):
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", self._history("EURCHF_otc"))
+
+        assert len(source._builder.settled) >= 60
+        assert source._history_seen is True
+
+    def test_an_instrument_outside_the_tabs_is_still_refused(self):
+        """The socket ticks far more pairs than anyone trades. Keeping history
+        for all of them would fill the slots with instruments nobody asked
+        for."""
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", self._history("BTCUSD_otc"))
+
+        assert ("BTCUSD_otc", 60) not in source._charts
+
+    def test_history_does_not_displace_the_open_chart(self):
+        source = self._source()
+        source._handle("loadHistoryPeriodFast", self._history("EURAUD_otc"))
+
+        assert source._asset == "EURCHF_otc", "a tab behind must not steal the panel"
+
+    def test_ticks_already_gathered_are_not_lost_to_the_backfill(self):
+        from poa.feed.ticks import Tick
+
+        source = self._source()
+        for step in range(0, 120, 10):
+            source._handle(
+                "updateStream", [["EURAUD_otc", self.START + 5_000 + step, 1.63]]
+            )
+        before = len(source._charts[("EURAUD_otc", 60)].settled)
+        source._handle("loadHistoryPeriodFast", self._history("EURAUD_otc"))
+        after = len(source._charts[("EURAUD_otc", 60)].settled)
+
+        assert after > before

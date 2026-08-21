@@ -419,10 +419,20 @@ class FeedChartSource(ChartSource):
                 asset, candles = parse_history_candles(payload)
                 if not candles:
                     return
+                period = infer_period(candles)
                 # History for the pair the user just left can arrive after they
-                # have switched away, so it only counts if it belongs to the
-                # chart we are following.
-                if asset and not self._claim(asset, infer_period(candles), RANK_HISTORY):
+                # have switched away, so it only counts *for the open chart* if
+                # it belongs to the chart being followed. It is still real
+                # history for a real chart, though, and it used to be dropped
+                # on the floor here — which is why every pair but the open one
+                # started from nothing and needed sixty bars of live ticks
+                # before it could be read. An hour, on a 1 MIN chart. The
+                # platform sends this once, when it draws the tab; switching to
+                # that tab later re-sends nothing, because the browser already
+                # has the candles. Discarding them was the only reason a
+                # watched pair had none.
+                if asset and not self._claim(asset, period, RANK_HISTORY):
+                    self._seed_watched(asset, period, candles)
                     return
                 if self._asset is None:
                     return
@@ -433,6 +443,7 @@ class FeedChartSource(ChartSource):
             if event == "updateHistoryNewFast":
                 asset, period, ticks = parse_tick_history(payload)
                 if asset and not self._claim(asset, period, RANK_TICK_HISTORY):
+                    self._extend_watched(asset, period, ticks)
                     return
                 if self._asset is None:
                     return
@@ -564,6 +575,59 @@ class FeedChartSource(ChartSource):
         """Drop every derived chart for one instrument. Lock held."""
         for key in [k for k in self._fast if k[0] == symbol]:
             del self._fast[key]
+
+    def _builder_for_watched(self, asset: str, period: int) -> Any | None:
+        """The builder holding a watched chart, made if there is room for it.
+
+        Lock held. None when the instrument is not one of the user's own, or
+        when every slot is taken — the open chart is fed elsewhere and is never
+        this.
+        """
+        if not asset or period <= 0 or asset == self._asset:
+            return None
+        keep = self._watchable()
+        if keep is not None and asset not in keep:
+            return None
+        key = (asset, int(period))
+        builder = self._charts.get(key)
+        if builder is None:
+            if len(self._charts) >= MAX_REMEMBERED_CHARTS:
+                return None
+            builder = CandleBuilder(
+                period_seconds=int(period),
+                max_candles=self.max_candles,
+                symbol=asset,
+            )
+            self._charts[key] = builder
+        return builder
+
+    def _seed_watched(self, asset: str, period: int, candles: Any) -> None:
+        """Backfill a watched chart from history meant for somebody else.
+
+        The platform loads history for every tab it draws, not only the one in
+        front. All of it crosses this socket, once, and none of it was being
+        kept: a watched pair began at zero candles and grew one per bar off the
+        live stream, so on a 1 MIN chart it was an hour before it could be read
+        and a tab switch started that hour again from two candles.
+
+        ``seed`` merges — it skips bars already held and leaves the forming one
+        to the tick stream — so this is additive to whatever ticks have built.
+        """
+        builder = self._builder_for_watched(asset, period)
+        if builder is None:
+            return
+        builder.seed(candles)
+        log.debug("seeded watched %s at %ss with %d candles of history",
+                  asset, period, len(builder.settled))
+
+    def _extend_watched(self, asset: str, period: int, ticks: Any) -> None:
+        """Same, for the per-asset tick history the platform replays."""
+        if not ticks:
+            return
+        builder = self._builder_for_watched(asset, period)
+        if builder is None:
+            return
+        builder.extend(ticks)
 
     def _watchable(self) -> set[str] | None:
         """The instruments worth building candles for. Lock held.
