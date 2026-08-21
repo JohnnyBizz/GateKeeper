@@ -494,3 +494,99 @@ their real stamps and stay.
 Why 94 calls in 54 minutes and none in the following three hours and twenty.
 The report cannot say; the panel at the time could have. Worth watching for on
 the fixed build.
+
+---
+
+## 2026-08-21 — the fourth session ran twice at once, and the ceiling got its license
+
+**Session:** 21:57–22:10 UTC, thirteen minutes, seven pairs, the first session
+on the fixed build. The deal-clock fix held in production: hand trades carry
+their matched scores now, dash for dash gone. And nearly every row in the
+report is there twice.
+
+### Two copies, one journal
+
+All twenty listed hand trades are ten, each pair byte-identical — same
+broker stamp, same matched score twice, which is itself proof both copies
+matched the same call. The 48 listed calls pair up at identical entry prices
+seconds apart. Two copies of the app were open on one journal, and nothing
+existed to prevent that: every call recorded twice, every real trade counted
+twice by the calibration record — the record that holds a veto over live
+setups — and every rate in the report computed at double weight.
+
+Fixed three ways, because each covers a different failure:
+
+* **A single-instance lock.** A held file lock beside the journal, released
+  by the kernel the moment the process dies, however it dies — proven in the
+  test suite by eight processes racing for it and the winner being killed
+  with no cleanup allowed to run. Deliberately not a PID file:
+  ``os.kill(pid, 0)`` on Windows does not ask whether a process is alive, it
+  terminates it. Two copies pointed at *different* journals still run.
+* **A one-off sweep** (journal data version 2): rows agreeing on pair,
+  direction, score, entry price, expiry, timeframe, source and provenance
+  within ten seconds collapse to the earlier row. The outcome is not part of
+  the identity on purpose — the two copies settled independently and could
+  disagree at a boundary (session 3 shows an 84 FLAT beside an 84 LOSS at
+  the same price). Conservative on purpose too: the pairs the copies caught
+  a *tick* apart — BHD/CNY at 18.39763 and 18.39758 — survive, because a
+  different entry price is the line between an echo and a new read, and
+  deleting a real read is worse than keeping an echo.
+* The lock makes the sweep a repair rather than a treadmill.
+
+### The session, deduplicated
+
+14W/17L — 45.2%. By band: **85–89 went 11/17 = 64.7%; 90–94 went 3/14 =
+21.4%.** The user's own hand: four winners early (scores 94, 91, 82, 83,
+21:58–22:04), then the market turned at about 22:05 and six losses in a row
+followed (83, 88, 93, 88, 88, 89) — the score kept reading the trend that
+had just died, because the score is a trend detector and that is what a
+trend detector does at a turn.
+
+### The fourth replication, and what it licenses
+
+| session (UTC) | 90 and above | the calls just below |
+|---|---|---|
+| 01:42 | ≥92: 4W/25L — **13.8%** | <92: 53.8% |
+| 11:09 | 90–94: 15W/34L — **30.6%** | 85–89: 48.1% |
+| 16:58 | 90–94: 16W/22L — **42.1%** | 85–89: 44.4% |
+| 21:57 | 90–94: 3W/11L — **21.4%** | 85–89: 64.7% |
+
+Four live sessions, four different markets, and the top of the scale lost to
+the band beneath it in every one. By this file's own rule — a finding counts
+once it repeats in a group it was not found in — this is replicated three
+times over, which is the strongest license anything in this file has earned.
+
+**Acted on:** the shipped config now refuses calls at a direction score of
+90 or above (``overheat_ceiling: 90``, zero turns it off). The gate's own
+text carries the numbers. It is hand-demotable like any gate, but the
+replay's audit may never retire it — the replay walks overlapping windows
+of whatever trend it was handed and *will* call this rule costly on a
+trending recording; a rule written by settled trades is not a resample's to
+unwrite. Applied to tonight's deduplicated session the ceiling turns 45.2%
+into 64.7% (11/17) — above the 52.1% break-even at a 92% payout, on a
+sample far too small to bank.
+
+Said plainly, because the number will be asked for: across the four
+sessions the sub-90 calls ran 53.8 / 48.1 / 44.4 / 64.7 — hovering at
+break-even, not above it. The ceiling removes the calls that measurably
+lose. It does not mint an edge, and nothing measured so far supports
+promising one.
+
+### The brake was on, and the panel traded through it
+
+The four-losses-in-a-row brake shipped enabled and tripped on schedule at
+the fourth loss — as a small caption at the edge of the tally row, while
+the signal card flashed the next call and the watchlist tabs stayed lit.
+Two more losses were chased through it. Fixed in the panel: a tripped brake
+now stands the whole surface down — verdict reads STAND DOWN with the
+user's own limit as the reason, the entry inset closes, the tabs go dark —
+until a win is recorded or the tally is reset. The measurement continues
+underneath; what stops is every cue that says act.
+
+### Left open
+
+* Whether 85–89 holds above break-even now that it is the whole voice of
+  the tool. Four sessions of it under the ceiling will say.
+* The horizon question stands: over 30 seconds this market has measured as
+  a coin toss ungated. Longer expiries and conditioning on something that
+  is not price shape remain the two unplayed cards.

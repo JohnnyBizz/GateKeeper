@@ -141,6 +141,14 @@ signals:
                                   # 62 is a call about once a minute per pair.
                                   # Raise it for fewer, and read the always-BUY
                                   # line in the session report either way.
+  overheat_ceiling: 90            # refuse calls whose direction score reaches
+                                  # this. Backwards-sounding, measured four
+                                  # times: in every live session so far the
+                                  # 90+ calls settled below the band beside
+                                  # them (14/31/42/21% vs 54/48/44/65%).
+                                  # The score maxes out when every component
+                                  # agrees, and that is the most stretched
+                                  # moment of the move, not the safest. 0 = off.
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
   min_data_confidence: 70         # chart-reading confidence needed to analyse
 

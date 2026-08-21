@@ -1944,3 +1944,202 @@ class TestGhostTradesAreSweptOnce:
             assert count == 1
         finally:
             reopened.close()
+
+
+class TestDoubledRowsAreSweptOnce:
+    """Two app copies sharing one journal — which nothing prevented before
+    the single-instance lock — recorded the evening session of 2026-08-21
+    twice over: 48 listed calls that were 24 reads, 20 hand trades that were
+    10, and a calibration record counting every real trade at double weight.
+    The sweep collapses each such pair back to one row, once per file.
+    """
+
+    STAMP = "2026-08-21T21:58:03.100000+00:00"
+    #: One and a half seconds later: the second copy's own read of the same
+    #: event, offset only by polling phase.
+    ECHO = "2026-08-21T21:58:04.600000+00:00"
+    #: Half a minute later: a genuinely new read, outside any polling phase.
+    LATER = "2026-08-21T21:58:33.100000+00:00"
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _row(
+        self,
+        journal,
+        id,
+        stamp,
+        *,
+        price=0.57912,
+        confidence=90.0,
+        direction="CALL",
+        outcome="win",
+        notes=None,
+        source="feed",
+    ):
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, price, "
+            "outcome, notes, source) VALUES (?, ?, 'AUDCHF_otc', 5, 30, ?, "
+            "'SETTLED', ?, 80, 85, 'STRONG', ?, ?, ?, ?)",
+            (id, stamp, direction, confidence, price, outcome, notes, source),
+        )
+        journal._connection.commit()
+
+    def _age_to_pre_lock_build(self, journal):
+        """Make the file look like the build that allowed the doubling."""
+        journal._connection.execute("PRAGMA user_version = 1")
+        journal._connection.commit()
+
+    def _survivors(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        reopened = Journal(str(tmp_path / "j.db"))
+        try:
+            return [
+                (row["id"], row["outcome"])
+                for row in reopened._connection.execute(
+                    "SELECT id, outcome FROM signals ORDER BY rowid"
+                )
+            ]
+        finally:
+            reopened.close()
+
+    def test_a_doubled_call_becomes_one_and_the_earlier_row_is_kept(self, tmp_path):
+        journal = self._journal(tmp_path)
+        self._row(journal, "mine", self.STAMP)
+        self._row(journal, "echo", self.ECHO)
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+        assert self._survivors(tmp_path) == [("mine", "win")]
+
+    def test_a_settlement_disagreement_is_still_one_event(self, tmp_path):
+        # The two copies settled independently, and on a borderline expiry
+        # they disagreed — one FLAT, one LOSS, same call. Still one event.
+        journal = self._journal(tmp_path)
+        self._row(journal, "mine", self.STAMP, outcome="flat")
+        self._row(journal, "echo", self.ECHO, outcome="loss")
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+        assert self._survivors(tmp_path) == [("mine", "flat")]
+
+    def test_a_re_arm_at_a_new_price_survives(self, tmp_path):
+        # Same pair, direction, score, seconds apart — but a new entry price
+        # is a new read of the market, not an echo of the old one.
+        journal = self._journal(tmp_path)
+        self._row(journal, "first", self.STAMP, price=0.57912)
+        self._row(journal, "rearm", self.ECHO, price=0.57938)
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+        assert len(self._survivors(tmp_path)) == 2
+
+    def test_the_same_read_half_a_minute_later_survives(self, tmp_path):
+        # Identical in every column: only closeness in time makes an echo.
+        journal = self._journal(tmp_path)
+        self._row(journal, "first", self.STAMP)
+        self._row(journal, "again", self.LATER)
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+        assert len(self._survivors(tmp_path)) == 2
+
+    def test_a_doubled_hand_trade_counts_once(self, tmp_path):
+        # Hand trades carry the broker's own stamp, so the two copies wrote
+        # them with *identical* timestamps — and each real trade then taught
+        # the calibration record twice.
+        journal = self._journal(tmp_path)
+        self._row(journal, "mine", self.STAMP, notes="manual", confidence=88.0)
+        self._row(journal, "echo", self.STAMP, notes="manual", confidence=88.0)
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+        assert self._survivors(tmp_path) == [("mine", "win")]
+
+    def test_the_sweep_runs_once_per_journal(self, tmp_path):
+        # A pair written after the sweep ran survives: the sweep is a one-off
+        # repair of what the lockless builds wrote, and the instance lock is
+        # what prevents it happening again — not a standing rule.
+        journal = self._journal(tmp_path)  # fresh file: already current
+        self._row(journal, "mine", self.STAMP)
+        self._row(journal, "echo", self.ECHO)
+        journal.close()
+        assert len(self._survivors(tmp_path)) == 2
+
+    def test_the_actual_evening_rows_and_what_survives_them(self, tmp_path):
+        """The doubled session of 2026-08-21, replayed row for row.
+
+        This is the sweep against the real data, not a convenient shape: the
+        exact-duplicate pairs collapse; the two USD/CAD rows still open at
+        the session's end collapse (identity does not need an outcome); and
+        the pairs the two copies stamped a *tick* apart — BHD/CNY at
+        18.39763 and 18.39758 — survive on purpose. A different entry price
+        is the sweep's line between an echo and a new read, and it stays on
+        the safe side of it: better two rows that were one event than one
+        row that was two.
+        """
+        journal = self._journal(tmp_path)
+        add = journal._connection.execute
+
+        def row(id, stamp, asset, direction, score, price, outcome, notes=None):
+            add(
+                "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+                "trade_duration, direction, state, direction_confidence, "
+                "duration_confidence, overall_confidence, setup_quality, "
+                "price, outcome, notes, source) VALUES (?, ?, ?, ?, 30, ?, "
+                "'SETTLED', ?, 80, 85, 'STRONG', ?, ?, ?, 'feed')",
+                (id, stamp, asset, 5, direction, score, price, outcome, notes),
+            )
+
+        # One call, recorded by both copies a second and a half apart.
+        row("a1", "2026-08-21T21:58:03.100000+00:00", "AUDCHF_otc", "CALL", 90.0, 0.57912, "win")
+        row("a2", "2026-08-21T21:58:04.600000+00:00", "AUDCHF_otc", "CALL", 90.0, 0.57912, "win")
+        # Four EUR/USD rows at 22:10: one exact pair, plus two a tick apart.
+        row("e1", "2026-08-21T22:10:11.000000+00:00", "EURUSD_otc", "PUT", 92.0, 1.24674, "loss")
+        row("e2", "2026-08-21T22:10:12.200000+00:00", "EURUSD_otc", "PUT", 92.0, 1.24674, "loss")
+        row("e3", "2026-08-21T22:10:11.400000+00:00", "EURUSD_otc", "PUT", 92.0, 1.24673, "loss")
+        row("e4", "2026-08-21T22:10:12.600000+00:00", "EURUSD_otc", "PUT", 92.0, 1.24672, "loss")
+        # Still open when the session closed: no outcome yet, still one event.
+        row("u1", "2026-08-21T22:03:40.000000+00:00", "USDCAD_otc", "PUT", 92.0, 1.41484, None)
+        row("u2", "2026-08-21T22:03:41.100000+00:00", "USDCAD_otc", "PUT", 92.0, 1.41484, None)
+        # The tick-apart pair that stays: same read, different entry price.
+        row("b1", "2026-08-21T22:04:10.000000+00:00", "BHDCNY_otc", "CALL", 94.0, 18.39763, "win")
+        row("b2", "2026-08-21T22:04:11.300000+00:00", "BHDCNY_otc", "CALL", 94.0, 18.39758, "win")
+        # A hand trade both copies filed on the broker's own stamp.
+        row("m1", "2026-08-21T21:58:20.000000+00:00", "AUDCHF_otc", "CALL", 94.0, 0.57920, "win", "manual")
+        row("m2", "2026-08-21T21:58:20.000000+00:00", "AUDCHF_otc", "CALL", 94.0, 0.57920, "win", "manual")
+        journal._connection.commit()
+        self._age_to_pre_lock_build(journal)
+        journal.close()
+
+        kept = [id for id, _ in self._survivors(tmp_path)]
+        assert kept == ["a1", "e1", "e3", "e4", "u1", "b1", "b2", "m1"]
+
+    def test_an_old_file_gets_every_correction_in_one_open(self, tmp_path):
+        # A journal from before the *clock* fix gets the ghost sweep and the
+        # duplicate sweep in one migration, oldest defect first.
+        journal = self._journal(tmp_path)
+        self._row(
+            journal,
+            "ghost",
+            "2026-08-21T15:06:00+00:00",
+            notes="manual",
+            confidence=0.0,
+        )
+        self._row(journal, "mine", self.STAMP)
+        self._row(journal, "echo", self.ECHO)
+        journal._connection.execute("PRAGMA user_version = 0")
+        journal._connection.commit()
+        journal.close()
+        assert self._survivors(tmp_path) == [("mine", "win")]
+
+        from poa.storage.journal import Journal
+
+        reopened = Journal(str(tmp_path / "j.db"))
+        try:
+            version = reopened._connection.execute(
+                "PRAGMA user_version"
+            ).fetchone()[0]
+            assert version == Journal.DATA_VERSION
+        finally:
+            reopened.close()

@@ -78,6 +78,14 @@ jobs:
           Copy-Item "$root\*.dll" vendor\tesseract\
           # English only; every label being read is an ASCII badge.
           Copy-Item "$root\tessdata\eng.traineddata" vendor\tesseract\tessdata\
+      # The one module with a genuinely different Windows code path. The
+      # Linux test job proves the flock half; msvcrt.locking has to be proven
+      # on Windows or it is proven nowhere — and this is the guard that keeps
+      # a second copy of the app from double-writing the journal.
+      - name: Prove the single-instance lock on Windows
+        run: |
+          pip install pytest
+          python -m pytest tests/test_single_instance.py -q
       - name: Build executable
         run: pyinstaller gatekeeper.spec --noconfirm
       # A separate, temporary tool: it records what the platform's socket

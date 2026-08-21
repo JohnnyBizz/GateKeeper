@@ -153,6 +153,117 @@ class TestDirectionalSignals:
         assert {"data_quality", "regime", "market_structure", "momentum"} <= names
 
 
+class TestTheOverheatCeiling:
+    """A very high score has measurably been a warning, not a promise: in all
+    four live sessions recorded so far, calls at ninety and above settled
+    below the 85-89 band beside them (14%, 31%, 42%, 21% against 54%, 48%,
+    57%, 65%). The score is a trend detector, and it maxes out at the most
+    stretched moment of the move it is reading — so the shipped config
+    refuses the top of the scale.
+    """
+
+    def _gate_run(self, ceiling):
+        from poa.signals.gates import evaluate_gates
+        from poa.signals.scoring import score_direction
+
+        series = pullback_trend(400, direction=1)
+        mtf = build_multi_timeframe(series, 5, 1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="t"
+        )
+        score = score_direction(mtf, Direction.CALL)
+        report = evaluate_gates(
+            mtf,
+            Direction.CALL,
+            score,
+            quality,
+            GateSettings(overheat_ceiling=ceiling),
+        )
+        return score, report
+
+    def test_a_score_at_the_ceiling_is_refused(self):
+        score, report = self._gate_run(ceiling=1.0)  # any score is "at" this
+        overheat = next(g for g in report.results if g.name == "overheat")
+        assert not overheat.passed
+        assert overheat.blocking
+        assert score.total >= 1.0
+
+    def test_a_score_under_the_ceiling_passes(self):
+        score, report = self._gate_run(ceiling=100.5)  # nothing reaches this
+        overheat = next(g for g in report.results if g.name == "overheat")
+        assert overheat.passed
+
+    def test_zero_keeps_the_ceiling_out_of_the_report(self):
+        # The dataclass default is off, exactly like min_shown_confidence:
+        # the shipped config makes the product decision, a bare
+        # GateSettings() does not smuggle it in.
+        assert GateSettings().overheat_ceiling == 0.0
+        _, report = self._gate_run(ceiling=0.0)
+        assert "overheat" not in {g.name for g in report.results}
+
+    def test_the_refusal_cites_the_measured_record(self):
+        _, report = self._gate_run(ceiling=1.0)
+        overheat = next(g for g in report.results if g.name == "overheat")
+        # The user asks "why is it refusing a 92?" — the answer has to be in
+        # the panel's own words, with the numbers that earned it.
+        assert "every live session measured" in overheat.detail
+        assert "14%, 31%, 42%, 21%" in overheat.detail
+
+    def test_an_overheated_setup_ends_as_wait(self):
+        # End to end: the same series that produces an actionable CALL at
+        # default settings is refused once the ceiling reaches down to its
+        # score.
+        series = pullback_trend(400, direction=1)
+        allowed = evaluate(series)
+        assert allowed.direction is Direction.CALL  # the control
+
+        refused = evaluate(series, settings=GateSettings(overheat_ceiling=85))
+        assert refused.direction is Direction.WAIT
+        assert not refused.actionable
+
+    def test_the_shipped_config_turns_the_ceiling_on(self):
+        from poa.config import DEFAULTS
+
+        section = DEFAULTS["signals"]
+        assert section["overheat_ceiling"] == 90
+        assert GateSettings.from_config(section).overheat_ceiling == 90.0
+
+    def test_from_config_reads_the_key(self):
+        assert GateSettings.from_config({"overheat_ceiling": 88}).overheat_ceiling == 88.0
+
+    def test_the_replay_may_never_retire_it(self):
+        # The ceiling was written by trades that actually settled. The replay
+        # walks overlapping windows of whatever trend it was handed, so on a
+        # trending recording it will call the ceiling costly — and letting
+        # that retire the rule would be the live record silencing itself.
+        from poa.signals.gates import NEVER_AUTO_RETIRED
+
+        assert {"overheat", "measured_edge", "regime_record"} <= NEVER_AUTO_RETIRED
+
+    def test_a_human_can_still_demote_it_by_hand(self):
+        # Falsifiable on purpose: advisory_gates in the config is a human
+        # decision, and NEVER_AUTO_RETIRED only fences off the replay.
+        from poa.signals.gates import evaluate_gates
+        from poa.signals.scoring import score_direction
+
+        series = pullback_trend(400, direction=1)
+        mtf = build_multi_timeframe(series, 5, 1)
+        quality = DataQuality(
+            ok=True, confidence=95.0, candle_count=len(series), source="t"
+        )
+        score = score_direction(mtf, Direction.CALL)
+        report = evaluate_gates(
+            mtf,
+            Direction.CALL,
+            score,
+            quality,
+            GateSettings(overheat_ceiling=1.0, advisory=frozenset({"overheat"})),
+        )
+        overheat = next(g for g in report.results if g.name == "overheat")
+        assert not overheat.passed
+        assert not overheat.blocking  # reports, but no longer vetoes
+
+
 class TestDataQualityGate:
     def test_unusable_data_yields_wait_not_a_direction(self):
         series = pullback_trend(400, direction=1)

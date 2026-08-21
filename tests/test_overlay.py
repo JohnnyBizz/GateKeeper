@@ -1399,6 +1399,73 @@ class TestOneSetupIsOneCall:
             app.shutdown()
 
 
+class TestTheReplayCannotRetireTheRealRecordsGates:
+    """The replay walks overlapping windows of whatever trend it was handed,
+    so on a trending recording it will call the overheat ceiling costly — a
+    rule written by four sessions of trades that actually settled. Letting
+    the replay retire it would be the live record silencing itself, the same
+    inversion the calibration provenance fix closed from the other side.
+    """
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        config.set("signals.auto_tune", True)  # retirement only runs tuned on
+        return OverlayApp(config)
+
+    class _Report:
+        def __init__(self, *names):
+            from types import SimpleNamespace
+
+            self._verdicts = [
+                SimpleNamespace(name=name, blocked=30, blocked_rate=70.0)
+                for name in names
+            ]
+
+        def costly(self):
+            return self._verdicts
+
+    def test_the_evidence_gates_are_skipped_and_others_still_retire(
+        self, tmp_path, monkeypatch
+    ):
+        app = self._app(tmp_path)
+        try:
+            monkeypatch.setattr(app.config, "save", lambda *a, **k: None)
+            monkeypatch.setattr(app, "_run_engine_cycle", lambda: None)
+            app._retire_costly_gates(
+                self._Report("overheat", "measured_edge", "momentum")
+            )
+            retired = set(app.config.get("signals.advisory_gates", []) or [])
+            assert "momentum" in retired
+            assert "overheat" not in retired
+            assert "measured_edge" not in retired
+        finally:
+            app.shutdown()
+
+    def test_a_costly_list_of_only_evidence_gates_changes_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        app = self._app(tmp_path)
+        try:
+            saved = []
+            monkeypatch.setattr(
+                app.config, "save", lambda *a, **k: saved.append(True)
+            )
+            app._retire_costly_gates(self._Report("overheat", "regime_record"))
+            assert not app.config.get("signals.advisory_gates", [])
+            assert not saved
+            assert app.vm.retired == []
+        finally:
+            app.shutdown()
+
+
 class TestAMeasurementBelongsToItsChart:
     """The same lie as showing the wrong pair, one line further down.
 

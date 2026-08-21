@@ -12,6 +12,7 @@ raising alerts, while the Scan button forces an immediate fresh evaluation.
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 from collections import deque
@@ -285,6 +286,11 @@ class OverlayApp:
         # Refresh the session counters from settled journal outcomes.
         self._refresh_session()
 
+        # The brake silences the act-now alert kinds too. The panel standing
+        # down while a desktop notification shouts BUY would be the tool
+        # losing an argument with its own limit, out loud.
+        self.engine.alerts.stand_down = self.vm.risk.paused
+
     def _apply_state(self) -> None:
         state = self.engine.state
         signal = state.signal
@@ -552,9 +558,17 @@ class OverlayApp:
         if room <= 0:
             return
 
+        from ..signals.gates import NEVER_AUTO_RETIRED
+
         added = []
-        for verdict in costly[:room]:
-            if verdict.name in current:
+        for verdict in costly:
+            if len(added) >= room:
+                break
+            # A rule written by trades that actually settled is not the
+            # replay's to retire: the replay walks overlapping windows of
+            # whatever trend it was handed, and letting it outvote the live
+            # record would be the record silencing itself.
+            if verdict.name in NEVER_AUTO_RETIRED or verdict.name in current:
                 continue
             current.add(verdict.name)
             added.append(
@@ -2292,9 +2306,46 @@ def _opened_at(trade: dict[str, Any], offset: float = 0.0) -> datetime | None:
 def run(config_path: str | None = None) -> None:
     """Entry point for ``python overlay.py`` / ``python -m poa.overlay``."""
     config = load_config(config_path)
+
+    # One instance per journal, before anything opens it. Keyed to the
+    # journal's own directory rather than the app, so two copies pointed at
+    # genuinely different databases may still run side by side — it is the
+    # *shared* journal that turns every recorded call and trade into two.
+    from .. import single_instance
+
+    try:
+        lock = single_instance.acquire(
+            config.resolve_path("storage.database").parent
+        )
+    except single_instance.AnotherInstanceRunning as exc:
+        log.warning("refusing to start: %s", exc)
+        _show_already_running(exc)
+        return
+
     log.info("=" * 60)
     log.info("GateKeeper — overlay")
     log.info("Source: %s | asset: %s", config.get("capture.source"), config.get("market.asset"))
     log.info("Analysis and alerts only. This tool never places a trade.")
     log.info("=" * 60)
-    OverlayApp(config).run()
+    with lock:
+        OverlayApp(config).run()
+
+
+def _show_already_running(exc: Exception) -> None:
+    """Tell the user in a window, because the packaged app has no console.
+
+    Without this a second double-click would appear to do nothing at all —
+    the process exits before any window opens, and the message explaining
+    why went to a stderr nobody can see.
+    """
+    print(str(exc), file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning("GateKeeper is already running", str(exc))
+        root.destroy()
+    except Exception:  # pragma: no cover - headless environment
+        pass

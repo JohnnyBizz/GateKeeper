@@ -381,7 +381,7 @@ class OverlayViewModel:
 
         risk = self.risk
 
-        return {
+        payload = {
             "header": {
                 "asset": self.asset,
                 "connected": self.connected,
@@ -430,6 +430,50 @@ class OverlayViewModel:
             "warnings": self._warnings(),
             "disclaimer": "Analysis only — not a trading recommendation.",
         }
+
+        # A tripped brake owns the whole panel, not a caption in the tally
+        # row. On 2026-08-21 the limit was 4, the brake tripped on schedule —
+        # and the signal card and the watchlist tabs went on flashing calls
+        # through it, so six losses in a row were chased at the exact moment
+        # the limit existed for. The measurement continues (the score stays,
+        # the journal keeps recording); what stands down is every cue that
+        # says act.
+        if risk.paused and not scanning:
+            self._stand_down(payload, risk)
+        return payload
+
+    def _stand_down(self, payload: dict[str, Any], risk: RiskAssessment) -> None:
+        """Replace every act-now cue with the user's own limit, stated."""
+        payload["verdict"].update(
+            direction="--",
+            direction_label="STAND DOWN",
+            color=COLORS["no_trade"],
+            arrow="",
+            badge="BRAKE ON",
+            badge_color=COLORS["no_trade"],
+            pattern="Your limit, set in RISK",
+            state="PAUSED",
+            actionable=False,
+            take_now=0,
+            take_label="brake on",
+        )
+        payload["entry"] = {
+            **payload["entry"],
+            "text": "STAND DOWN",
+            "detail": (
+                f"{risk.paused_reason} Entries stay closed until a win is "
+                "recorded or the tally is reset — the limit was set before "
+                "this run for exactly this moment."
+            ),
+            "clock": "",
+            "ready": False,
+            "urgent": False,
+        }
+        for row in payload["watchlist"]:
+            row["actionable"] = False
+            row["color"] = COLORS["faint"]
+            row["mismatched"] = False
+            row["needs"] = ""
 
     # ------------------------------------------------------------------
 

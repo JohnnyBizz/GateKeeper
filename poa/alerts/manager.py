@@ -96,6 +96,15 @@ class AlertSettings:
         )
 
 
+# Alert kinds whose whole message is "act now". While the user's own
+# loss-limit brake is tripped these stay unsent: a notification saying BUY
+# beside a panel saying STAND DOWN is the tool losing an argument with its
+# own limit, out loud. Everything informational — invalidations, reversals,
+# data quality — still flows; those describe the market rather than prompt
+# an entry.
+ACT_NOW_KINDS = frozenset({"BUY_SIGNAL", "SELL_SIGNAL", "WATCHLIST"})
+
+
 class AlertManager:
     """Decides what deserves an alert and sends it to every enabled channel."""
 
@@ -105,6 +114,11 @@ class AlertManager:
         notifiers: Iterable[Notifier] | None = None,
     ) -> None:
         self.settings = settings or AlertSettings()
+        #: While True, the act-now kinds are withheld. Set by the overlay
+        #: from the risk brake; nothing in here decides when — this class
+        #: only promises that a standing-down panel and a shouting
+        #: notification cannot happen at the same time.
+        self.stand_down = False
         self.notifiers: list[Notifier] = list(notifiers) if notifiers else []
         if not self.notifiers:
             self.notifiers.append(LogNotifier())
@@ -142,6 +156,8 @@ class AlertManager:
         sent: list[Alert] = []
         for alert in alerts:
             if alert.kind not in self.settings.notify_on:
+                continue
+            if self.stand_down and alert.kind in ACT_NOW_KINDS:
                 continue
             if alert.kind in ("BUY_SIGNAL", "SELL_SIGNAL") and (
                 alert.confidence < self.settings.min_confidence
@@ -186,6 +202,8 @@ class AlertManager:
         if not self.settings.enabled:
             return None
         if kind.upper() not in self.settings.notify_on:
+            return None
+        if self.stand_down and kind.upper() in ACT_NOW_KINDS:
             return None
 
         moment = now or utcnow()

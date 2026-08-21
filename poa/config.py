@@ -266,6 +266,16 @@ DEFAULTS: dict[str, Any] = {
         # beside the win rate. That comparison is what tells a good week apart
         # from a trending one, and at this gate there will be plenty of both.
         "min_shown_confidence": 62,
+        # Refuse calls whose direction score reaches this. Backwards until
+        # measured; measured four times. In every live session so far —
+        # every call followed to expiry against the platform's own prices —
+        # the calls at ninety and above settled *below* the calls beneath
+        # them: 14%, 31%, 42%, 21%, against 54%, 48%, 44%, 65% for the
+        # band just under. The score is a trend detector, and it
+        # maxes out when every component finally agrees — which is the
+        # moment the move it is reading has already mostly run. Set 0 to
+        # turn the ceiling off.
+        "overheat_ceiling": 90,
         "min_duration_compatibility": 65,
         "min_data_confidence": 70,
         # Structural gates. Every one of these must pass before a direction is

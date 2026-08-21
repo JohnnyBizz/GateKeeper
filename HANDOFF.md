@@ -15,14 +15,14 @@ it was about to do next.
 
 | | |
 |---|---|
-| Branch | `main` at `a955c9a`, pushed, clean tree |
-| Commits | 50 |
-| Tests | **1134 passing, 0 failing** (verified, 3m11s) |
+| Branch | `main` at `8701d6a`; work continues on `claude/work-loss-concern-4vl430` |
+| Tests | **1296 passing, 0 failing** (verified) |
 | Python | 3.11 |
 
-There is no unfinished edit in the working tree and nothing stashed. The last
-commit — "Keep the history the platform sends for the tabs behind the front
-one" — is complete and tested.
+The working branch carries the calibration-provenance fix and the
+2026-08-21 evening's four changes (single-instance lock, duplicate-row
+sweep, overheat ceiling, brake stand-down — see FINDINGS.md's last entry),
+awaiting a merge.
 
 ### Setting up a fresh checkout
 
@@ -237,6 +237,12 @@ The last several commits were mostly measurement defects, all fixed:
    watchlist filled in minutes on 5 SEC charts and never at all on 1 MIN.
 6. **`NO TRADE` overflowed the panel** — the verdict label now measures itself
    rather than hard-coding a smaller face per string.
+7. **Two app copies could share one journal** (2026-08-21 evening) — every
+   call and hand trade recorded twice, every rate at double weight. A held
+   file lock now allows one instance per journal; a one-off sweep (data
+   version 2) collapsed the doubles; the 90+ overheat ceiling and the
+   panel-wide brake stand-down shipped in the same set. FINDINGS.md's last
+   entry has the numbers and the reasoning.
 
 > Numbers from before 2026-08-21 are inflated by defect 1 and are **not
 > comparable** with anything measured after it.
