@@ -66,7 +66,25 @@ MAX_REMEMBERED_CHARTS = 8
 # How far back a settled trade may reach to find the call that motivated it.
 # Long enough to cover reading the panel and pressing the platform's button,
 # short enough that an unrelated call from earlier cannot be mistaken for it.
-CALL_MATCH_SECONDS = 180.0
+#
+# Scaled by the trade's own expiry rather than fixed: 180 seconds was sized
+# when a trade lasted three minutes, and on a thirty-second expiry it let a
+# hand trade claim a call six expiries stale — a different market by the
+# call's own definition of how long its read was for. One duration is the
+# horizon the call described (the freshness ring drains over exactly that),
+# with a floor for reading the panel and pressing the button, and the old
+# value kept as the ceiling.
+CALL_MATCH_FLOOR_SECONDS = 30.0
+CALL_MATCH_CEILING_SECONDS = 180.0
+
+
+def _call_match_window(duration: float | None) -> float:
+    seconds = float(duration or 0.0)
+    if seconds <= 0:
+        return CALL_MATCH_CEILING_SECONDS
+    return min(
+        CALL_MATCH_CEILING_SECONDS, max(CALL_MATCH_FLOOR_SECONDS, seconds)
+    )
 # How far the *other* way a call may sit and still count. The trade's opening
 # time is the broker's clock; the call's is this machine's, and nothing keeps
 # the two in step. Without an allowance here the match demanded that the local
@@ -1666,7 +1684,12 @@ class OverlayApp:
         return offset
 
     def _call_for(
-        self, asset: str, opened_at: Any, direction: str, offset: float = 0.0
+        self,
+        asset: str,
+        opened_at: Any,
+        direction: str,
+        offset: float = 0.0,
+        duration: float | None = None,
     ) -> dict | None:
         """The call this trade was most likely taken on, or None.
 
@@ -1698,7 +1721,7 @@ class OverlayApp:
             # against any of them. Skew is allowed for; a call long before the
             # trade is still a different moment in the session and refused.
             age = opened - entry["at"]
-            if not -CALL_MATCH_SKEW_SECONDS <= age <= CALL_MATCH_SECONDS:
+            if not -CALL_MATCH_SKEW_SECONDS <= age <= _call_match_window(duration):
                 continue
             # A trade taken the other way is not this call's outcome. Filing it
             # as one would teach the record backwards.
@@ -1743,7 +1766,11 @@ class OverlayApp:
             # lost — straight into the record that outranks the replay and
             # holds a veto over live setups.
             call = self._call_for(
-                asset, trade.get("opened_at"), trade["direction"], offset
+                asset,
+                trade.get("opened_at"),
+                trade["direction"],
+                offset,
+                duration=trade.get("duration"),
             )
             try:
                 self.engine.journal.record_manual(
