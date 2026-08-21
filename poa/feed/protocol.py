@@ -366,6 +366,12 @@ def parse_settled_trade(payload: Any) -> list[dict[str, Any]]:
                     else None
                 ),
                 "opened_at": start,
+                # Kept alongside the open, because it is the only anchor there
+                # is for how far the platform's deal clock sits from this
+                # machine's. A trade is read moments after it closes, so its
+                # close is "about now" on the platform's terms, and the gap
+                # between that and now here is the offset between the two.
+                "closed_at": end,
             }
         )
     return settled

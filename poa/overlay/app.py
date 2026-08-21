@@ -73,6 +73,23 @@ CALL_MATCH_SECONDS = 180.0
 # clock be at or behind the broker's, and on a machine running even a couple of
 # seconds fast every hand trade in a session came back unattributable.
 CALL_MATCH_SKEW_SECONDS = 45.0
+# A platform clock in a different timezone from this machine's is a different
+# problem from skew, and widening the window above cannot fix it: a deal an
+# hour after a call is *either* that call seen through a one-hour offset *or*
+# genuinely a call from an hour earlier, and one timestamp pair cannot tell
+# those apart. Which is why the offset is measured separately, from the trade's
+# own close, and the window stays narrow.
+#
+# Offsets between zones are whole quarter-hours, so the estimate is rounded to
+# one. The floor is what keeps ordinary lateness out: a trade is read shortly
+# after it closes, but "shortly" can be minutes if a poll is missed, and a few
+# minutes of that must not be mistaken for a zone and shifted.
+DEAL_CLOCK_STEP_SECONDS = 900.0
+DEAL_CLOCK_MIN_OFFSET_SECONDS = 1200.0
+# Beyond this it is not a timezone. UTC-12 to UTC+14 is the real range; a
+# number outside it is a broken stamp, and shifting by it would move a trade
+# somewhere no call could ever be.
+DEAL_CLOCK_MAX_OFFSET_SECONDS = 14 * 3600.0
 # Calls remembered per instrument. The open chart is re-read every couple of
 # seconds, so this is several minutes of them — comfortably more than the
 # window above, which is what decides whether a match is found.
@@ -184,6 +201,9 @@ class OverlayApp:
         # and this is what lets that be matched to the call it was taken on
         # rather than to whatever the panel happens to be showing now.
         self._calls: dict[str, deque] = {}
+        # The platform's deal clock against this one. Zero until a settled
+        # trade gives something to measure it from.
+        self._deal_clock_seconds: float = 0.0
 
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
@@ -1574,7 +1594,57 @@ class OverlayApp:
             }
         )
 
-    def _call_for(self, asset: str, opened_at: Any, direction: str) -> dict | None:
+    def _deal_clock_offset(self, trades: list[dict[str, Any]]) -> float:
+        """How far ahead of this machine the platform stamps its deals.
+
+        Zero when the two agree, which is the ordinary case and the one that
+        must cost nothing.
+
+        A settled trade is read moments after it closes, so its close time is
+        "about now" as the platform counts it. The gap between that and now
+        here is the offset — the whole of it, timezone included. The newest
+        close in the batch is used rather than an average, because it is the
+        one closest to now; older ones in the same batch drag the estimate
+        towards whatever lateness they carry.
+
+        This is the measurement that separates a real offset from a call that
+        genuinely happened an hour earlier. Both look identical from the
+        trade's open time alone, and only one of them should be matched.
+        """
+        now = utcnow().timestamp()
+        closes = [
+            seconds
+            for seconds in (_epoch_seconds(t.get("closed_at")) for t in trades)
+            if seconds is not None
+        ]
+        if not closes:
+            return 0.0
+
+        gap = max(closes) - now
+        if abs(gap) < DEAL_CLOCK_MIN_OFFSET_SECONDS:
+            return 0.0
+        if abs(gap) > DEAL_CLOCK_MAX_OFFSET_SECONDS:
+            log.warning(
+                "the platform stamped a trade %.0fs from this clock, which is "
+                "no timezone; leaving it alone", gap,
+            )
+            return 0.0
+
+        offset = round(gap / DEAL_CLOCK_STEP_SECONDS) * DEAL_CLOCK_STEP_SECONDS
+        if offset != self._deal_clock_seconds:
+            # Never silent. The symptom this fixes was every hand trade in a
+            # session filed with no score and nothing saying why.
+            log.warning(
+                "the platform's deal clock is %+.0f minutes from this machine's; "
+                "correcting trade times by that before matching them to calls",
+                offset / 60.0,
+            )
+            self._deal_clock_seconds = offset
+        return offset
+
+    def _call_for(
+        self, asset: str, opened_at: Any, direction: str, offset: float = 0.0
+    ) -> dict | None:
         """The call this trade was most likely taken on, or None.
 
         None is a real answer and the important one. A trade nobody can
@@ -1586,6 +1656,9 @@ class OverlayApp:
         opened = _epoch_seconds(opened_at)
         if not history or opened is None:
             return None
+        # On this machine's terms, so the two sides of the comparison below are
+        # counting from the same place.
+        opened -= offset
 
         best = None
         for entry in history:
@@ -1633,6 +1706,9 @@ class OverlayApp:
             log.debug("could not read settled trades: %s", exc)
             return
 
+        # Measured once for the batch, before anything is matched or filed.
+        offset = self._deal_clock_offset(trades)
+
         for trade in trades:
             self.vm.session.record(won=trade["won"])
             self.vm.session.adjust(wins=int(trade["won"]), losses=int(not trade["won"]))
@@ -1643,7 +1719,9 @@ class OverlayApp:
             # EUR/USD was on screen was filed as EUR/USD's score having won or
             # lost — straight into the record that outranks the replay and
             # holds a veto over live setups.
-            call = self._call_for(asset, trade.get("opened_at"), trade["direction"])
+            call = self._call_for(
+                asset, trade.get("opened_at"), trade["direction"], offset
+            )
             try:
                 self.engine.journal.record_manual(
                     asset=asset,
@@ -1671,7 +1749,7 @@ class OverlayApp:
                     # a time up to an expiry later, so a 30-second trade was
                     # listed against the minute after the one it was taken in
                     # and nothing lined up with the calls beside it.
-                    timestamp=_opened_at(trade),
+                    timestamp=_opened_at(trade, offset),
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not file a settled trade: %s", exc)
@@ -2145,11 +2223,16 @@ def _epoch_seconds(value: Any) -> float | None:
     return seconds
 
 
-def _opened_at(trade: dict[str, Any]) -> datetime | None:
-    """When the broker says this trade opened, or None to fall back to now."""
+def _opened_at(trade: dict[str, Any], offset: float = 0.0) -> datetime | None:
+    """When the broker says this trade opened, or None to fall back to now.
+
+    Corrected onto this machine's clock, so the report prints a time that sits
+    among the calls beside it rather than an hour past the end of the session.
+    """
     seconds = _epoch_seconds(trade.get("opened_at"))
     if seconds is None:
         return None
+    seconds -= offset
     try:
         return datetime.fromtimestamp(seconds, tz=timezone.utc)
     except (OverflowError, OSError, ValueError):

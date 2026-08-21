@@ -2145,6 +2145,16 @@ class TestWhatTheRealCaptureRevealed:
         assert trade["duration"] == 180
         assert trade["payout"] == 0.88
 
+    def test_both_ends_of_the_trade_are_kept(self):
+        """The close is the only anchor for how far the platform's deal clock
+        sits from this machine's, and without it a session's hand trades are
+        matched against a clock that may be a timezone away."""
+        from poa.feed.protocol import parse_settled_trade
+
+        trade = parse_settled_trade(self._closed())[0]
+        assert trade["opened_at"] == 1786923484
+        assert trade["closed_at"] == 1786923664
+
     def test_a_losing_trade_reads_as_one(self):
         from poa.feed.protocol import parse_settled_trade
 
