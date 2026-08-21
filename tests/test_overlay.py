@@ -3109,6 +3109,83 @@ class TestTheDealClockInAnotherTimezone:
             app.shutdown()
 
 
+class TestTheMatchWindowScalesWithTheTrade:
+    """180 seconds was sized when a trade lasted three minutes. On a
+    thirty-second expiry it let a hand trade claim a call six expiries stale —
+    a different market by the call's own definition of how long its read was
+    for. The window is now one duration of the trade being matched, floored
+    for reading the panel, ceilinged at the old value.
+    """
+
+    def _app(self, tmp_path):
+        return TestLearningFromRealTrades()._app(tmp_path)
+
+    def _trade(self, opened, closed, duration):
+        return {
+            "asset": "USDJPY_otc", "direction": "PUT", "won": True,
+            "open_price": 158.611, "close_price": 158.597,
+            "payout": 0.88, "duration": duration,
+            "opened_at": opened, "closed_at": closed,
+        }
+
+    def test_a_call_two_expiries_stale_is_refused_on_a_short_trade(self, tmp_path):
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            history = app._calls.setdefault("USD/JPY OTC", __import__("collections").deque())
+            history.append({
+                "at": now - 90.0, "timeframe": 5, "direction": "PUT",
+                "direction_confidence": 77.0, "duration_confidence": 65.0,
+                "regime": "TRENDING",
+            })
+            app.engine.source.take_settled = lambda: [self._trade(now, now, 30)]
+            app._collect_real_trades()
+            rows = [r for r in app.engine.journal.recent(limit=5)
+                    if str(r.get("notes")) == "manual"]
+            assert float(rows[0]["overall_confidence"]) == 0.0
+        finally:
+            app.shutdown()
+
+    def test_the_same_staleness_is_fine_on_a_trade_that_long(self, tmp_path):
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            now = utcnow().timestamp()
+            history = app._calls.setdefault("USD/JPY OTC", __import__("collections").deque())
+            history.append({
+                "at": now - 90.0, "timeframe": 60, "direction": "PUT",
+                "direction_confidence": 77.0, "duration_confidence": 65.0,
+                "regime": "TRENDING",
+            })
+            app.engine.source.take_settled = lambda: [self._trade(now, now, 180)]
+            app._collect_real_trades()
+            rows = [r for r in app.engine.journal.recent(limit=5)
+                    if str(r.get("notes")) == "manual"]
+            assert float(rows[0]["overall_confidence"]) == 77.0
+        finally:
+            app.shutdown()
+
+    def test_an_unknown_duration_keeps_the_old_window(self):
+        from poa.overlay.app import (
+            CALL_MATCH_CEILING_SECONDS,
+            _call_match_window,
+        )
+
+        assert _call_match_window(None) == CALL_MATCH_CEILING_SECONDS
+        assert _call_match_window(0) == CALL_MATCH_CEILING_SECONDS
+
+    def test_the_window_never_shrinks_below_pressing_the_button(self):
+        from poa.overlay.app import _call_match_window
+
+        assert _call_match_window(5) == 30.0
+        assert _call_match_window(30) == 30.0
+        assert _call_match_window(120) == 120.0
+        assert _call_match_window(1800) == 180.0
+
+
 class TestThePayoutComesFromThePlatform:
     """It differs per instrument and moves through the day. Typed in once it
     goes stale silently, and in the flattering direction — a stale high payout

@@ -46,6 +46,16 @@ def resample(series: Series, target_seconds: int) -> Series:
         buckets[-1].append(candle)
 
     factor = target_seconds // base
+    # A series that starts mid-bucket holds only the tail of its first group:
+    # the open belongs to a base bar that is not the bucket's first, and the
+    # high and low miss whatever the missing bars did. That is not that
+    # bucket's candle, so it is dropped rather than shipped with the wrong
+    # open — mid-series it would sit there marked incomplete and be read by
+    # every indicator anyway.
+    if buckets and buckets[0]:
+        first = buckets[0][0]
+        if _bucket_start(first.timestamp, target_seconds) != first.timestamp:
+            buckets = buckets[1:]
     aggregated: list[Candle] = []
     for group in buckets:
         if not group:

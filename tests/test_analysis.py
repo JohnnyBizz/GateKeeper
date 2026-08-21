@@ -365,6 +365,45 @@ class TestMultiTimeframe:
         assert deep.higher_is_distinct is True
 
 
+class TestALeadingPartialBucketIsNotShipped:
+    """A series that starts mid-bucket holds only the tail of its first
+    group. The aggregate built from it carried the wrong open and missed
+    whatever the absent bars did — and marked incomplete mid-series, it was
+    read by every indicator anyway."""
+
+    def _series(self, start_minute, count, timeframe=60):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.models import Candle, Series
+
+        start = datetime(2026, 8, 21, 11, start_minute, tzinfo=timezone.utc)
+        return Series(
+            [
+                Candle(start + timedelta(seconds=timeframe * i),
+                       100.0 + i, 100.5 + i, 99.5 + i, 100.2 + i,
+                       complete=True)
+                for i in range(count)
+            ],
+            timeframe,
+            "T",
+        )
+
+    def test_a_series_starting_mid_bucket_drops_that_bucket(self):
+        from poa.analysis import resample
+
+        # Starts at 11:02 — the 11:00 five-minute bucket is missing 11:00-01.
+        out = resample(self._series(2, 13), 300)
+        assert out.candles[0].timestamp.minute == 5
+        assert out.candles[0].open == 103.0  # 11:05's own open
+
+    def test_a_series_starting_on_the_boundary_keeps_everything(self):
+        from poa.analysis import resample
+
+        out = resample(self._series(0, 15), 300)
+        assert out.candles[0].timestamp.minute == 0
+        assert len(out.candles) == 3
+
+
 class TestHowFarTheMoveHasAlreadyGone:
     """The readings that do not say which way.
 

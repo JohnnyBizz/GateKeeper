@@ -6,8 +6,10 @@ round: the right gate is not a matter of taste, it is whatever the measured
 record says was worth the most, and the record can work that out.
 
 So it does. After each replay, the threshold tables answer "a gate here would
-have taken N trades at X%", the best of those is picked by expected value, and
-the live gates move toward it.
+have taken N trades at X%", the best of those is picked by the lower bound of
+its interval — the rate the band can be *relied* on for, which is what stops
+twenty lucky trades outranking eighty solid ones — and the live gates move
+toward it.
 
 Four guards, because a gate that chases noise is worse than one that is merely
 wrong:

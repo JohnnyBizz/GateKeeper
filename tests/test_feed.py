@@ -709,6 +709,56 @@ class TestProtocol:
         assert series.last_price == 0.70460
 
 
+class TestAStragglerCannotUnsettleABar:
+    """``advance`` closes a bar on any instrument's tick, so a late tick for
+    the bucket just closed can arrive with nothing forming. Opening a bar for
+    it re-created a settled bucket as a one-tick ghost: ``series`` dropped the
+    real candle in the ghost's favour, and the next rollover filed the ghost
+    as a second closed candle on the same timestamp — a duplicate every
+    indicator downstream would silently average over.
+    """
+
+    def _builder(self):
+        from poa.feed.ticks import CandleBuilder, Tick
+
+        builder = CandleBuilder(period_seconds=60, symbol="EURUSD_otc")
+        builder.add(Tick("EURUSD_otc", 1786663200.0, 1.0))   # 10:00 bucket
+        builder.add(Tick("EURUSD_otc", 1786663230.0, 1.5))   # high
+        builder.add(Tick("EURUSD_otc", 1786663250.0, 1.2))
+        builder.advance(1786663261.0)  # another instrument's tick closes it
+        return builder
+
+    def test_the_settled_bar_keeps_its_shape(self):
+        from poa.feed.ticks import Tick
+
+        builder = self._builder()
+        assert len(builder.settled) == 1
+        builder.add(Tick("EURUSD_otc", 1786663255.0, 9.9))  # the straggler
+        series = builder.series()
+        assert len(series) == 1
+        bar = series.candles[0]
+        assert bar.high == 1.5 and bar.close == 1.2, "the real bar survives"
+        assert bar.complete
+
+    def test_no_duplicate_timestamp_after_the_next_rollover(self):
+        from poa.feed.ticks import Tick
+
+        builder = self._builder()
+        builder.add(Tick("EURUSD_otc", 1786663255.0, 9.9))   # straggler
+        builder.add(Tick("EURUSD_otc", 1786663265.0, 1.3))   # next bucket
+        stamps = [c.timestamp for c in builder.settled]
+        assert len(stamps) == len(set(stamps)), "one timestamp, one candle"
+
+    def test_a_tick_for_the_live_bucket_still_lands(self):
+        from poa.feed.ticks import Tick
+
+        builder = self._builder()
+        builder.add(Tick("EURUSD_otc", 1786663265.0, 1.3))
+        builder.add(Tick("EURUSD_otc", 1786663270.0, 1.4))
+        assert builder.forming is not None
+        assert builder.forming.high == 1.4
+
+
 class TestWhichChartIsOpen:
     """The panel must name the instrument the platform is drawing.
 

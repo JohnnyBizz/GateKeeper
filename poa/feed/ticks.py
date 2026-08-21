@@ -127,6 +127,15 @@ class CandleBuilder:
 
         start = self._bucket(tick.timestamp)
         if self._open is None:
+            # The past is settled here exactly as it is below. ``advance``
+            # closes a bar on any instrument's tick, so a straggler for the
+            # bucket just closed can arrive with no bar forming — and opening
+            # one for it re-created a settled bucket as a one-tick ghost.
+            # ``series`` would then drop the real bar in the ghost's favour,
+            # and the next rollover filed the ghost as a second closed candle
+            # on the same timestamp, which the indicators average over.
+            if self._closed and start <= self._closed[-1].timestamp:
+                return
             self._fill_silence(start)
             self._open = self._forming(start, tick.price, tick.price, tick.price)
             return
