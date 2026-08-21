@@ -158,12 +158,29 @@ class Journal:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source)"
         )
-        self._sweep_ghost_trades()
+        self._migrate_data()
 
     #: Journal data-migration version, tracked in SQLite's ``user_version``.
     #: Bumped when stored rows themselves have to change, as opposed to the
     #: schema gaining a column.
-    DATA_VERSION = 1
+    DATA_VERSION = 2
+
+    def _migrate_data(self) -> None:
+        """Run each data correction this file has not yet had, oldest first.
+
+        Called with the lock held, from ``_migrate``. Each step is a one-off
+        repair of rows a specific defect wrote; ``user_version`` records how
+        far this file has been brought, so a repair never reruns and never
+        touches rows written after its defect was fixed.
+        """
+        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
+        if version >= self.DATA_VERSION:
+            return
+        if version < 1:
+            self._sweep_ghost_trades()
+        if version < 2:
+            self._sweep_duplicate_rows()
+        self._connection.execute(f"PRAGMA user_version = {self.DATA_VERSION}")
 
     #: When the first build that stamps hand trades on this machine's clock
     #: was published. Every manual row written before it came from a build
@@ -192,9 +209,6 @@ class Journal:
 
         Runs once per journal file, tracked in ``user_version``.
         """
-        version = self._connection.execute("PRAGMA user_version").fetchone()[0]
-        if version >= self.DATA_VERSION:
-            return
         columns = {
             row["name"]
             for row in self._connection.execute("PRAGMA table_info(signals)")
@@ -203,19 +217,82 @@ class Journal:
         # recording itself, so it holds no ghosts — nothing to sweep, and a
         # DELETE naming columns it does not have would stop it opening at all.
         if not {"notes", "direction_confidence", "timestamp"} <= columns:
-            self._connection.execute(f"PRAGMA user_version = {self.DATA_VERSION}")
             return
         removed = self._connection.execute(
             "DELETE FROM signals WHERE notes = 'manual' "
             "AND direction_confidence = 0 AND timestamp < ?",
             (self.CLOCK_FIX_SHIPPED,),
         ).rowcount
-        self._connection.execute(f"PRAGMA user_version = {self.DATA_VERSION}")
         if removed:
             log.info(
                 "removed %d hand trade(s) the clock defect had stamped into "
                 "the wrong hour; they carried no score and were reappearing "
                 "in later sessions' reports",
+                removed,
+            )
+
+    #: How far apart two rows may sit and still be the same event written by
+    #: two processes. Both copies ran on one machine — one clock — so their
+    #: stamps differ only by polling phase, a second or two; hand trades carry
+    #: the broker's own stamp and land identical. A real re-arm of the same
+    #: setup is a new read bars later, and prints a new entry price besides.
+    DUPLICATE_WINDOW_SECONDS = 10.0
+
+    def _sweep_duplicate_rows(self) -> None:
+        """Remove the doubles written by two app copies sharing this journal.
+
+        Before the single-instance lock existed, nothing stopped a second
+        GateKeeper from opening the same journal, and on 2026-08-21 one did:
+        every call and every hand trade of the evening session was recorded
+        twice — 48 listed calls that were 24 reads, 20 hand trades that were
+        10, every rate in the report computed at double weight, and the
+        calibration record counting each real trade twice.
+
+        Two rows are the same event when they agree on everything a call *is*
+        — pair, direction, score, entry price, expiry, chart timeframe, data
+        source, and provenance — and were stamped within a few seconds of
+        each other. The outcome is deliberately not part of that identity:
+        the two copies settled independently, and on a borderline expiry they
+        could disagree (one FLAT, one LOSS); such a pair is still one event,
+        and the earlier row is the one kept. The id is a per-process UUID and
+        the payload embeds per-evaluation detail, so neither can serve as the
+        identity — the columns above are it.
+
+        Runs once per journal file; the instance lock keeps it from being
+        needed again.
+        """
+        columns = {
+            row["name"]
+            for row in self._connection.execute("PRAGMA table_info(signals)")
+        }
+        needed = {
+            "timestamp", "asset", "direction", "direction_confidence",
+            "price", "trade_duration", "chart_timeframe", "source", "notes",
+        }
+        if not needed <= columns:
+            return
+        removed = self._connection.execute(
+            "DELETE FROM signals WHERE rowid IN ("
+            " SELECT later.rowid FROM signals AS later"
+            " JOIN signals AS earlier ON earlier.rowid < later.rowid"
+            "  AND earlier.asset = later.asset"
+            "  AND earlier.direction = later.direction"
+            "  AND earlier.direction_confidence = later.direction_confidence"
+            "  AND COALESCE(earlier.price, -1) = COALESCE(later.price, -1)"
+            "  AND earlier.trade_duration = later.trade_duration"
+            "  AND earlier.chart_timeframe = later.chart_timeframe"
+            "  AND COALESCE(earlier.source, '') = COALESCE(later.source, '')"
+            "  AND COALESCE(earlier.notes, '') = COALESCE(later.notes, '')"
+            "  AND ABS(julianday(later.timestamp) - julianday(earlier.timestamp))"
+            "      * 86400.0 <= ?"
+            ")",
+            (self.DUPLICATE_WINDOW_SECONDS,),
+        ).rowcount
+        if removed:
+            log.info(
+                "removed %d duplicate row(s) written while two copies of the "
+                "app shared this journal; each remaining row now counts its "
+                "event once",
                 removed,
             )
 
@@ -579,7 +656,16 @@ class Journal:
             # journal; what it must not do is teach the score bands, because
             # the score it would teach them with is a zero standing in for
             # "unknown" — and this record outranks the replay and holds a veto.
-            "AND direction_confidence > 0"
+            "AND direction_confidence > 0 "
+            # And only trades somebody actually placed. Without this the query
+            # swept up the tool's own settled calls — every journalled setup
+            # with an outcome — and handed them back as "your settled trades".
+            # Twenty-eight of its own notional calls on one chart were enough
+            # to build a record marked from_real_trades, which is the one rank
+            # the gates allow to veto live setups — a privilege the gate's own
+            # comment reserves for trades that were placed precisely so the
+            # tool cannot silence itself on the strength of its own opinion.
+            "AND notes = 'manual'"
         )
         params: list[Any] = []
         for column, value in (

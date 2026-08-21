@@ -813,6 +813,91 @@ class TestTheVerdictFitsThePanel:
         assert roomy is panel.f_verdict
 
 
+class TestATrippedBrakeOwnsThePanel:
+    """The brake existed, the brake tripped, and the panel traded through it.
+
+    On 2026-08-21 the limit was four losses in a row. The fourth settled at
+    22:09 — and the signal card went on flashing calls, the entry inset went
+    on saying TAKE IT NOW, and the watchlist tabs stayed lit, because the
+    only thing the brake changed was a caption at the edge of the tally row.
+    Two more losses were chased through it. A limit set in advance is only
+    worth having if, at the moment it trips, it is the loudest thing on the
+    panel.
+    """
+
+    def _vm(self, losses=0):
+        from conftest import good_quality, pullback_trend
+        from poa.overlay.viewmodel import OverlayViewModel
+        from poa.risk import SessionStats
+        from poa.signals import GateSettings, SignalEngine, SignalRequest
+
+        series = pullback_trend(400, direction=1)
+        signal = SignalEngine().evaluate(SignalRequest(
+            series=series, asset="EUR/USD", chart_timeframe=60,
+            trade_duration=180, quality=good_quality(series),
+            settings=GateSettings(),
+        ))
+        assert signal.actionable  # the control: there is a call to suppress
+        vm = OverlayViewModel(session=SessionStats(), asset="EUR/USD",
+                              chart_timeframe=60, trade_duration=180,
+                              max_losses_in_a_row=4)
+        vm.signal = signal
+        vm.watchlist = [
+            {"asset": "GBP/USD OTC", "timeframe": 300, "expiry": 180,
+             "direction": "CALL", "score": 88.0, "actionable": True},
+            {"asset": "AUD/CHF OTC", "timeframe": 60, "expiry": 180,
+             "direction": "PUT", "score": 86.0, "actionable": True},
+        ]
+        for _ in range(losses):
+            vm.session.record(False)
+        return vm
+
+    def test_at_the_limit_every_act_now_cue_stands_down(self):
+        rendered = self._vm(losses=4).render()
+        verdict = rendered["verdict"]
+        assert verdict["direction_label"] == "STAND DOWN"
+        assert verdict["state"] == "PAUSED"
+        assert verdict["actionable"] is False
+        assert verdict["take_now"] == 0
+        assert rendered["entry"]["ready"] is False
+        assert rendered["entry"]["text"] == "STAND DOWN"
+        assert "4 losses in a row" in rendered["entry"]["detail"]
+        assert rendered["risk"]["paused"] is True
+
+    def test_the_watchlist_tabs_go_quiet_with_it(self):
+        rendered = self._vm(losses=4).render()
+        assert rendered["watchlist"]  # the tabs are still there...
+        for row in rendered["watchlist"]:
+            assert row["actionable"] is False  # ...but none of them is lit
+
+    def test_the_score_is_still_measured_and_shown(self):
+        # The brake stops the act-now cues, not the measurement: the score
+        # stays on the dial and the journal goes on recording.
+        rendered = self._vm(losses=4).render()
+        assert rendered["verdict"]["score"] is not None
+
+    def test_under_the_limit_nothing_changes(self):
+        rendered = self._vm(losses=3).render()
+        assert rendered["verdict"]["actionable"] is True
+        assert rendered["verdict"]["direction_label"] != "STAND DOWN"
+        assert any(row["actionable"] for row in rendered["watchlist"])
+
+    def test_a_recorded_win_releases_it(self):
+        vm = self._vm(losses=4)
+        vm.session.record(True)
+        rendered = vm.render()
+        assert rendered["verdict"]["actionable"] is True
+        assert rendered["risk"]["paused"] is False
+
+    def test_the_brake_defaults_on(self):
+        # Shipped at four in a row and ten percent down. Zero turns either
+        # off — but zero has to be chosen, not inherited.
+        from poa.config import DEFAULTS
+
+        assert DEFAULTS["risk"]["max_losses_in_a_row"] == 4
+        assert DEFAULTS["risk"]["max_daily_loss_percent"] == 10.0
+
+
 class TestTheCallFreshnessStrip:
     """How late into the call an entry made now would be — drawn only while a
     call is live, draining over the trade's own clock."""

@@ -71,6 +71,18 @@ class GateReport:
 # win rate can make an unreadable chart tradeable.
 NEVER_ADVISORY = frozenset({"data_quality"})
 
+# Gates the replay's own audit may never retire, on top of NEVER_ADVISORY.
+# Each of these rests on trades that actually settled at the platform's own
+# prices — evidence the replay does not have and cannot outvote. A replay
+# walks overlapping windows of whatever trend it was handed, so it will
+# happily report that the rule written *by the live record* blocked setups
+# that would have paid; letting that retire the rule would be the record
+# silencing itself. Retiring any of these takes a human reading FINDINGS.md,
+# not a resample.
+NEVER_AUTO_RETIRED = NEVER_ADVISORY | frozenset(
+    {"overheat", "measured_edge", "regime_record"}
+)
+
 
 @dataclass
 class GateSettings:
@@ -92,6 +104,21 @@ class GateSettings:
     #: unless argued out of it would make every such caller quietly agree to
     #: a product decision it never asked about. Zero disables it.
     min_shown_confidence: float = 0.0
+    #: Refuse a setup whose *direction score* is at or above this. Zero
+    #: disables it, and zero is the default here for the same reason as
+    #: ``min_shown_confidence``: the shipped config makes the product
+    #: decision, a bare ``GateSettings()`` does not smuggle it in.
+    #:
+    #: A ceiling on the score reads backwards until it is measured. Four
+    #: live sessions measured it — every call followed to expiry against the
+    #: platform's own prices — and in all four the 90-plus calls settled
+    #: below the calls beneath them: 14%, 31%, 42%, 21%, against 54%, 48%,
+    #: 44%, 65% just below. The score is at heart a trend detector,
+    #: and it reads highest when every component finally agrees — which is
+    #: the point at which the move it is reading has already run. The
+    #: top-scoring call is the most stretched moment of the move, not the
+    #: safest, and the record says so four sessions out of four.
+    overheat_ceiling: float = 0.0
     min_duration_compatibility: float = 65.0
     min_data_confidence: float = 70.0
     min_component_agreement: float = 0.55
@@ -121,6 +148,9 @@ class GateSettings:
             min_confidence=float(section.get("min_confidence", defaults.min_confidence)),
             min_shown_confidence=float(
                 section.get("min_shown_confidence", defaults.min_shown_confidence)
+            ),
+            overheat_ceiling=float(
+                section.get("overheat_ceiling", defaults.overheat_ceiling)
             ),
             min_duration_compatibility=float(
                 section.get(
@@ -352,6 +382,28 @@ def evaluate_gates(
             f"Setup score {score.total:.0f}/100 (minimum {settings.min_confidence:.0f})",
         )
     )
+
+    # 11. Overheat ceiling — the one gate that reads a very high score as the
+    # warning it has measurably been. The score peaks when every component
+    # finally agrees, and that is the most stretched moment of the move it is
+    # reading, not the safest: in all four live sessions measured, calls at
+    # ninety and above settled below the band beneath them.
+    if settings.overheat_ceiling > 0:
+        overheated = score.total >= settings.overheat_ceiling
+        if overheated:
+            detail = (
+                f"Setup score {score.total:.0f}/100 is at or above "
+                f"{settings.overheat_ceiling:.0f}. Calls this high have settled "
+                "below the band beneath them in every live session measured "
+                "(14%, 31%, 42%, 21% across four) — a score this unanimous "
+                "reads a move at its most stretched"
+            )
+        else:
+            detail = (
+                f"Setup score {score.total:.0f}/100 is under the overheat "
+                f"ceiling ({settings.overheat_ceiling:.0f})"
+            )
+        results.append(GateResult("overheat", not overheated, detail))
 
     # -- advisory checks (context only, never blocking) ---------------------
     results.append(

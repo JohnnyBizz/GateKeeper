@@ -302,6 +302,55 @@ class TestAlerts:
         assert working.sent  # the failure was contained
 
 
+class TestTheBrakeSilencesActNowAlerts:
+    """A tripped loss-limit brake stands the panel down — and a desktop
+    notification shouting BUY straight through it would be the tool losing
+    an argument with its own limit, out loud. The act-now kinds are
+    withheld while the brake holds; everything informational still flows.
+    """
+
+    def _manager(self, **kwargs):
+        notifier = RecordingNotifier()
+        settings = AlertSettings(desktop_notifications=False, sound=False, **kwargs)
+        return AlertManager(settings, [notifier]), notifier
+
+    def test_a_buy_alert_is_withheld_while_standing_down(self):
+        manager, notifier = self._manager(min_confidence=0, cooldown_seconds=0)
+        manager.stand_down = True
+        signal = make_signal(pullback_trend(400, direction=1))
+        manager.evaluate(signal, SignalTracker().update(signal))
+        assert not any(a.kind == "BUY_SIGNAL" for a in notifier.sent)
+
+    def test_a_watchlist_announcement_is_withheld_too(self):
+        manager, notifier = self._manager(min_confidence=0, cooldown_seconds=0)
+        manager.stand_down = True
+        assert manager.announce("WATCHLIST", "t", "b", 90.0, "GBP/USD") is None
+        assert notifier.sent == []
+
+    def test_an_invalidation_still_gets_through(self):
+        # The brake stops entries, not information: a setup dying is exactly
+        # what someone sitting on their hands needs to hear about.
+        manager, notifier = self._manager(min_confidence=0, cooldown_seconds=0)
+        tracker = SignalTracker()
+        directional = make_signal(pullback_trend(400, direction=1))
+        manager.evaluate(directional, tracker.update(directional))
+        notifier.sent.clear()
+
+        manager.stand_down = True
+        gone = make_signal(choppy_series(400))
+        manager.evaluate(gone, tracker.update(gone))
+        assert any(a.kind == "SETUP_INVALIDATED" for a in notifier.sent)
+
+    def test_release_lets_the_same_alert_out_at_once(self):
+        # A withheld alert must not burn the cooldown: the moment the brake
+        # releases, the next qualifying setup speaks immediately.
+        manager, notifier = self._manager(min_confidence=0, cooldown_seconds=600)
+        manager.stand_down = True
+        assert manager.announce("WATCHLIST", "t", "b", 90.0, "GBP/USD") is None
+        manager.stand_down = False
+        assert manager.announce("WATCHLIST", "t", "b", 90.0, "GBP/USD") is not None
+
+
 class TestACallKnowsWhenItOpened:
     """Timing is the half of an entry the score says nothing about.
 
