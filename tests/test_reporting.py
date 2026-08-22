@@ -570,3 +570,102 @@ class TestTheReportAsksTheChartQuestionSeparately:
         from poa.reporting.session import _edge_section
 
         assert _edge_section(_report([self._scored(90, "win")])) == []
+
+
+class TestTheLedgerPoolsEverySession:
+    """A session report judges one sitting, and one sitting is nearly always
+    too small to judge anything. The ledger is the part that grows: every
+    settled call the journal holds, split by expiry, score band, pair and
+    hour — the axes where FINDINGS.md's open questions get answered one
+    session at a time. Same honesty bar as everywhere else: under twenty
+    calls a row shows its count and no rate."""
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _settled(self, journal, id, *, minutes=0, asset="EUR/USD OTC",
+                 duration=30, shown=87.0, outcome="win", notes=None,
+                 source="feed"):
+        stamp = (START + timedelta(minutes=minutes)).isoformat()
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, "
+            "outcome, notes, source) VALUES (?, ?, ?, 5, ?, 'CALL', "
+            "'SETTLED', 86, 80, ?, 'STRONG', ?, ?, ?)",
+            (id, stamp, asset, duration, shown, outcome, notes, source),
+        )
+        journal._connection.commit()
+
+    def _filled(self, tmp_path):
+        journal = self._journal(tmp_path)
+        for i in range(25):
+            self._settled(journal, f"a{i}", minutes=i,
+                          outcome="win" if i % 2 == 0 else "loss")
+        for i in range(3):
+            self._settled(journal, f"b{i}", minutes=120 + i, duration=180,
+                          asset="AUD/CHF OTC", shown=76.0)
+        self._settled(journal, "m1", notes="manual")          # the user's
+        self._settled(journal, "s1", source="screen")         # another source
+        return journal
+
+    def test_it_pools_the_tools_own_calls_and_nothing_else(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger
+
+        journal = self._filled(tmp_path)
+        try:
+            ledger = collect_ledger(journal, source="feed")
+            assert ledger is not None
+            assert ledger["overall"][0].settled == 28  # not 30
+        finally:
+            journal.close()
+
+    def test_a_small_row_shows_its_count_and_no_rate(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger, ledger_lines
+
+        journal = self._filled(tmp_path)
+        try:
+            lines = "\n".join(ledger_lines(collect_ledger(journal, source="feed")))
+        finally:
+            journal.close()
+        three_min = next(l for l in lines.splitlines() if "3 MIN" in l)
+        assert "3 calls" in three_min
+        assert "%" not in three_min
+        thirty = next(l for l in lines.splitlines() if "30 SEC" in l)
+        assert "52.0%" in thirty and "(13W/12L)" in thirty
+
+    def test_it_splits_along_the_open_questions(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger
+
+        journal = self._filled(tmp_path)
+        try:
+            ledger = collect_ledger(journal, source="feed")
+        finally:
+            journal.close()
+        assert [r.label for r in ledger["expiry"]] == ["30 SEC", "3 MIN"]
+        assert "85-89" in [r.label for r in ledger["band"]]
+        assert ledger["pair"][0].label == "EUR/USD OTC"  # most called first
+        assert ledger["hour"][0].label == "09:00"
+
+    def test_an_empty_journal_writes_no_ledger_at_all(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger
+
+        journal = self._journal(tmp_path)
+        try:
+            assert collect_ledger(journal, source="feed") is None
+        finally:
+            journal.close()
+        assert "THE RECORD SO FAR" not in build_report(_report())
+
+    def test_collect_carries_it_into_the_written_report(self, tmp_path):
+        journal = self._filled(tmp_path)
+        try:
+            report = collect(journal, started=START, source="feed")
+        finally:
+            journal.close()
+        text = build_report(report)
+        assert "THE RECORD SO FAR" in text
+        assert "28 settled calls, every session" in text
+        assert "BY EXPIRY" in text and "BY HOUR (UTC)" in text

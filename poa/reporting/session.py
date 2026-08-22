@@ -35,6 +35,7 @@ from ..backtesting.stats import (
 )
 from ..logging_setup import get_logger
 from ..models import format_duration, utcnow
+from .ledger import collect_ledger, ledger_lines
 
 log = get_logger(__name__)
 
@@ -64,6 +65,10 @@ class SessionReport:
     retired: list[str] = field(default_factory=list)
     measurement: str = ""
     lesson: str = ""
+    # The pooled record across every session this journal holds, or None
+    # when nothing has ever settled. Built by ``collect`` from the whole
+    # journal, deliberately unscoped by this session's window.
+    ledger: dict[str, Any] | None = None
 
     # -- what the calls came to --------------------------------------------
 
@@ -209,6 +214,7 @@ def build_report(report: SessionReport) -> str:
     lines += _edge_section(report)
     lines += _manual_section(report)
     lines += _learning_section(report)
+    lines += _ledger_section(report)
     lines += _caveats_section(report)
 
     lines += ["", RULE, "Analysis only — not a trading recommendation.".center(WIDTH), RULE, ""]
@@ -548,6 +554,22 @@ def _learning_section(report: SessionReport) -> list[str]:
     return lines
 
 
+def _ledger_section(report: SessionReport) -> list[str]:
+    """The pooled record — the one part of the report that outgrows a session.
+
+    Absent entirely while the journal has nothing settled; a frame with no
+    numbers in it would be decoration.
+    """
+    if not report.ledger:
+        return []
+    total = report.ledger["overall"][0]
+    lines = _heading(
+        "THE RECORD SO FAR", f"{total.settled} settled calls, every session"
+    )
+    lines += ledger_lines(report.ledger)
+    return lines
+
+
 def _caveats_section(report: SessionReport) -> list[str]:
     lines = _heading("READ THIS BEFORE THE NUMBERS")
     lines += [
@@ -654,4 +676,8 @@ def collect(
         retired=[str(entry) for entry in retired],
         measurement=measurement,
         lesson=lesson,
+        # The one part of the report that is allowed to look past this
+        # session: the pooled record is where the open questions — expiry,
+        # pair, hour — accrete their answers one session at a time.
+        ledger=collect_ledger(journal, source=source),
     )
