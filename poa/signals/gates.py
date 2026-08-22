@@ -120,6 +120,21 @@ class GateSettings:
     #: here for the same reason as the floor: the shipped config makes the
     #: product decision, a bare ``GateSettings()`` does not smuggle it in.
     overheat_ceiling: float = 0.0
+    #: Stand down on a pair for this many minutes after one of this tool's
+    #: own calls on it settles as a loss. Measured over the three sessions
+    #: with row-level records before shipping: on the session that had the
+    #: chase pattern it removed five losses and one win (50.0% → 60.0%),
+    #: and it changed nothing on the sessions whose losses landed in one
+    #: minute across different pairs — never an improvement lost. The
+    #: cascade variant (stand down everywhere after clustered losses) was
+    #: measured too, *cost* winners, and did not ship. Zero disables.
+    loss_cooldown_minutes: float = 0.0
+    #: Refuse to call a chart whose live payout is under this fraction. At
+    #: a 72% payout the break-even is 58.1%, and no configuration measured
+    #: on this project has cleared that bar; at 92% it is 52.1%, which the
+    #: calls under the ceiling flirt with. Charts whose payout the source
+    #: does not know are never blocked by this. Zero disables.
+    min_payout: float = 0.0
     min_duration_compatibility: float = 65.0
     min_data_confidence: float = 70.0
     min_component_agreement: float = 0.55
@@ -153,6 +168,10 @@ class GateSettings:
             overheat_ceiling=float(
                 section.get("overheat_ceiling", defaults.overheat_ceiling)
             ),
+            loss_cooldown_minutes=float(
+                section.get("loss_cooldown_minutes", defaults.loss_cooldown_minutes)
+            ),
+            min_payout=float(section.get("min_payout", defaults.min_payout)),
             min_duration_compatibility=float(
                 section.get(
                     "min_duration_compatibility", defaults.min_duration_compatibility

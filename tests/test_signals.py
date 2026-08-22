@@ -51,6 +51,8 @@ def evaluate(
     chart_timeframe: int = 60,
     quality: DataQuality | None = None,
     settings: GateSettings | None = None,
+    last_loss_at=None,
+    payout=None,
 ):
     request = SignalRequest(
         series=series,
@@ -60,6 +62,8 @@ def evaluate(
         quality=quality or good_quality(series),
         available_durations=TRADE_DURATIONS,
         settings=settings or GateSettings(),
+        last_loss_at=last_loss_at,
+        payout=payout,
     )
     return SignalEngine().evaluate(request)
 
@@ -236,6 +240,135 @@ class TestTheOverheatCeiling:
         from poa.signals.gates import NEVER_AUTO_RETIRED
 
         assert {"measured_edge", "regime_record"} <= NEVER_AUTO_RETIRED
+
+
+class TestTheLossCooldown:
+    """The pair that just cost a trade is the pair most likely to be read
+    again out of pure momentum. Measured over the three sessions with
+    row-level records before shipping: a three-minute stand-down after a
+    losing call removed five losses and one win from the session with the
+    chase pattern (50.0% → 60.0%) and changed nothing on the others. The
+    cascade variant — stand down everywhere after clustered losses — was
+    measured too, cost winners, and deliberately did not ship.
+    """
+
+    def _series(self):
+        return pullback_trend(400, direction=1)
+
+    def test_a_fresh_loss_stands_the_pair_down(self):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        signal = evaluate(
+            self._series(),
+            settings=GateSettings(loss_cooldown_minutes=3),
+            last_loss_at=utcnow() - timedelta(seconds=60),
+        )
+        assert signal.direction is Direction.WAIT
+        assert "COOLING OFF" in signal.headline
+        assert "stood down" in signal.reason
+
+    def test_an_old_loss_does_not(self):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        signal = evaluate(
+            self._series(),
+            settings=GateSettings(loss_cooldown_minutes=3),
+            last_loss_at=utcnow() - timedelta(minutes=5),
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_no_recorded_loss_means_no_cooldown(self):
+        signal = evaluate(
+            self._series(), settings=GateSettings(loss_cooldown_minutes=3)
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_zero_disables_it_and_is_the_bare_default(self):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        assert GateSettings().loss_cooldown_minutes == 0.0
+        signal = evaluate(
+            self._series(),
+            settings=GateSettings(),
+            last_loss_at=utcnow() - timedelta(seconds=30),
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_a_future_stamped_loss_is_ignored(self):
+        # Clock skew must fail open: a stamp from the future proves the
+        # clocks disagree, not that a loss is coming.
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        signal = evaluate(
+            self._series(),
+            settings=GateSettings(loss_cooldown_minutes=3),
+            last_loss_at=utcnow() + timedelta(minutes=2),
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_the_shipped_config_turns_it_on(self):
+        from poa.config import DEFAULTS
+
+        section = DEFAULTS["signals"]
+        assert section["loss_cooldown_minutes"] == 3
+        assert GateSettings.from_config(section).loss_cooldown_minutes == 3.0
+
+
+class TestThePayoutFloor:
+    """Some charts are unwinnable before the first click: at a 72% payout a
+    trade must win 58.1% of the time to break even, and nothing measured on
+    this project has cleared that bar. The floor is arithmetic, not a
+    reading of the candles.
+    """
+
+    def _series(self):
+        return pullback_trend(400, direction=1)
+
+    def test_a_low_payout_chart_is_refused_with_the_arithmetic(self):
+        signal = evaluate(
+            self._series(),
+            settings=GateSettings(min_payout=0.80),
+            payout=0.72,
+        )
+        assert signal.direction is Direction.WAIT
+        assert "PAYOUT TOO LOW" in signal.headline
+        assert "58.1%" in signal.reason
+
+    def test_a_healthy_payout_passes(self):
+        signal = evaluate(
+            self._series(), settings=GateSettings(min_payout=0.80), payout=0.92
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_an_unknown_payout_never_blocks(self):
+        # The screen sources do not read the payout table; refusing every
+        # chart they show would silence them entirely.
+        signal = evaluate(
+            self._series(), settings=GateSettings(min_payout=0.80), payout=None
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_zero_disables_it_and_is_the_bare_default(self):
+        assert GateSettings().min_payout == 0.0
+        signal = evaluate(
+            self._series(), settings=GateSettings(), payout=0.50
+        )
+        assert signal.direction is Direction.CALL
+
+    def test_the_shipped_config_turns_it_on(self):
+        from poa.config import DEFAULTS
+
+        section = DEFAULTS["signals"]
+        assert section["min_payout"] == 0.80
+        assert GateSettings.from_config(section).min_payout == 0.80
 
 
 class TestDataQualityGate:

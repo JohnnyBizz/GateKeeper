@@ -2683,6 +2683,57 @@ class TestSweepingFastEnoughToMatter:
             app.shutdown()
 
 
+class TestTheEngineFeedsTheNewGates:
+    """The cooldown and the payout floor only work if the evaluation sites
+    actually hand them their inputs. The rules themselves are tested in
+    test_signals; this is the plumbing."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def test_a_journalled_loss_reaches_the_cooldown(self, tmp_path):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            engine = app.engine
+            assert engine._last_loss_for("AUD/CHF OTC") is None
+
+            stamp = (utcnow() - timedelta(minutes=1)).isoformat()
+            engine.journal._connection.execute(
+                "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+                "trade_duration, direction, state, direction_confidence, "
+                "duration_confidence, overall_confidence, setup_quality, "
+                "outcome, outcome_at, source) VALUES ('wl', ?, 'AUD/CHF OTC', "
+                "5, 30, 'CALL', 'SETTLED', 88, 80, 85, 'STRONG', 'loss', ?, ?)",
+                (stamp, stamp, getattr(engine.source, "name", None)),
+            )
+            engine.journal._connection.commit()
+            assert engine._last_loss_for("AUD/CHF OTC") is not None
+        finally:
+            app.shutdown()
+
+    def test_a_source_without_a_payout_table_abstains(self, tmp_path):
+        # The synthetic source reads no platform payout, so the floor must
+        # get None and stand aside rather than silencing every chart.
+        app = self._app(tmp_path)
+        try:
+            assert app.engine._payout_for("EUR/USD OTC") is None
+        finally:
+            app.shutdown()
+
+
 class TestLearningFromRealTrades:
     """The platform reports every trade it settles, with the direction, the
     fill, the expiry and the outcome. That is better evidence than the buttons

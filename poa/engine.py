@@ -287,6 +287,8 @@ class AnalysisEngine:
             entry_multiple=int(self.config.get("market.entry_timeframe_multiple", 1)),
             settings=self.gate_settings(),
             calibration=self._calibration_for(asset, chart_timeframe),
+            last_loss_at=self._last_loss_for(asset),
+            payout=self._payout_for(asset),
         )
 
         try:
@@ -426,6 +428,8 @@ class AnalysisEngine:
                         if calibration is not None
                         else self._calibration_for(asset, timeframe)
                     ),
+                    last_loss_at=self._last_loss_for(asset),
+                    payout=self._payout_for(asset),
                 )
             )
         except Exception as exc:  # pragma: no cover - defensive
@@ -486,6 +490,35 @@ class AnalysisEngine:
             if self._calibration_key != (asset, int(timeframe)):
                 return None
             return self._calibration
+
+    def _last_loss_for(self, asset: str) -> Any | None:
+        """When this pair's most recent call lost, for the loss cooldown.
+
+        Never allowed to break an evaluation: a journal hiccup means the
+        cooldown abstains, not that the chart goes unread.
+        """
+        try:
+            return self.journal.last_loss_at(
+                asset, source=getattr(self.source, "name", None)
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read the last loss for %s: %s", asset, exc)
+            return None
+
+    def _payout_for(self, asset: str) -> float | None:
+        """The platform's live payout for this chart, for the payout floor.
+
+        Only sources that read the platform's own payout table know this;
+        the rest return None and the floor abstains rather than guessing.
+        """
+        reader = getattr(self.source, "payout_for", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(asset)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read the payout for %s: %s", asset, exc)
+            return None
 
     def _detect_chart_change(
         self, series: Series, asset: str | None = None, timeframe: int | None = None

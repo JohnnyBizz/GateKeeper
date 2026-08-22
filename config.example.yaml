@@ -149,6 +149,17 @@ signals:
                                   # The score maxes out when every component
                                   # agrees, and that is the most stretched
                                   # moment of the move, not the safest. 0 = off.
+  loss_cooldown_minutes: 3        # after one of the tool's own calls on a
+                                  # pair loses, stand that pair down this
+                                  # long. Measured: removed five losses and
+                                  # one win from the session that had the
+                                  # chase pattern, changed nothing elsewhere.
+                                  # 0 = off.
+  min_payout: 0.80                # refuse charts paying under this fraction.
+                                  # At 72% payout break-even is 58.1% — a bar
+                                  # nothing measured here has cleared. At 92%
+                                  # it is 52.1%. Unknown payouts never block.
+                                  # 0 = off.
   min_duration_compatibility: 65  # duration fit needed before a direction is shown
   min_data_confidence: 70         # chart-reading confidence needed to analyse
 

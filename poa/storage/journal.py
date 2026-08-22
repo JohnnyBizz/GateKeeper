@@ -296,6 +296,41 @@ class Journal:
                 removed,
             )
 
+    def last_loss_at(
+        self,
+        asset: str,
+        source: str | None = None,
+        within_minutes: float = 15.0,
+    ) -> datetime | None:
+        """When this pair's most recent losing call settled, if recently.
+
+        Feeds the loss cooldown, so it is deliberately narrow: the tool's own
+        calls only — a manual row is the user's trade, not this tool's read —
+        and only losses this data source produced, within a short horizon so
+        the query stays cheap and an old loss cannot haunt a new session.
+        Pair-level on purpose, matching how the rule was measured: the same
+        pair on another timeframe is the same market that just cost a trade.
+        """
+        cutoff = (utcnow() - timedelta(minutes=within_minutes)).isoformat()
+        query = (
+            "SELECT MAX(outcome_at) FROM signals WHERE asset = ? "
+            "AND outcome = 'loss' AND outcome_at > ? "
+            "AND (notes IS NULL OR notes != 'manual')"
+        )
+        params: list[Any] = [asset, cutoff]
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
+        with self._lock:
+            row = self._connection.execute(query, params).fetchone()
+        stamp = row[0] if row else None
+        if not stamp:
+            return None
+        try:
+            return datetime.fromisoformat(stamp)
+        except ValueError:
+            return None
+
     def close(self) -> None:
         with self._lock:
             self._connection.close()

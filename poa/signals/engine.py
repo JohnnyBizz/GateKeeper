@@ -57,6 +57,14 @@ class SignalRequest:
     # chart's own history. Absent during the replay itself — the record cannot
     # be an input to the trades that build it — and absent until one has run.
     calibration: Any | None = None
+    # When this pair's most recent call by this tool settled as a loss, if
+    # the caller checked. Feeds the loss cooldown; None means no recent loss
+    # or nobody asked, and either way the cooldown abstains.
+    last_loss_at: datetime | None = None
+    # The platform's live payout for this chart as a fraction (0.92), or None
+    # when the source does not know it. Feeds the payout floor, which never
+    # blocks on an unknown payout.
+    payout: float | None = None
 
 
 @dataclass
@@ -381,6 +389,55 @@ class SignalEngine:
                     "highest when every component finally agrees, and that "
                     "is the most stretched moment of the move it is reading "
                     "— not the safest."
+                )
+
+        # A pair that has just cost a trade is the pair most likely to be
+        # read again out of pure momentum. Measured before shipping, over
+        # the three sessions with row-level records: standing down for
+        # three minutes after a losing call removed five losses and one
+        # win from the session that had the chase pattern (50.0% → 60.0%)
+        # and changed nothing on the others. The cascade variant — stand
+        # down everywhere after clustered losses — was measured too, cost
+        # winners, and did not ship.
+        if signal.direction in (Direction.CALL, Direction.PUT):
+            cooldown = float(
+                getattr(request.settings, "loss_cooldown_minutes", 0.0)
+            )
+            lost_at = request.last_loss_at
+            if cooldown > 0 and lost_at is not None:
+                age = (now - lost_at).total_seconds() / 60.0
+                if 0 <= age < cooldown:
+                    remaining = max(1, round(cooldown - age))
+                    signal.headline = f"{candidate.value} SETUP — COOLING OFF"
+                    signal.direction = Direction.WAIT
+                    signal.reason = (
+                        f"This pair's last call lost "
+                        f"{max(0, round(age))} minute(s) ago, so it is "
+                        f"stood down for {remaining} more. Re-reading the "
+                        "pair that just cost a trade is how one loss "
+                        "becomes three; on the measured sessions this "
+                        "pause removed five losses for every win it cost."
+                    )
+
+        # Some charts are unwinnable before the first click. At a 72%
+        # payout the break-even is 58.1%, and nothing measured on this
+        # project has cleared that bar; at 92% it is 52.1%. The floor is
+        # arithmetic, not a reading of the candles — which is why it can
+        # ship without a replication count.
+        if signal.direction in (Direction.CALL, Direction.PUT):
+            floor_payout = float(getattr(request.settings, "min_payout", 0.0))
+            payout = request.payout
+            if floor_payout > 0 and payout is not None and payout < floor_payout:
+                breakeven = 100.0 / (1.0 + payout)
+                signal.headline = f"{candidate.value} SETUP — PAYOUT TOO LOW"
+                signal.direction = Direction.WAIT
+                signal.reason = (
+                    f"This chart pays {payout * 100:.0f}%, under your "
+                    f"{floor_payout * 100:.0f}% floor. At that payout a "
+                    f"trade must win {breakeven:.1f}% of the time just to "
+                    "break even, and no configuration measured here has "
+                    "cleared that bar. The same setup on a chart paying "
+                    "90%+ is a different game."
                 )
 
         if signal.direction in (Direction.CALL, Direction.PUT):
