@@ -276,6 +276,20 @@ DEFAULTS: dict[str, Any] = {
         # moment the move it is reading has already mostly run. Set 0 to
         # turn the ceiling off.
         "overheat_ceiling": 90,
+        # Stand down on a pair for this many minutes after one of the tool's
+        # own calls on it settles as a loss. Measured before shipping over
+        # the three sessions with row-level records: on the session with the
+        # chase pattern it removed five losses and one win (50.0% -> 60.0%)
+        # and changed nothing on the others. The cascade variant (stand down
+        # everywhere after clustered losses) was measured too, cost winners,
+        # and did not ship. Set 0 to turn it off.
+        "loss_cooldown_minutes": 3,
+        # Refuse to call charts paying under this fraction. Arithmetic, not
+        # a chart reading: at a 72% payout break-even is 58.1% and nothing
+        # measured here has ever cleared that bar; at 92% it is 52.1%.
+        # Charts whose payout the source does not know are never blocked.
+        # Set 0 to turn it off.
+        "min_payout": 0.80,
         "min_duration_compatibility": 65,
         "min_data_confidence": 70,
         # Structural gates. Every one of these must pass before a direction is

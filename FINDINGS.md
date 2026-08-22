@@ -651,3 +651,63 @@ hover around break-even at *92%*. At 72% every band measured so far is
 underwater before the first click. Which pairs are trading at which payout
 is part of the trade, not a detail: the panel shows the live payout per
 chart, and the report prints the break-even it implies.
+
+---
+
+## 2026-08-22 — three candidate rules measured against the recorded sessions; one shipped, one rejected for cause
+
+The mandate is the win rate. The only honest lever is refusing the calls
+that measurably lose, so three stand-down rules were replayed against the
+sessions with row-level call records (15:05, 21:57 deduplicated, 23:34 —
+the two doubled sessions collapsed first), each applied causally at minute
+resolution on top of the shipped ceiling (shown < 90):
+
+| rule | 15:05 | 21:57 | 23:34 |
+|---|---|---|---|
+| ceiling only (baseline) | 13W/13L — 50.0% | 11W/6L — 64.7% | 0W/2L (n=2) |
+| + pair cooldown, 2 min | 52.2% | 64.7% | n=2 |
+| **+ pair cooldown, 3 min** | **12W/8L — 60.0%** | **64.7%** | n=2 |
+| + pair cooldown, 5 min | 60.0% (same calls) | 64.7% | n=2 |
+| + cascade guard (all pairs) | **44.4% — worse** | 64.7% | n=2 |
+| + pair kill after 2 losses | 50.0% | 64.7% | n=2 |
+
+**Shipped: the three-minute pair cooldown** (``loss_cooldown_minutes: 3``).
+On the session that had the chase pattern it removed five losses and one
+win; on the session whose losses landed in a single minute across
+different pairs it removed nothing and cost nothing; the third session is
+two calls and decides nothing. Keyed to the tool's *own* settled losing
+calls on the pair, any timeframe, same source; manual trades do not
+trigger it (the cooldown answers for the tool's mistakes, not the user's).
+
+**Rejected for cause: the cascade guard.** Standing every pair down after
+clustered losses blocked the winning recovery that followed the 15:12
+cluster and dragged the session below its own baseline. It felt like the
+obviously-right rule and measurement said no — which is the whole reason
+measurement comes first.
+
+**Also shipped, on arithmetic rather than replication: the payout floor**
+(``min_payout: 0.80``). The 23:34 session settled at a 72% payout, where
+break-even is 58.1% — a bar nothing measured on this project has cleared.
+At 92% it is 52.1%. A rule that says "do not play unwinnable tables" needs
+no sample size; charts whose payout the source cannot read are never
+blocked by it.
+
+Read honestly, all in-sample: these rules were *selected* on the same
+three sessions they were scored on, and the combined shipped state —
+ceiling plus cooldown — pools to 23W/14L, 62.2%, roughly [46, 76] at 95%
+over thirty-seven calls. Above break-even on its face, chosen on the data
+that produced it, and therefore worth exactly one thing: a prediction.
+The next clean sessions are out-of-sample; if the rate holds there, it is
+real. That is the falsifiable claim this entry stakes.
+
+### Left open, in order of expected value
+
+1. **Tick microstructure.** The feed delivers raw ticks; the engine reads
+   only closed candles, so the final seconds before an entry — velocity,
+   direction runs — are information the tool receives and discards. The
+   next measurable candidate, and the only untouched input.
+2. **The cross-session ledger.** Reports are per-session; nothing pools
+   the whole journal by pair, hour, payout and band. That is where a real
+   edge would show, or be honestly ruled out.
+3. Per-moment weighting for calibration, if the 23:34 session's
+   twenty-one-fold click bursts turn out to be real trades.

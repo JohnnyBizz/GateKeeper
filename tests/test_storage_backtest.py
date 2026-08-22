@@ -1946,6 +1946,117 @@ class TestGhostTradesAreSweptOnce:
             reopened.close()
 
 
+class TestThePairsLastLossIsOnRecord:
+    """Feeds the loss cooldown: when did this pair's most recent call by
+    this tool settle as a loss? Narrow on purpose — the tool's own calls
+    only, this source only, recent only — because the answer stands a pair
+    down, and standing a pair down on someone else's loss (or last week's)
+    would be the cooldown misfiring."""
+
+    def _journal(self, tmp_path):
+        from poa.storage.journal import Journal
+
+        return Journal(str(tmp_path / "j.db"))
+
+    def _settled(
+        self,
+        journal,
+        id,
+        outcome_at,
+        *,
+        asset="AUDCHF_otc",
+        outcome="loss",
+        notes=None,
+        source="feed",
+    ):
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, "
+            "outcome, outcome_at, notes, source) VALUES (?, ?, ?, 5, 30, "
+            "'CALL', 'SETTLED', 88, 80, 85, 'STRONG', ?, ?, ?, ?)",
+            (id, outcome_at, asset, outcome, outcome_at, notes, source),
+        )
+        journal._connection.commit()
+
+    def _minutes_ago(self, minutes):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        return (utcnow() - timedelta(minutes=minutes)).isoformat()
+
+    def test_a_recent_loss_is_found(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            stamp = self._minutes_ago(1)
+            self._settled(journal, "l1", stamp)
+            found = journal.last_loss_at("AUDCHF_otc", source="feed")
+            assert found is not None and found.isoformat() == stamp
+        finally:
+            journal.close()
+
+    def test_the_newest_loss_wins(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "old", self._minutes_ago(10))
+            newest = self._minutes_ago(2)
+            self._settled(journal, "new", newest)
+            found = journal.last_loss_at("AUDCHF_otc", source="feed")
+            assert found is not None and found.isoformat() == newest
+        finally:
+            journal.close()
+
+    def test_a_win_is_not_a_loss(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "w1", self._minutes_ago(1), outcome="win")
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_the_users_own_losing_trade_does_not_stand_the_tool_down(self, tmp_path):
+        # A manual row is the user's trade, not this tool's read. The
+        # cooldown answers for the tool's mistakes, not the user's.
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "m1", self._minutes_ago(1), notes="manual")
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_another_pair_is_another_market(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "e1", self._minutes_ago(1), asset="EURUSD_otc")
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_another_source_s_loss_is_not_this_one_s(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "s1", self._minutes_ago(1), source="screen")
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_an_old_loss_has_expired(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "o1", self._minutes_ago(30))
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_an_empty_journal_answers_none(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+
 class TestDoubledRowsAreSweptOnce:
     """Two app copies sharing one journal — which nothing prevented before
     the single-instance lock — recorded the evening session of 2026-08-21
