@@ -433,6 +433,12 @@ class TestMeasuringTheEngineOnItsOwnChart:
         assert tiny.win_rate == 100.0
         assert not tiny.meaningful
         assert "too few to read" in tiny.summary()
+        # And the number itself is withheld, not caveated: a session lost
+        # real money on a call taken beside a replayed 100% over three
+        # setups, with the caveat printed right after it. The 100% is
+        # louder than anything printed after it.
+        assert "100" not in tiny.summary()
+        assert "3W" not in tiny.summary()
 
     def test_it_splits_by_direction(self):
         """All-calls-right on a rising chart is the trend, not an edge."""

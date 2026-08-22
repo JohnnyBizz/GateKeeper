@@ -165,14 +165,27 @@ class ProofResult:
                     "the gates are tightening or loosening toward them."
                 )
             return f"{line} Either a quiet stretch, or nothing here to trade."
+        # Below the meaningful sample no rate is printed at all — not greyed,
+        # not caveated, absent. "3W/0L — 100% (too few to read)" was shipped
+        # for a while on the theory that the caveat neutralised the number;
+        # then a session lost real money on a call taken beside a replayed
+        # 100% over three setups. The 100% is louder than any caveat printed
+        # after it, and this panel's own rule already knew that: a green 100%
+        # over three trades is the most misleading thing it could paint.
+        # Withholding the colour but shipping the number was half a rule.
+        if not self.meaningful:
+            return (
+                f"Replayed {self.bars} bars: {self.settled} setup"
+                f"{'' if self.settled == 1 else 's'} settled at "
+                f"{format_duration(self.trade_duration)} — too few to read a "
+                f"rate from ({MEANINGFUL_TRADES} needed before one is shown)"
+            )
         rate = self.win_rate or 0.0
         line = (
             f"Replayed {self.bars} bars: {self.settled} setups, "
             f"{self.wins}W/{self.losses}L — {rate:.0f}% at "
             f"{format_duration(self.trade_duration)}"
         )
-        if not self.meaningful:
-            return line + f" (only {self.settled}, too few to read)"
         edge = self.edge or 0.0
         return line + f", {edge:+.0f} pts vs {self.breakeven:.0f}% break-even"
 
