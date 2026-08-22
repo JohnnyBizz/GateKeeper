@@ -590,3 +590,64 @@ underneath; what stops is every cue that says act.
 * The horizon question stands: over 30 seconds this market has measured as
   a coin toss ungated. Longer expiries and conditioning on something that
   is not price shape remain the two unplayed cards.
+
+---
+
+## 2026-08-21 — the ceiling missed its number, and the miss showed up within the hour
+
+**Session:** 23:34–23:42 UTC, seven minutes, five pairs, first session on the
+locked build. The lock and the sweep held — no doubled calls, each listed
+once. And seven of the nine calls the session made were shown at ninety or
+above, on the build whose whole point was refusing them.
+
+### The wrong number, again
+
+The ceiling shipped capping the internal *direction* score. The panel, the
+session reports, and all four sessions of band evidence use the *shown*
+number — direction and duration combined (six-tenths direction, four-tenths
+duration, capped at the weaker plus twelve). Direction 89 with duration 98
+shows as 93 and sails under a direction-score ceiling of 90. That is not a
+new kind of mistake: the config's own comment on the floor documents the
+same wrong-number error from an earlier change — "gates the direction score
+rather than the displayed number" — made once before, and now made again on
+the ceiling by the same author in the same week.
+
+Fixed the same way the floor was fixed: the ceiling now binds
+``overall_confidence``, enforced in the signal engine directly beside the
+shown floor, with a regression test pinned to the live escape's exact shape
+(direction 89.5, duration 98.0, shown 92.9 — refused). The gate named
+"overheat" is removed rather than left as a decoy: the replay's audit could
+only ever have misjudged a rule it cannot measure.
+
+The session's own rates decide nothing — nine calls is under the report's
+own twenty-call floor, and it says so on the page. What the session was is
+a functional test the ceiling failed, caught on the first run.
+
+### Sixty-six "hand trades" in seven minutes
+
+The other anomaly: 66 recorded trades, with one minute's winners listed
+twenty-one times and the score rising mid-run (66 ×4, then 85 ×21) as the
+read strengthened. Two stories fit: rapid-fire real deals — the platform
+does allow a button to be pressed every couple of seconds, and the
+multiplicities track the session's emotional arc rather than its age — or
+the platform re-mentioning already-settled deals in later batches. The
+report cannot tell them apart, because the one field that could — the
+platform's own deal id — was being parsed away.
+
+Fixed forward rather than guessed at: the deal id now rides through the
+parser, and collection refuses an id it has already filed. Two real deals
+alike in everything but id both count; a deal without an id is never
+refused, because there is nothing safe to refuse it by. **The next session
+decides the question:** if the multiplicity vanishes under the guard while
+the trading felt normal, it was re-delivery; if it persists, it was real
+clicking — and real clicking at that rate puts one market moment into the
+calibration record at twenty-one-fold weight, which is its own open
+question (per-moment weighting) for a calmer evening.
+
+### A payout note worth keeping
+
+This session settled at a 72% payout — break-even 58.1%. The measured bands
+hover around break-even at *92%*. At 72% every band measured so far is
+underwater before the first click. Which pairs are trading at which payout
+is part of the trade, not a detail: the panel shows the live payout per
+chart, and the report prints the break-even it implies.

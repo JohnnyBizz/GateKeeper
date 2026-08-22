@@ -357,6 +357,32 @@ class SignalEngine:
                     "what this is judged on."
                 )
 
+        # The ceiling is on the same number as the floor, for the same
+        # reason — and because it was *measured* on that number: the score
+        # bands in every session report band the shown reading. In all four
+        # live sessions the calls shown at ninety or above settled below the
+        # calls just beneath them (14%, 31%, 42%, 21% across four). An
+        # earlier version capped the internal direction score instead — the
+        # wrong-number mistake this project had already made once with the
+        # floor — and within the hour a session showed seven 90-plus calls
+        # sailing under it, direction in the eighties, duration lifting the
+        # shown number over the top.
+        if signal.direction in (Direction.CALL, Direction.PUT):
+            ceiling = getattr(request.settings, "overheat_ceiling", 0.0)
+            shown = signal.overall_confidence
+            if ceiling and shown >= ceiling:
+                signal.headline = f"{candidate.value} SETUP — OVERHEATED"
+                signal.direction = Direction.WAIT
+                signal.reason = (
+                    f"Reads {shown:.0f}/100, at or above the {ceiling:.0f} "
+                    "ceiling. In every live session measured, calls shown "
+                    "this high settled below the band beneath them (14%, "
+                    "31%, 42%, 21% across four sessions). The score reads "
+                    "highest when every component finally agrees, and that "
+                    "is the most stretched moment of the move it is reading "
+                    "— not the safest."
+                )
+
         if signal.direction in (Direction.CALL, Direction.PUT):
             signal.expires_at = now + _timedelta(request.trade_duration)
 

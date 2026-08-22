@@ -1440,11 +1440,11 @@ class TestTheReplayCannotRetireTheRealRecordsGates:
             monkeypatch.setattr(app.config, "save", lambda *a, **k: None)
             monkeypatch.setattr(app, "_run_engine_cycle", lambda: None)
             app._retire_costly_gates(
-                self._Report("overheat", "measured_edge", "momentum")
+                self._Report("measured_edge", "regime_record", "momentum")
             )
             retired = set(app.config.get("signals.advisory_gates", []) or [])
             assert "momentum" in retired
-            assert "overheat" not in retired
+            assert "regime_record" not in retired
             assert "measured_edge" not in retired
         finally:
             app.shutdown()
@@ -1458,7 +1458,7 @@ class TestTheReplayCannotRetireTheRealRecordsGates:
             monkeypatch.setattr(
                 app.config, "save", lambda *a, **k: saved.append(True)
             )
-            app._retire_costly_gates(self._Report("overheat", "regime_record"))
+            app._retire_costly_gates(self._Report("measured_edge", "regime_record"))
             assert not app.config.get("signals.advisory_gates", [])
             assert not saved
             assert app.vm.retired == []
@@ -2779,6 +2779,54 @@ class TestLearningFromRealTrades:
             # And nothing was filed against the chart that merely happened to
             # be on screen.
             assert self._filed(app) == []
+        finally:
+            app.shutdown()
+
+    def test_a_deal_the_platform_mentions_twice_is_filed_once(self, tmp_path):
+        """A settlement re-sent — the same deal id in a later batch, or a
+        batch repeating history — must not count twice: every doubled row
+        goes at double weight into the record that holds a veto over live
+        setups. Keyed on the platform's own id and nothing else."""
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "PUT")
+            deal = {**self._trade(), "id": "deal-7712"}
+            app.engine.source.take_settled = lambda: [deal]
+            app._collect_real_trades()
+            app.engine.source.take_settled = lambda: [dict(deal)]
+            app._collect_real_trades()
+            assert len(self._filed(app)) == 1
+            assert app.vm.session.total == 1
+        finally:
+            app.shutdown()
+
+    def test_two_real_deals_alike_in_everything_but_id_both_count(self, tmp_path):
+        """The same button pressed twice in a second produces two deals that
+        agree on every visible field. Only the id tells them apart, which is
+        why the id is the only key allowed to refuse one."""
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "PUT")
+            app.engine.source.take_settled = lambda: [
+                {**self._trade(), "id": "deal-1"},
+                {**self._trade(), "id": "deal-2"},
+            ]
+            app._collect_real_trades()
+            assert len(self._filed(app)) == 2
+        finally:
+            app.shutdown()
+
+    def test_a_deal_without_an_id_is_never_refused(self, tmp_path):
+        # There is nothing safe to refuse it by, so it is recorded as it
+        # arrives — twice if it arrives twice.
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "PUT")
+            app.engine.source.take_settled = lambda: [self._trade()]
+            app._collect_real_trades()
+            app.engine.source.take_settled = lambda: [self._trade()]
+            app._collect_real_trades()
+            assert len(self._filed(app)) == 2
         finally:
             app.shutdown()
 

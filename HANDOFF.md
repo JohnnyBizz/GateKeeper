@@ -19,10 +19,13 @@ it was about to do next.
 | Tests | **1296 passing, 0 failing** (verified) |
 | Python | 3.11 |
 
-The working branch carries the calibration-provenance fix and the
-2026-08-21 evening's four changes (single-instance lock, duplicate-row
-sweep, overheat ceiling, brake stand-down — see FINDINGS.md's last entry),
-awaiting a merge.
+The 2026-08-21 evening shipped in three merges: the calibration-provenance
+fix plus four changes (single-instance lock, duplicate-row sweep, overheat
+ceiling, brake stand-down), a Windows lock-byte fix the new CI step caught,
+and — after the first locked session showed seven 90-plus calls sailing
+under it — the ceiling moved onto the *shown* number beside the shown
+floor, with a deal-id guard on settled-trade collection. FINDINGS.md's last
+two entries have the numbers and the reasoning.
 
 ### Setting up a fresh checkout
 

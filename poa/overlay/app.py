@@ -223,6 +223,10 @@ class OverlayApp:
         # The platform's deal clock against this one. Zero until a settled
         # trade gives something to measure it from.
         self._deal_clock_seconds: float = 0.0
+        # Deal ids already filed, so a settlement the platform mentions twice
+        # is recorded once. Session-scoped: the journal is the cross-session
+        # memory, and this only has to survive as long as re-sends can.
+        self._settled_seen: set[Any] = set()
 
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
@@ -1770,6 +1774,21 @@ class OverlayApp:
         offset = self._deal_clock_offset(trades)
 
         for trade in trades:
+            # One deal, one row, however many times the platform mentions it.
+            # Keyed on the platform's own deal id and nothing else: two real
+            # deals can agree on every visible field — the same button
+            # pressed twice in a second does exactly that — so any looser key
+            # would eat real trades. A deal without an id is recorded as it
+            # arrives, because there is nothing safe to refuse it by.
+            deal_id = trade.get("id")
+            if deal_id is not None:
+                if deal_id in self._settled_seen:
+                    log.info(
+                        "ignoring a settled deal the platform re-sent (%s)",
+                        deal_id,
+                    )
+                    continue
+                self._settled_seen.add(deal_id)
             self.vm.session.record(won=trade["won"])
             self.vm.session.adjust(wins=int(trade["won"]), losses=int(not trade["won"]))
             asset = display_symbol(trade["asset"])
