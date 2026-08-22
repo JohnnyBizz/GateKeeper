@@ -1011,6 +1011,7 @@ class OverlayApp:
         chart to score it.
         """
         source = getattr(self.engine.source, "name", None)
+        settled_assets: set[str] = set()
         for row in rows:
             signal = row.get("_signal")
             asset = str(row.get("asset") or "")
@@ -1027,8 +1028,36 @@ class OverlayApp:
                     # sweep happens to have read.
                     price_at=getattr(series, "price_at", None),
                 )
+                settled_assets.add(asset)
             except Exception as exc:  # pragma: no cover - defensive
                 log.debug("could not settle %s: %s", asset, exc)
+
+        # Charts that left the sweep still owe their pending calls an answer.
+        # The platform dropping a tab used to strand that chart's open calls
+        # as UNSETTLED forever — two thirty-second USD/BDT calls sat eleven
+        # minutes past expiry in one report — because no price authority ever
+        # visited that asset again. The last sweep of a chart kept its
+        # candles; those answer any expiry they cover, and the journal's own
+        # lateness guard voids what they cannot answer once the grace passes.
+        # Either way the row stops pretending to be open.
+        for cached in list(self._read_was.values()):
+            asset = str(cached.get("asset") or "")
+            signal = cached.get("_signal")
+            if not asset or asset in settled_assets:
+                continue
+            if signal is None or signal.price is None:
+                continue
+            series = cached.get("_series")
+            try:
+                self.engine.journal.resolve_outcomes(
+                    float(signal.price),
+                    source=source,
+                    asset=asset,
+                    price_at=getattr(series, "price_at", None),
+                )
+                settled_assets.add(asset)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.debug("could not settle the dropped chart %s: %s", asset, exc)
 
     def _announce_watchlist(self, rows: Any) -> None:
         """Say something when a chart nobody is looking at has a setup.

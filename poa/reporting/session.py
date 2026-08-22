@@ -305,7 +305,9 @@ def _calls_section(report: SessionReport) -> list[str]:
             f"{_clock(call.get('timestamp')):<6}"
             f"{str(call.get('asset', ''))[:13]:<14}"
             f"{str(call.get('direction', '')):<6}"
-            f"{float(call.get('overall_confidence') or 0):>6.0f}"
+            # Truncated, never rounded: an 89.6 under the 90 ceiling printed
+            # as "90" is a number the gates would have refused.
+            f"{int(float(call.get('overall_confidence') or 0)):>6}"
             f"{format_duration(int(call.get('trade_duration') or 0)):>9}"
             f"{(f'{entry:.5f}' if isinstance(entry, (int, float)) else '--'):>11}"
             f"{outcome:>10}"
@@ -518,7 +520,7 @@ def _manual_section(report: SessionReport) -> list[str]:
             f"{_clock(trade.get('timestamp')):<6}"
             f"{str(trade.get('asset', ''))[:13]:<14}"
             f"{str(trade.get('direction', '')):<6}"
-            f"{(f'{score:.0f}' if score > 0 else '—'):>6}"
+            f"{(f'{int(score)}' if score > 0 else '—'):>6}"
             f"{str(trade.get('outcome') or '').upper():>10}"
         )
     return lines

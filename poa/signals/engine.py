@@ -358,7 +358,7 @@ class SignalEngine:
                 signal.headline = f"{candidate.value} SETUP — BELOW YOUR MINIMUM"
                 signal.direction = Direction.WAIT
                 signal.reason = (
-                    f"Reads {shown:.0f}/100 overall, under the {floor:.0f} you "
+                    f"Reads {int(shown)}/100 overall, under the {floor:.0f} you "
                     f"set. Direction scores {direction_confidence:.0f} and the "
                     f"{duration.selected_label.lower()} expiration scores "
                     f"{duration.selected_score:.0f}; the combined reading is "
@@ -382,7 +382,7 @@ class SignalEngine:
                 signal.headline = f"{candidate.value} SETUP — OVERHEATED"
                 signal.direction = Direction.WAIT
                 signal.reason = (
-                    f"Reads {shown:.0f}/100, at or above the {ceiling:.0f} "
+                    f"Reads {int(shown)}/100, at or above the {ceiling:.0f} "
                     "ceiling. In every live session measured, calls shown "
                     "this high settled below the band beneath them (14%, "
                     "31%, 42%, 21% across four sessions). The score reads "

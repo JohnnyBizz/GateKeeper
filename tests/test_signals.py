@@ -207,7 +207,9 @@ class TestTheOverheatCeiling:
         # on the panel in its own words, with the numbers that earned it.
         refused = self._evaluate(ceiling=90.0)
         assert "14%, 31%, 42%, 21%" in refused.reason
-        assert "Reads 93/100" in refused.reason
+        # Truncated, not rounded: the shown 92.9 prints as 92, because a
+        # printed number must never sit above the one the gate judged.
+        assert "Reads 92/100" in refused.reason
         assert "at or above the 90" in refused.reason
 
     def test_zero_disables_it_and_is_the_bare_default(self):
