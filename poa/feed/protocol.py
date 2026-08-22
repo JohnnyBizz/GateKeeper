@@ -364,6 +364,11 @@ def parse_settled_trade(payload: Any) -> list[dict[str, Any]]:
         end = deal.get("closeTimestamp")
         settled.append(
             {
+                # The platform's own name for this deal. The one safe key for
+                # refusing a re-delivery: two deals can legitimately agree on
+                # every visible field — the same button pressed twice in a
+                # second does exactly that — but never on the platform's id.
+                "id": deal.get("id"),
                 "asset": asset,
                 "direction": direction,
                 "won": won,

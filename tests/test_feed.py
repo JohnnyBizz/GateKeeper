@@ -2292,6 +2292,17 @@ class TestWhatTheRealCaptureRevealed:
         )[0]
         assert trade["won"] is False
 
+    def test_the_platforms_own_deal_id_rides_along(self):
+        """The one safe key for refusing a re-delivered settlement: two real
+        deals can agree on every visible field — the same button pressed
+        twice in a second does exactly that — but never on the id."""
+        from poa.feed.protocol import parse_settled_trade
+
+        trade = parse_settled_trade(self._closed(id="f4b1c2"))[0]
+        assert trade["id"] == "f4b1c2"
+        # And a deal the platform sends without one still parses.
+        assert parse_settled_trade(self._closed())[0]["id"] is None
+
     def test_a_reading_that_contradicts_itself_is_discarded(self):
         """Direction, price move and outcome have to agree.
 
