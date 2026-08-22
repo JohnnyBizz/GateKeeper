@@ -2683,6 +2683,133 @@ class TestSweepingFastEnoughToMatter:
             app.shutdown()
 
 
+class TestADroppedChartsCallsStillSettle:
+    """The platform dropping a tab used to strand that chart's open calls as
+    UNSETTLED forever: no sweep visited the asset again, so no price
+    authority ever decided them. Two thirty-second USD/BDT calls sat eleven
+    minutes past expiry in one report. The last sweep of a chart kept its
+    candles, and those candles answer any expiry they cover."""
+
+    def _app(self, tmp_path):
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        return OverlayApp(config)
+
+    def _journal_call(self, app, asset, opened, price=121.832):
+        from poa.models import utcnow  # noqa: F401 - sibling imports pattern
+
+        app.engine.journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, price, "
+            "source) VALUES ('c1', ?, ?, 5, 30, 'CALL', 'ACTIVE', 86, 80, "
+            "86, 'STRONG', ?, ?)",
+            (opened.isoformat(), asset, price,
+             getattr(app.engine.source, "name", None)),
+        )
+        app.engine.journal._connection.commit()
+
+    def _cached_chart(self, app, asset, start, price_then, price_now):
+        from datetime import timedelta
+        from types import SimpleNamespace
+
+        from poa.models import Candle, Series
+
+        series = Series(
+            [
+                Candle(timestamp=start + timedelta(seconds=5 * i),
+                       open=price_then, high=price_then, low=price_then,
+                       close=(price_now if i >= 6 else price_then), volume=1.0)
+                for i in range(24)
+            ],
+            5,
+            asset,
+        )
+        app._read_was[(asset, 5)] = {
+            "asset": asset,
+            "timeframe": 5,
+            "_signal": SimpleNamespace(price=price_now),
+            "_series": series,
+        }
+
+    def test_a_chart_absent_from_the_sweep_settles_from_its_cache(self, tmp_path):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            opened = utcnow() - timedelta(seconds=120)
+            self._journal_call(app, "USD/BDT OTC", opened, price=121.832)
+            # The chart's last sweep covered the expiry: price rose after it.
+            self._cached_chart(
+                app, "USD/BDT OTC", opened - timedelta(seconds=10),
+                price_then=121.832, price_now=121.902,
+            )
+
+            app._settle_watched([])  # the sweep no longer carries the chart
+
+            row = app.engine.journal._connection.execute(
+                "SELECT outcome FROM signals WHERE id = 'c1'"
+            ).fetchone()
+            assert row["outcome"] == "win"
+        finally:
+            app.shutdown()
+
+    def test_a_swept_chart_is_not_settled_twice_from_the_cache(self, tmp_path):
+        # The cache path only covers assets the live sweep did not: an asset
+        # in both settles once, through the fresher of the two readings.
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            opened = utcnow() - timedelta(seconds=120)
+            self._journal_call(app, "USD/BDT OTC", opened, price=121.832)
+            self._cached_chart(
+                app, "USD/BDT OTC", opened - timedelta(seconds=10),
+                price_then=121.832, price_now=121.700,  # stale: says loss
+            )
+            from types import SimpleNamespace
+
+            from poa.models import Candle, Series
+
+            fresh_start = opened - timedelta(seconds=10)
+            fresh = Series(
+                [
+                    Candle(timestamp=fresh_start + timedelta(seconds=5 * i),
+                           open=121.832, high=121.95, low=121.83,
+                           close=121.902, volume=1.0)
+                    for i in range(24)
+                ],
+                5,
+                "USD/BDT OTC",
+            )
+            rows = [{
+                "asset": "USD/BDT OTC",
+                "timeframe": 5,
+                "_signal": SimpleNamespace(price=121.902),
+                "_series": fresh,
+            }]
+
+            app._settle_watched(rows)
+
+            row = app.engine.journal._connection.execute(
+                "SELECT outcome FROM signals WHERE id = 'c1'"
+            ).fetchone()
+            assert row["outcome"] == "win"  # the live sweep's answer stood
+        finally:
+            app.shutdown()
+
+
 class TestTheEngineFeedsTheNewGates:
     """The cooldown and the payout floor only work if the evaluation sites
     actually hand them their inputs. The rules themselves are tested in

@@ -353,8 +353,12 @@ class OverlayViewModel:
                 "direction_label": _direction_label(signal.direction),
                 "color": direction_color(signal.direction),
                 "arrow": _arrow(signal.direction),
-                "score": round(signal.overall_confidence, 0),
-                "score_display": f"{signal.overall_confidence:.0f} / 100",
+                # Truncated, never rounded: a call at 89.6 is under the 90
+                # ceiling, and printing it as "90" shows the user a number
+                # the gates would refuse. The shown number may sit under the
+                # truth, never above it.
+                "score": float(int(signal.overall_confidence)),
+                "score_display": f"{int(signal.overall_confidence)} / 100",
                 "score_color": score_color(signal.overall_confidence),
                 "badge": badge,
                 "badge_color": badge_color,
