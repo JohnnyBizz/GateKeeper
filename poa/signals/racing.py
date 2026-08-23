@@ -68,14 +68,22 @@ DEFAULT_ROSTER: tuple[Experiment, ...] = (
         ),
         invert=True,
     ),
-    # The fit gate would refuse a three-minute expiry on the five-second
-    # charts this tool mostly watches — correctly, for the live strategy,
-    # and fatally for an experiment whose whole question is how three-minute
-    # outcomes settle. It waives the fit for itself; nothing else.
+    # The two horizons, both always in the race regardless of which one the
+    # live strategy is driving. The fit gate would refuse a foreign expiry
+    # on many charts — correctly, for the live strategy, and fatally for an
+    # experiment whose whole question is how that horizon settles — so each
+    # waives the fit for itself; nothing else. When one of these matches
+    # the live expiry it doubles as a control group: its rate should track
+    # the live rate, and a divergence is a bug report, not a finding.
     Experiment(
         "three-minute",
         overrides=(("min_duration_compatibility", 0.0),),
         trade_duration=180,
+    ),
+    Experiment(
+        "thirty-second",
+        overrides=(("min_duration_compatibility", 0.0),),
+        trade_duration=30,
     ),
     Experiment("strict-85", overrides=(("min_shown_confidence", 85.0),)),
     Experiment(

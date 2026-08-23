@@ -175,7 +175,9 @@ signals:
   # journals its calls under its own label; none of them can reach the
   # panel, the alerts, the calibration record or the cooldown. Their race
   # standings print in every report's ledger. Omit this key for the shipped
-  # roster (fade-overheat, three-minute, strict-85, loose-70); set an empty
+  # roster (fade-overheat, three-minute, thirty-second, strict-85,
+  # loose-70 — the expiry matching the live one doubles as a control
+  # group, and the other keeps its horizon measured); set an empty
   # list [] to turn racing off; or list your own:
   #   experiments:
   #     - label: my-idea

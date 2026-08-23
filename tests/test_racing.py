@@ -75,7 +75,13 @@ def _experiment_rows(journal):
 class TestTheRoster:
     def test_absent_means_the_shipped_roster(self):
         assert roster_from_config({}) == DEFAULT_ROSTER
-        assert len(DEFAULT_ROSTER) == 4
+        assert len(DEFAULT_ROSTER) == 5
+
+    def test_both_horizons_are_always_in_the_race(self):
+        # Whichever expiry the live strategy drives, the other horizon keeps
+        # its measurement — and the matching one doubles as a control group.
+        durations = {e.trade_duration for e in DEFAULT_ROSTER}
+        assert {30, 180} <= durations
 
     def test_an_empty_list_turns_racing_off(self):
         assert roster_from_config({"experiments": []}) == ()
