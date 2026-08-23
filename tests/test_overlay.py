@@ -2556,6 +2556,10 @@ class TestSweepingFastEnoughToMatter:
         config.set("storage.report_dir", str(tmp_path / "reports"))
         config.set("alerts.desktop_notifications", False)
         config.set("capture.source", "synthetic")
+        # These tests count evaluate_series calls to measure the live
+        # sweep's pacing; the shadow roster would multiply the count by
+        # its own size and measure the roster instead.
+        config.set("signals.experiments", [])
         return OverlayApp(config)
 
     def _series(self, period, bars=300, symbol="EUR/USD OTC"):

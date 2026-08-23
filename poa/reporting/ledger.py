@@ -74,13 +74,27 @@ def collect_ledger(
     if not rows:
         return None
 
-    overall = LedgerRow("all calls")
+    # The live strategy's record and the shadow experiments' records are
+    # kept apart everywhere: the main tables describe what the panel
+    # actually called, and the race table is where the shadows compete
+    # with it on equal, labelled terms.
+    live = [r for r in rows if not r.get("experiment")]
+    shadows = [r for r in rows if r.get("experiment")]
+
+    overall = LedgerRow("live strategy")
     by_expiry: dict[int, LedgerRow] = {}
     by_band: dict[tuple[int, int], LedgerRow] = {}
     by_pair: dict[str, LedgerRow] = {}
     by_hour: dict[str, LedgerRow] = {}
+    by_experiment: dict[str, LedgerRow] = {}
 
-    for row in rows:
+    for row in shadows:
+        label = str(row.get("experiment") or "")
+        bucket = by_experiment.setdefault(label, LedgerRow(label))
+        bucket.wins += row["outcome"] == "win"
+        bucket.losses += row["outcome"] != "win"
+
+    for row in live:
         won = row["outcome"] == "win"
 
         def tally(bucket: LedgerRow) -> None:
@@ -125,6 +139,11 @@ def collect_ledger(
         "band": [by_band[k] for k in sorted(by_band)],
         "pair": pairs,
         "hour": [by_hour[k] for k in sorted(by_hour)],
+        # The race: the live strategy against every shadow, on the same
+        # charts over the same sessions. Rows keep their own labels so a
+        # winner here is a named, repeatable configuration — not a vibe.
+        "race": [overall]
+        + sorted(by_experiment.values(), key=lambda r: -r.settled),
     }
 
 
@@ -150,17 +169,28 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
         "shows no rate: it is not hiding, it is too small to have one.",
         "",
     ]
-    lines.append("BY EXPIRY")
-    lines.extend(_row_line(row) for row in ledger["expiry"])
-    lines.append("")
-    lines.append("BY SCORE SHOWN")
-    lines.extend(_row_line(row) for row in ledger["band"])
-    lines.append("")
-    lines.append("BY PAIR (most called)")
-    lines.extend(_row_line(row) for row in ledger["pair"])
-    lines.append("")
-    lines.append("BY HOUR (UTC)")
-    lines.extend(_row_line(row) for row in ledger["hour"])
-    lines.append("")
+    for title, key in (
+        ("BY EXPIRY", "expiry"),
+        ("BY SCORE SHOWN", "band"),
+        ("BY PAIR (most called)", "pair"),
+        ("BY HOUR (UTC)", "hour"),
+    ):
+        if not ledger.get(key):
+            continue
+        lines.append(title)
+        lines.extend(_row_line(row) for row in ledger[key])
+        lines.append("")
+
+    race = ledger.get("race") or []
+    if len(race) > 1:  # the live row alone is not a race
+        lines += [
+            "THE RACE — shadow strategies read the same charts under",
+            "different rulebooks, on paper, alongside the live one. A",
+            "winner here is a named configuration, not a vibe — and it",
+            "still has to hold up out of sample before it flies the panel.",
+            "",
+        ]
+        lines.extend(_row_line(row) for row in race)
+        lines.append("")
     lines.append(_row_line(total).replace("   ", "", 1))
     return lines

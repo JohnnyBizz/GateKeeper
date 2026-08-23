@@ -228,6 +228,21 @@ class OverlayApp:
         # memory, and this only has to survive as long as re-sends can.
         self._settled_seen: set[Any] = set()
 
+        # The shadow strategies racing the live one over the same charts.
+        # Each experiment journals its own calls under its own label; the
+        # ledger races them across sessions. See poa/signals/racing.py.
+        from ..signals.racing import ShadowBook, roster_from_config
+
+        self._racing = ShadowBook(
+            roster_from_config(self.config.section("signals"))
+        )
+        if self._racing.roster:
+            log.info(
+                "racing %d shadow strategies: %s",
+                len(self._racing.roster),
+                ", ".join(e.label for e in self._racing.roster),
+            )
+
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
         # Watched charts already announced, so a setup that stands for several
@@ -965,6 +980,15 @@ class OverlayApp:
                 if newest is not None:
                     self._read_at[key] = newest
                     self._read_was[key] = row
+
+                # The same candles, read again under each shadow rulebook.
+                # The live read already paid for the data; the experiments
+                # ride the same skip-unchanged pacing, journal their own
+                # transitions under their own labels, and can never reach
+                # the panel, the alerts, the calibration or the cooldown.
+                self._racing.sweep_chart(
+                    self.engine, asset, timeframe, series, calibration
+                )
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("reading the watchlist failed: %s", exc)
         finally:
