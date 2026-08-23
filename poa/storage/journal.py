@@ -296,6 +296,27 @@ class Journal:
                 removed,
             )
 
+    def all_settled_calls(self, source: str | None = None) -> list[dict[str, Any]]:
+        """Every settled call the tool ever made, for the pooled ledger.
+
+        Tool calls only — manual rows are the user's trades — and scoped to
+        one source when asked, because a demo run pooled into a live record
+        is a record of nothing. Unbounded on purpose: the ledger is the one
+        reader whose whole point is everything.
+        """
+        query = (
+            "SELECT timestamp, asset, trade_duration, overall_confidence, "
+            "outcome FROM signals WHERE outcome IN ('win', 'loss') "
+            "AND (notes IS NULL OR notes != 'manual')"
+        )
+        params: list[Any] = []
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        with self._lock:
+            rows = self._connection.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
     def last_loss_at(
         self,
         asset: str,
