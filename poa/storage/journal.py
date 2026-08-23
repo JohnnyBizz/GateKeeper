@@ -151,7 +151,14 @@ class Journal:
             row["name"]
             for row in self._connection.execute("PRAGMA table_info(signals)")
         }
-        for column, ddl in (("source", "source TEXT"),):
+        for column, ddl in (
+            ("source", "source TEXT"),
+            # Which shadow experiment made this call, or NULL for the live
+            # strategy. Every reader of live results filters on NULL —
+            # experiments share the journal so settlement works unchanged,
+            # and must never leak into reports, calibration or the cooldown.
+            ("experiment", "experiment TEXT"),
+        ):
             if column not in existing:
                 log.info("adding journal column %s", column)
                 self._connection.execute(f"ALTER TABLE signals ADD COLUMN {ddl}")
@@ -306,7 +313,7 @@ class Journal:
         """
         query = (
             "SELECT timestamp, asset, trade_duration, overall_confidence, "
-            "outcome FROM signals WHERE outcome IN ('win', 'loss') "
+            "outcome, experiment FROM signals WHERE outcome IN ('win', 'loss') "
             "AND (notes IS NULL OR notes != 'manual')"
         )
         params: list[Any] = []
@@ -336,7 +343,10 @@ class Journal:
         query = (
             "SELECT MAX(outcome_at) FROM signals WHERE asset = ? "
             "AND outcome = 'loss' AND outcome_at > ? "
-            "AND (notes IS NULL OR notes != 'manual')"
+            "AND (notes IS NULL OR notes != 'manual') "
+            # A shadow experiment's loss is its own business: only the live
+            # strategy's losses may stand the live strategy down.
+            "AND experiment IS NULL"
         )
         params: list[Any] = [asset, cutoff]
         if source is not None:
@@ -363,13 +373,17 @@ class Journal:
         signal: Signal,
         screenshot_path: str | None = None,
         source: str | None = None,
+        experiment: str | None = None,
     ) -> str:
         """Persist a signal. Returns the signal id.
 
         ``source`` names the data source the price came from. It is what keeps
-        a demo run's outcomes out of a live run's win rate.
+        a demo run's outcomes out of a live run's win rate. ``experiment``
+        names the shadow strategy that made this call; the live strategy
+        leaves it None, and every reader of live results filters on that.
         """
         row = _signal_to_row(signal, screenshot_path, source)
+        row["experiment"] = experiment
         columns = ", ".join(row)
         placeholders = ", ".join(f":{key}" for key in row)
         with self._lock:
@@ -593,12 +607,22 @@ class Journal:
 
     # ------------------------------------------------------------------
 
-    def recent(self, limit: int = 50, asset: str | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM signals"
+    def recent(
+        self,
+        limit: int = 50,
+        asset: str | None = None,
+        include_experiments: bool = True,
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM signals WHERE 1=1"
         params: list[Any] = []
         if asset:
-            query += " WHERE asset = ?"
+            query += " AND asset = ?"
             params.append(asset)
+        # Session reports read recent rows through a window; a busy roster of
+        # shadow experiments could otherwise fill that window and push the
+        # live session's own calls out of it.
+        if not include_experiments:
+            query += " AND experiment IS NULL"
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(int(limit))
         with self._lock:
@@ -644,7 +668,9 @@ class Journal:
         query = (
             "SELECT direction, trade_duration, chart_timeframe, setup_quality, "
             "overall_confidence, outcome, market_regime, timestamp FROM signals "
-            "WHERE direction IN ('CALL', 'PUT')"
+            # The live strategy only. Shadow experiments share the journal so
+            # settlement works unchanged; they must never share a tally.
+            "WHERE direction IN ('CALL', 'PUT') AND experiment IS NULL"
         )
         params: list[Any] = []
         if asset:

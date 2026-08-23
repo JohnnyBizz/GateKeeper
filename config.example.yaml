@@ -170,6 +170,18 @@ signals:
   max_atr_percentile: 92          # refuse to signal in the top volatility decile
   resistance_proximity_atr: 0.75  # how close to a major level counts as blocked
 
+  # Shadow strategies raced against the live one, on paper, every session.
+  # Each experiment reads the same charts under its own rulebook and
+  # journals its calls under its own label; none of them can reach the
+  # panel, the alerts, the calibration record or the cooldown. Their race
+  # standings print in every report's ledger. Omit this key for the shipped
+  # roster (fade-overheat, three-minute, strict-85, loose-70); set an empty
+  # list [] to turn racing off; or list your own:
+  #   experiments:
+  #     - label: my-idea
+  #       overrides: {min_shown_confidence: 80, overheat_ceiling: 88}
+  #       trade_duration: 60     # optional expiry override, seconds
+  #       invert: false          # true records the OPPOSITE direction
   cooldown_seconds: 15     # silence on one chart after a signal
   weakening_drop: 15              # confidence drop that marks a setup WEAKENING
   invalidation_drop: 25           # confidence drop that INVALIDATES it

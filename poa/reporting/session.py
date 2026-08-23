@@ -639,7 +639,12 @@ def collect(
     manual: list[dict[str, Any]] = []
 
     try:
-        rows = journal.recent(limit=500)
+        try:
+            # Live rows only: shadow experiments belong to the ledger's race
+            # table, never to the session's own CALLS MADE.
+            rows = journal.recent(limit=500, include_experiments=False)
+        except TypeError:  # a journal without the parameter (test stubs)
+            rows = journal.recent(limit=500)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("could not read the journal for the report: %s", exc)
         rows = []

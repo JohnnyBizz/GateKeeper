@@ -711,3 +711,40 @@ real. That is the falsifiable claim this entry stakes.
    edge would show, or be honestly ruled out.
 3. Per-moment weighting for calibration, if the 23:34 session's
    twenty-one-fold click bursts turn out to be real trades.
+
+---
+
+## 2026-08-23 — the race: every session now runs five experiments instead of one
+
+The bottleneck, measured seven sessions running, is data: one configuration
+per sitting, twenty settled calls before a rate says anything, and most
+ideas never getting a turn. So the watchlist sweep now reads every chart
+under four shadow rulebooks alongside the live one. A shadow call is
+journalled and settled exactly like a real one — same prices, same expiry
+machinery — under its own ``experiment`` label, and it can never reach the
+panel, the alerts, the calibration record, the cooldown, or the session's
+own CALLS MADE. The ledger's new race table is where they compete, under
+the same rule as every other number: below twenty settled calls, a count
+and no rate.
+
+The shipped roster is the record's own shortlist:
+
+* **fade-overheat** — the contrarian bet four sessions of inversion point
+  at: take exactly the 90-plus reads and record the *opposite* direction.
+* **three-minute** — the horizon question, asked in parallel instead of
+  waiting for a dedicated session. It waives the duration-fit gate for
+  itself, which would otherwise refuse a three-minute expiry on the
+  five-second charts and starve the experiment.
+* **strict-85** — only the historically best-behaved band.
+* **loose-70** — the under-observed middle of the scale.
+
+Shadows carry no cooldown on purpose — the rulebook is the thing under
+test — and the roster is config (``signals.experiments``): omitted means
+shipped, ``[]`` means off, or list your own with per-experiment overrides,
+an expiry, and ``invert``.
+
+What this buys: the next sessions decide four standing questions at once,
+each answer arriving as a named, repeatable configuration rather than a
+hunch. What it does not buy: any of tonight's rates. In-sample selection
+is still in-sample — a shadow that wins the race earns a promotion trial
+as the live config, not a coronation.

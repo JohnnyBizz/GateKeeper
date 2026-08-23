@@ -380,6 +380,7 @@ class AnalysisEngine:
         timeframe: int,
         calibration: Any | None = None,
         trade_duration: int | None = None,
+        settings: Any | None = None,
     ) -> Signal | None:
         """Read one chart without touching the live state.
 
@@ -396,6 +397,13 @@ class AnalysisEngine:
         fifteen-minute candle is not a poor fit, it is the wrong question, and
         asking it of every timeframe would fail all of them for a reason that
         says nothing about the market.
+
+        ``settings`` overrides the live gate settings. This is what lets a
+        shadow experiment read the same chart under a different rulebook —
+        and when a caller passes its own settings, the live cooldown is
+        deliberately not consulted: an experiment's rulebook is exactly the
+        thing under test, and the live strategy's stand-downs are not part
+        of it.
         """
         depth = int(self.config.get("market.analysis_candles", 600))
         visible = series.tail(depth) if len(series) > depth else series
@@ -422,13 +430,15 @@ class AnalysisEngine:
                     entry_multiple=int(
                         self.config.get("market.entry_timeframe_multiple", 1)
                     ),
-                    settings=self.gate_settings(),
+                    settings=settings if settings is not None else self.gate_settings(),
                     calibration=(
                         calibration
                         if calibration is not None
                         else self._calibration_for(asset, timeframe)
                     ),
-                    last_loss_at=self._last_loss_for(asset),
+                    last_loss_at=(
+                        None if settings is not None else self._last_loss_for(asset)
+                    ),
                     payout=self._payout_for(asset),
                 )
             )
