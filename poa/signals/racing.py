@@ -113,27 +113,79 @@ def roster_from_config(section: dict[str, Any]) -> tuple[Experiment, ...]:
         return ()
     roster: list[Experiment] = []
     for entry in raw:
-        if not isinstance(entry, dict) or not entry.get("label"):
-            log.warning("skipping a shadow experiment with no label: %r", entry)
-            continue
-        overrides = entry.get("overrides") or {}
-        unknown = set(overrides) - _VALID_FIELDS
-        if unknown:
-            log.warning(
-                "skipping shadow experiment %r: unknown setting(s) %s",
-                entry["label"], ", ".join(sorted(unknown)),
-            )
-            continue
-        duration = entry.get("trade_duration")
-        roster.append(
-            Experiment(
-                label=str(entry["label"]),
-                overrides=tuple(sorted(overrides.items())),
-                trade_duration=int(duration) if duration else None,
-                invert=bool(entry.get("invert", False)),
-            )
-        )
+        experiment = _parse_experiment(entry)
+        if experiment is not None:
+            roster.append(experiment)
     return tuple(roster)
+
+
+def _parse_experiment(entry: Any) -> Experiment | None:
+    """One config entry, or None with the reason logged.
+
+    Everything a YAML typo can produce is handled here — a string where a
+    number belongs, an unknown setting, a value the gates cannot compare —
+    because the alternative was measured the hard way in review: a
+    ``trade_duration: 60s`` typo raising out of the constructor and the
+    overlay never opening at all.
+    """
+    if not isinstance(entry, dict) or not entry.get("label"):
+        log.warning("skipping a shadow experiment with no label: %r", entry)
+        return None
+    label = str(entry["label"])
+
+    overrides = entry.get("overrides") or {}
+    if not isinstance(overrides, dict):
+        log.warning("skipping shadow experiment %r: overrides is not a map", label)
+        return None
+    unknown = set(overrides) - _VALID_FIELDS
+    if unknown:
+        log.warning(
+            "skipping shadow experiment %r: unknown setting(s) %s",
+            label, ", ".join(sorted(unknown)),
+        )
+        return None
+    cleaned: dict[str, Any] = {}
+    for key, value in overrides.items():
+        # Every raceable gate setting is a number; a string that happens to
+        # hold one is a YAML quoting accident, and anything else would raise
+        # deep inside evaluate where the defensive except would silently
+        # bury the whole experiment for the session.
+        try:
+            cleaned[key] = float(value)
+        except (TypeError, ValueError):
+            log.warning(
+                "skipping shadow experiment %r: %s=%r is not a number",
+                label, key, value,
+            )
+            return None
+
+    duration = entry.get("trade_duration")
+    if duration not in (None, 0, ""):
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            log.warning(
+                "skipping shadow experiment %r: trade_duration %r is not a "
+                "number of seconds",
+                label, duration,
+            )
+            return None
+        if duration <= 0:
+            log.warning(
+                "skipping shadow experiment %r: trade_duration must be "
+                "positive, got %d",
+                label, duration,
+            )
+            return None
+    else:
+        duration = None
+
+    return Experiment(
+        label=label,
+        overrides=tuple(sorted(cleaned.items())),
+        trade_duration=duration,
+        invert=bool(entry.get("invert", False)),
+    )
 
 
 _OPPOSITE = {Direction.CALL: Direction.PUT, Direction.PUT: Direction.CALL}
@@ -174,6 +226,16 @@ class ShadowBook:
             return
         source = getattr(engine.source, "name", None)
         for experiment in self.roster:
+            # An expiry shorter than the chart's own bars cannot be settled
+            # honestly: the bar covering the expiry closes after the trade
+            # ended, so its close is not the price the trade settled at. On
+            # a one-minute chart the thirty-second experiment simply sits
+            # out rather than filing rows a minute-bar cannot decide.
+            if (
+                experiment.trade_duration
+                and experiment.trade_duration < int(timeframe)
+            ):
+                continue
             key = (experiment.label, asset, int(timeframe))
             try:
                 signal = engine.evaluate_series(

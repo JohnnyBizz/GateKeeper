@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..backtesting.stats import SCORE_BANDS
+from ..backtesting.stats import band_of
 from ..logging_setup import get_logger
 from ..models import format_duration
 
@@ -111,14 +111,11 @@ def collect_ledger(
         )
 
         shown = float(row["overall_confidence"] or 0.0)
-        for low, high in SCORE_BANDS:
-            if low <= shown <= high:
-                tally(
-                    by_band.setdefault(
-                        (low, high), LedgerRow(f"{low}-{high}")
-                    )
-                )
-                break
+        band = band_of(shown)
+        if band is not None:
+            tally(
+                by_band.setdefault(band, LedgerRow(f"{band[0]}-{band[1]}"))
+            )
 
         asset = str(row["asset"] or "")
         if asset:

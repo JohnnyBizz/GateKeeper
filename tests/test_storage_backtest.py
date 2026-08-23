@@ -1639,6 +1639,27 @@ class TestTheScoreIsReadInBandsFixedInAdvance:
                  self._call(86, "void")]
         assert [b["settled"] for b in score_bands(calls)] == [1]
 
+    def test_a_score_between_the_integer_edges_still_has_a_band(self):
+        """The shown confidence rounds to one decimal, so 89.6 is a value
+        the journal actually holds — and read literally the integer bands
+        owned neither it nor 84.3, silently dropping calls from the very
+        split the overheat evidence rests on."""
+        from poa.backtesting.stats import band_of, score_bands
+
+        assert band_of(89.6) == (85, 89)
+        assert band_of(84.3) == (80, 84)
+        assert band_of(100.0) == (95, 100)
+
+        calls = [self._call(89.6, "win"), self._call(89.6, "loss")]
+        assert [b["settled"] for b in score_bands(calls)] == [2]
+
+    def test_every_representable_score_lands_in_exactly_one_band(self):
+        from poa.backtesting.stats import band_of
+
+        for tenth in range(0, 1001):
+            score = tenth / 10.0
+            assert band_of(score) is not None, score
+
 
 class TestHowMuchOfOneMindTheToolWas:
     """A pair called sixteen times one way and never the other *is* always-BUY
@@ -2052,6 +2073,21 @@ class TestThePairsLastLossIsOnRecord:
         try:
             self._settled(journal, "o1", self._minutes_ago(30))
             assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+        finally:
+            journal.close()
+
+    def test_the_horizon_follows_the_cooldown_rather_than_capping_it(self, tmp_path):
+        # A user who sets a 20-minute cooldown must get 20 minutes: with the
+        # lookback stuck at 15, a 16-minute-old loss vanished from the query
+        # and the pair showed calls four minutes before its own limit passed.
+        journal = self._journal(tmp_path)
+        try:
+            self._settled(journal, "l16", self._minutes_ago(16))
+            assert journal.last_loss_at("AUDCHF_otc", source="feed") is None
+            found = journal.last_loss_at(
+                "AUDCHF_otc", source="feed", within_minutes=21
+            )
+            assert found is not None
         finally:
             journal.close()
 

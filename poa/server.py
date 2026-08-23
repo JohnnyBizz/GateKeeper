@@ -318,6 +318,23 @@ def run(config_path: str | None = None) -> None:
         level=str(config.get("logging.level", "INFO")),
         file=config.resolve_path("logging.file"),
     )
+
+    # One process per journal, the dashboard included. The overlay took this
+    # lock first, and leaving the server unguarded left the double-write
+    # corruption reachable through the other front door: overlay plus
+    # dashboard on one journal is the same two-writers defect as two
+    # overlays.
+    from . import single_instance
+
+    try:
+        lock = single_instance.acquire(
+            config.resolve_path("storage.database").parent
+        )
+    except single_instance.AnotherInstanceRunning as exc:
+        log.warning("refusing to start: %s", exc)
+        print(str(exc))
+        return
+
     host = str(config.get("server.host", "127.0.0.1"))
     port = int(config.get("server.port", 8765))
 
@@ -341,4 +358,5 @@ def run(config_path: str | None = None) -> None:
 
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
 
-    uvicorn.run(create_app(config), host=host, port=port, log_level="warning")
+    with lock:
+        uvicorn.run(create_app(config), host=host, port=port, log_level="warning")

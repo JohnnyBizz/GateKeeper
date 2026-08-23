@@ -158,6 +158,10 @@ class Journal:
             # experiments share the journal so settlement works unchanged,
             # and must never leak into reports, calibration or the cooldown.
             ("experiment", "experiment TEXT"),
+            # The platform's own id for a settled deal, on manual rows. The
+            # in-memory dedup dies with the process; this is what lets a
+            # restart refuse a deal the platform re-mentions afterwards.
+            ("deal_id", "deal_id TEXT"),
         ):
             if column not in existing:
                 log.info("adding journal column %s", column)
@@ -324,6 +328,24 @@ class Journal:
             rows = self._connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
+    def recent_deal_ids(self, within_hours: float = 24.0) -> set[str]:
+        """Platform deal ids already filed, for seeding the restart dedup.
+
+        The in-memory seen-set dies with the process, and the platform's
+        re-send window does not: a reconnect shortly after a relaunch can
+        replay settled deals the previous run already recorded. Bounded to a
+        day because that is far past any observed re-send horizon, and an
+        unbounded set would grow with the journal forever.
+        """
+        cutoff = (utcnow() - timedelta(hours=within_hours)).isoformat()
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT DISTINCT deal_id FROM signals WHERE deal_id IS NOT "
+                "NULL AND timestamp > ?",
+                (cutoff,),
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def last_loss_at(
         self,
         asset: str,
@@ -408,6 +430,7 @@ class Journal:
         source: str | None = None,
         price: float | None = None,
         timestamp: datetime | None = None,
+        deal_id: str | None = None,
     ) -> str:
         """File a trade the user took themselves, already settled.
 
@@ -443,6 +466,7 @@ class Journal:
             "outcome_at": stamp,
             "reason": "Taken manually; outcome entered by hand.",
             "notes": "manual",
+            "deal_id": str(deal_id) if deal_id is not None else None,
         }
         columns = ", ".join(row)
         placeholders = ", ".join(f":{key}" for key in row)
@@ -486,6 +510,7 @@ class Journal:
         source: str | None = None,
         asset: str | None = None,
         price_at: Callable[[datetime], float | None] | None = None,
+        price_read_at: datetime | None = None,
     ) -> int:
         """Settle any directional signals whose expiration has elapsed.
 
@@ -511,6 +536,13 @@ class Journal:
 
         How late each settlement was is recorded either way, so a rate can be
         read back against how promptly it was measured.
+
+        ``price_read_at`` is the moment ``current_price`` was read, when that
+        moment is not "now" — a chart the platform dropped hands over its
+        last known price, read before it vanished. A price read *before* a
+        row's expiry cannot decide that row: it measures the open-to-drop
+        move, not the move that was bet on. Such rows stay pending while a
+        true price could still arrive, and void once the grace passes.
         """
         now = now or utcnow()
         pending = self.pending_outcomes(now)
@@ -540,8 +572,32 @@ class Journal:
                 late = 0.0 if settled_price is not None else _lateness(row, now)
 
                 if settled_price is None:
-                    settled_price = current_price
-                    reason = _settlement_block(row, current_price, now, source, asset)
+                    # A fallback price older than the expiry measures the
+                    # wrong interval — the move to the moment the chart was
+                    # last seen, not the move that was bet on. Wait for a
+                    # price that can answer; void once none can be expected.
+                    if (
+                        price_read_at is not None
+                        and expiry is not None
+                        and price_read_at < expiry
+                    ):
+                        grace = max(
+                            SETTLEMENT_GRACE_FACTOR
+                            * float(row["trade_duration"] or 0),
+                            SETTLEMENT_GRACE_FLOOR_SECONDS,
+                        )
+                        if (now - expiry).total_seconds() <= grace:
+                            continue  # a true price may still arrive
+                        reason = (
+                            "The chart was gone before this expired, and no "
+                            "price from the expiry ever arrived."
+                        )
+                        settled_price = current_price
+                    else:
+                        settled_price = current_price
+                        reason = _settlement_block(
+                            row, current_price, now, source, asset
+                        )
                 else:
                     # A price read out of the chart's own history at the right
                     # moment cannot be too late to be used, so the only bars
@@ -611,16 +667,18 @@ class Journal:
         self,
         limit: int = 50,
         asset: str | None = None,
-        include_experiments: bool = True,
+        include_experiments: bool = False,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM signals WHERE 1=1"
         params: list[Any] = []
         if asset:
             query += " AND asset = ?"
             params.append(asset)
-        # Session reports read recent rows through a window; a busy roster of
-        # shadow experiments could otherwise fill that window and push the
-        # live session's own calls out of it.
+        # Excluded by default, included only on request: every default
+        # reader of this — the session report, the dashboard's journal
+        # view — means "the tool's calls", and a busy shadow roster would
+        # otherwise both fill the window and present deliberately inverted
+        # experiment rows as calls the panel made.
         if not include_experiments:
             query += " AND experiment IS NULL"
         query += " ORDER BY timestamp DESC LIMIT ?"

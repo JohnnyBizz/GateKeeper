@@ -107,6 +107,24 @@ class TestTheRoster:
     def test_a_label_less_entry_is_skipped(self):
         assert roster_from_config({"experiments": [{"overrides": {}}]}) == ()
 
+    def test_a_yaml_typo_skips_the_entry_instead_of_the_whole_app(self):
+        # trade_duration: 60s once raised out of the constructor and the
+        # overlay never opened. A typo costs one experiment, never a session.
+        roster = roster_from_config({"experiments": [
+            {"label": "typo", "trade_duration": "60s"},
+            {"label": "negative", "trade_duration": -30},
+            {"label": "bad-override", "overrides": {"min_shown_confidence": "high"}},
+            {"label": "fine", "trade_duration": "60"},
+        ]})
+        assert [e.label for e in roster] == ["fine"]
+        assert roster[0].trade_duration == 60
+
+    def test_a_quoted_number_in_an_override_still_counts(self):
+        roster = roster_from_config({"experiments": [
+            {"label": "quoted", "overrides": {"min_shown_confidence": "80"}},
+        ]})
+        assert roster[0].settings(GateSettings()).min_shown_confidence == 80.0
+
     def test_the_fade_experiment_is_the_inversion_the_record_suggested(self):
         fade = next(e for e in DEFAULT_ROSTER if e.label == "fade-overheat")
         settings = fade.settings(GateSettings())
@@ -178,6 +196,23 @@ class TestOneSetupIsOneRowPerRulebook:
         finally:
             journal.close()
 
+    def test_an_expiry_shorter_than_the_bars_sits_out(self, tmp_path):
+        # A 30-second trade on a one-minute chart would be settled by a bar
+        # that closes after the trade ended — a price it did not settle at.
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _FakeEngine(journal, _real_signal())
+            book = self._book(Experiment("fast", trade_duration=30))
+            book.sweep_chart(engine, "EUR/USD OTC", 60, object(), None)
+            assert engine.asked == []       # not even evaluated
+            assert _experiment_rows(journal) == []
+
+            # The same experiment runs fine on bars its expiry can cover.
+            book.sweep_chart(engine, "EUR/USD OTC", 5, object(), None)
+            assert len(_experiment_rows(journal)) == 1
+        finally:
+            journal.close()
+
     def test_an_empty_roster_asks_nothing(self, tmp_path):
         journal = Journal(str(tmp_path / "j.db"))
         try:
@@ -236,6 +271,18 @@ class TestShadowsNeverLeak:
             report = collect(journal, started=started, source="feed")
             assert report.calls == []
             assert "CALLS MADE" in build_report(report)
+        finally:
+            journal.close()
+
+    def test_recent_hides_shadows_unless_asked(self, tmp_path):
+        # The dashboard's journal view and the session report both read
+        # recent(); a deliberately inverted experiment row presented there
+        # as one of the tool's calls would be indistinguishable from a lie.
+        journal = self._journal_with_shadow_loss(tmp_path)
+        try:
+            assert journal.recent(limit=10) == []
+            shadows = journal.recent(limit=10, include_experiments=True)
+            assert len(shadows) == 1
         finally:
             journal.close()
 

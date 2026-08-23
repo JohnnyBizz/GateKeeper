@@ -224,9 +224,20 @@ class OverlayApp:
         # trade gives something to measure it from.
         self._deal_clock_seconds: float = 0.0
         # Deal ids already filed, so a settlement the platform mentions twice
-        # is recorded once. Session-scoped: the journal is the cross-session
-        # memory, and this only has to survive as long as re-sends can.
+        # is recorded once. Seeded from the journal so the set survives a
+        # restart: the platform's re-send window does not care that the app
+        # relaunched, and the previous run's deals must stay refused.
         self._settled_seen: set[Any] = set()
+        try:
+            self._settled_seen |= self.engine.journal.recent_deal_ids()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not seed the settled-deal dedup: %s", exc)
+
+        # Each asset's last honest price and candles, for settling calls on
+        # charts the platform has dropped. Separate from the sweep's read
+        # cache on purpose: that one clears on every context change, and a
+        # pending call must not lose its price authority to a chart switch.
+        self._settle_cache: dict[str, tuple[float, Any, Any]] = {}
 
         # The shadow strategies racing the live one over the same charts.
         # Each experiment journals its own calls under its own label; the
@@ -980,6 +991,23 @@ class OverlayApp:
                 if newest is not None:
                     self._read_at[key] = newest
                     self._read_was[key] = row
+                if signal.price is not None:
+                    # The settlement cache, kept per asset and never cleared:
+                    # _read_was drops on every context change, and pending
+                    # calls on a chart the platform dropped must not lose
+                    # their last honest price to a chart switch. The series'
+                    # coverage end rides along, because a cached price can
+                    # only decide rows that expired before it was read.
+                    period = int(getattr(series, "timeframe_seconds", 0) or 0)
+                    last_bar = series.candles[-1].timestamp if len(series) else None
+                    if last_bar is not None:
+                        from datetime import timedelta as _td
+
+                        self._settle_cache[asset] = (
+                            float(signal.price),
+                            series,
+                            last_bar + _td(seconds=period),
+                        )
 
                 # The same candles, read again under each shadow rulebook.
                 # The live read already paid for the data; the experiments
@@ -1060,24 +1088,24 @@ class OverlayApp:
         # The platform dropping a tab used to strand that chart's open calls
         # as UNSETTLED forever — two thirty-second USD/BDT calls sat eleven
         # minutes past expiry in one report — because no price authority ever
-        # visited that asset again. The last sweep of a chart kept its
-        # candles; those answer any expiry they cover, and the journal's own
-        # lateness guard voids what they cannot answer once the grace passes.
-        # Either way the row stops pretending to be open.
-        for cached in list(self._read_was.values()):
-            asset = str(cached.get("asset") or "")
-            signal = cached.get("_signal")
-            if not asset or asset in settled_assets:
+        # visited that asset again. The settlement cache keeps each asset's
+        # last candles and price (surviving chart switches, which clear the
+        # sweep's own cache); the candles answer any expiry they cover, and
+        # the price is stamped with the moment its coverage ended, so a row
+        # that expired *after* the chart was last seen is never settled by a
+        # price from before its expiry — it waits, and voids after grace.
+        for asset, (price, series, covered_until) in list(
+            self._settle_cache.items()
+        ):
+            if asset in settled_assets:
                 continue
-            if signal is None or signal.price is None:
-                continue
-            series = cached.get("_series")
             try:
                 self.engine.journal.resolve_outcomes(
-                    float(signal.price),
+                    price,
                     source=source,
                     asset=asset,
                     price_at=getattr(series, "price_at", None),
+                    price_read_at=covered_until,
                 )
                 settled_assets.add(asset)
             except Exception as exc:  # pragma: no cover - defensive
@@ -1835,6 +1863,10 @@ class OverlayApp:
             # arrives, because there is nothing safe to refuse it by.
             deal_id = trade.get("id")
             if deal_id is not None:
+                # Normalised to text: the journal stores it as text, and the
+                # restart-seeded set must agree with the live one about what
+                # the same id looks like.
+                deal_id = str(deal_id)
                 if deal_id in self._settled_seen:
                     log.info(
                         "ignoring a settled deal the platform re-sent (%s)",
@@ -1886,6 +1918,9 @@ class OverlayApp:
                     # listed against the minute after the one it was taken in
                     # and nothing lined up with the calls beside it.
                     timestamp=_opened_at(trade, offset),
+                    # Persisted so a restart still refuses this deal if the
+                    # platform mentions it again.
+                    deal_id=deal_id,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not file a settled trade: %s", exc)

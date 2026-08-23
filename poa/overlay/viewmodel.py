@@ -441,26 +441,39 @@ class OverlayViewModel:
         # through it, so six losses in a row were chased at the exact moment
         # the limit existed for. The measurement continues (the score stays,
         # the journal keeps recording); what stands down is every cue that
-        # says act.
-        if risk.paused and not scanning:
-            self._stand_down(payload, risk)
+        # says act. The cues stay down *during a scan too*: pressing Scan
+        # with the brake tripped must not buy a few seconds of lit tabs —
+        # only the verdict face is left alone mid-scan, because it is
+        # already saying SCANNING rather than act.
+        if risk.paused:
+            self._stand_down(payload, risk, take_verdict=not scanning)
         return payload
 
-    def _stand_down(self, payload: dict[str, Any], risk: RiskAssessment) -> None:
+    def _stand_down(
+        self,
+        payload: dict[str, Any],
+        risk: RiskAssessment,
+        take_verdict: bool = True,
+    ) -> None:
         """Replace every act-now cue with the user's own limit, stated."""
-        payload["verdict"].update(
-            direction="--",
-            direction_label="STAND DOWN",
-            color=COLORS["no_trade"],
-            arrow="",
-            badge="BRAKE ON",
-            badge_color=COLORS["no_trade"],
-            pattern="Your limit, set in RISK",
-            state="PAUSED",
-            actionable=False,
-            take_now=0,
-            take_label="brake on",
-        )
+        if take_verdict:
+            payload["verdict"].update(
+                direction="--",
+                direction_label="STAND DOWN",
+                color=COLORS["no_trade"],
+                arrow="",
+                badge="BRAKE ON",
+                badge_color=COLORS["no_trade"],
+                pattern="Your limit, set in RISK",
+                state="PAUSED",
+                actionable=False,
+                take_now=0,
+                take_label="brake on",
+            )
+        else:
+            payload["verdict"].update(
+                actionable=False, take_now=0, take_label="brake on"
+            )
         payload["entry"] = {
             **payload["entry"],
             "text": "STAND DOWN",
