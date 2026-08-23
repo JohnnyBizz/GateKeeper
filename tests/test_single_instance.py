@@ -204,6 +204,37 @@ class TestTheOverlayRefusesToDoubleOpen:
 
         assert opened and "already running" in opened[0]
 
+    def test_the_dashboard_takes_the_same_lock(self, tmp_path, monkeypatch):
+        # The overlay guarding the journal while `python run.py` opened it
+        # unguarded was the two-writers defect with a different front door.
+        import sys
+        from types import SimpleNamespace
+
+        from poa import server as server_module
+        from poa.config import Config
+
+        config = Config(
+            data={"storage": {"database": str(tmp_path / "storage" / "j.db")}}
+        )
+        monkeypatch.setattr(server_module, "load_config", lambda p=None: config)
+        monkeypatch.setattr(server_module, "setup_logging", lambda **k: None)
+        monkeypatch.setattr(
+            server_module, "create_app", lambda cfg: object()
+        )
+        served = []
+        monkeypatch.setitem(
+            sys.modules, "uvicorn",
+            SimpleNamespace(run=lambda *a, **k: served.append(True)),
+        )
+
+        with acquire(tmp_path / "storage"):
+            server_module.run("ignored.yaml")
+        assert served == []  # refused while the overlay holds the journal
+
+        server_module.run("ignored.yaml")
+        assert served == [True]  # and serves once the journal is free
+        acquire(tmp_path / "storage").close()  # released after serving
+
     def test_the_first_overlay_runs_and_releases(self, tmp_path, monkeypatch):
         from poa.overlay import app as overlay_app
 

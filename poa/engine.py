@@ -504,12 +504,21 @@ class AnalysisEngine:
     def _last_loss_for(self, asset: str) -> Any | None:
         """When this pair's most recent call lost, for the loss cooldown.
 
-        Never allowed to break an evaluation: a journal hiccup means the
-        cooldown abstains, not that the chart goes unread.
+        The lookback follows the configured cooldown rather than assuming
+        it: a query horizon shorter than the cooldown would quietly cap a
+        long stand-down at the horizon, showing calls minutes before the
+        limit the user set had passed. Never allowed to break an
+        evaluation: a journal hiccup means the cooldown abstains, not that
+        the chart goes unread.
         """
         try:
+            cooldown = float(
+                self.config.get("signals.loss_cooldown_minutes", 0) or 0
+            )
             return self.journal.last_loss_at(
-                asset, source=getattr(self.source, "name", None)
+                asset,
+                source=getattr(self.source, "name", None),
+                within_minutes=max(15.0, cooldown + 1.0),
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("could not read the last loss for %s: %s", asset, exc)

@@ -882,6 +882,22 @@ class TestATrippedBrakeOwnsThePanel:
         assert rendered["verdict"]["direction_label"] != "STAND DOWN"
         assert any(row["actionable"] for row in rendered["watchlist"])
 
+    def test_pressing_scan_does_not_relight_the_cues(self):
+        # The brake is tripped and the user presses Scan. The verdict face
+        # may say SCANNING — that is not an act-now cue — but the watchlist
+        # tabs and the entry inset must stay dark for the whole grab, or a
+        # Scan press buys a few seconds of lit tabs through a tripped brake.
+        vm = self._vm(losses=4)
+        vm.scan.begin()
+        rendered = vm.render()
+        assert rendered["scan"]["scanning"] is True
+        assert rendered["verdict"]["direction_label"] == "SCANNING"
+        assert rendered["verdict"]["take_now"] == 0
+        assert rendered["entry"]["text"] == "STAND DOWN"
+        assert rendered["entry"]["ready"] is False
+        for row in rendered["watchlist"]:
+            assert row["actionable"] is False
+
     def test_a_recorded_win_releases_it(self):
         vm = self._vm(losses=4)
         vm.session.record(True)

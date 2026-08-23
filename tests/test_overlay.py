@@ -2720,9 +2720,8 @@ class TestADroppedChartsCallsStillSettle:
         )
         app.engine.journal._connection.commit()
 
-    def _cached_chart(self, app, asset, start, price_then, price_now):
+    def _cached_chart(self, app, asset, start, price_then, price_now, bars=24):
         from datetime import timedelta
-        from types import SimpleNamespace
 
         from poa.models import Candle, Series
 
@@ -2731,17 +2730,13 @@ class TestADroppedChartsCallsStillSettle:
                 Candle(timestamp=start + timedelta(seconds=5 * i),
                        open=price_then, high=price_then, low=price_then,
                        close=(price_now if i >= 6 else price_then), volume=1.0)
-                for i in range(24)
+                for i in range(bars)
             ],
             5,
             asset,
         )
-        app._read_was[(asset, 5)] = {
-            "asset": asset,
-            "timeframe": 5,
-            "_signal": SimpleNamespace(price=price_now),
-            "_series": series,
-        }
+        covered_until = series.candles[-1].timestamp + timedelta(seconds=5)
+        app._settle_cache[asset] = (price_now, series, covered_until)
 
     def test_a_chart_absent_from_the_sweep_settles_from_its_cache(self, tmp_path):
         from datetime import timedelta
@@ -2767,6 +2762,87 @@ class TestADroppedChartsCallsStillSettle:
         finally:
             app.shutdown()
 
+    def test_the_cache_survives_a_chart_switch(self, tmp_path):
+        # _read_was clears on every context change; the settlement cache must
+        # not, or a chart switch re-strands exactly the calls this exists for.
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            opened = utcnow() - timedelta(seconds=120)
+            self._journal_call(app, "USD/BDT OTC", opened, price=121.832)
+            self._cached_chart(
+                app, "USD/BDT OTC", opened - timedelta(seconds=10),
+                price_then=121.832, price_now=121.902,
+            )
+            app._read_was.clear()  # what a context change does
+            app._read_at.clear()
+
+            app._settle_watched([])
+
+            row = app.engine.journal._connection.execute(
+                "SELECT outcome FROM signals WHERE id = 'c1'"
+            ).fetchone()
+            assert row["outcome"] == "win"
+        finally:
+            app.shutdown()
+
+    def test_a_price_from_before_the_expiry_decides_nothing(self, tmp_path):
+        # The chart vanished BEFORE the call expired: its last price measures
+        # the open-to-drop move, not the move that was bet on. The row must
+        # not settle as a win or loss on it — it waits, and voids only after
+        # the grace passes.
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            opened = utcnow() - timedelta(seconds=40)  # expiry 10s ago
+            self._journal_call(app, "USD/BDT OTC", opened, price=121.832)
+            # The cached candles END before the expiry (5 bars of 5s = 25s of
+            # coverage from 10s before open), and the price rose to the drop.
+            self._cached_chart(
+                app, "USD/BDT OTC", opened - timedelta(seconds=10),
+                price_then=121.832, price_now=121.902, bars=5,
+            )
+
+            app._settle_watched([])
+
+            row = app.engine.journal._connection.execute(
+                "SELECT outcome FROM signals WHERE id = 'c1'"
+            ).fetchone()
+            assert row["outcome"] is None  # pending, not a fake win
+        finally:
+            app.shutdown()
+
+    def test_a_gone_chart_voids_after_the_grace_not_before(self, tmp_path):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            # Expired long past the grace (30s trade -> 180s grace floor).
+            opened = utcnow() - timedelta(seconds=400)
+            self._journal_call(app, "USD/BDT OTC", opened, price=121.832)
+            self._cached_chart(
+                app, "USD/BDT OTC", opened - timedelta(seconds=10),
+                price_then=121.832, price_now=121.902, bars=5,
+            )
+
+            app._settle_watched([])
+
+            row = app.engine.journal._connection.execute(
+                "SELECT outcome, notes FROM signals WHERE id = 'c1'"
+            ).fetchone()
+            assert row["outcome"] == "void"
+            assert "gone before this expired" in (row["notes"] or "")
+        finally:
+            app.shutdown()
+
     def test_a_swept_chart_is_not_settled_twice_from_the_cache(self, tmp_path):
         # The cache path only covers assets the live sweep did not: an asset
         # in both settles once, through the fresher of the two readings.
@@ -2781,6 +2857,7 @@ class TestADroppedChartsCallsStillSettle:
             self._cached_chart(
                 app, "USD/BDT OTC", opened - timedelta(seconds=10),
                 price_then=121.832, price_now=121.700,  # stale: says loss
+                bars=5,  # and its coverage ends before the expiry
             )
             from types import SimpleNamespace
 
@@ -2861,6 +2938,29 @@ class TestTheEngineFeedsTheNewGates:
         app = self._app(tmp_path)
         try:
             assert app.engine._payout_for("EUR/USD OTC") is None
+        finally:
+            app.shutdown()
+
+    def test_a_long_cooldown_reaches_losses_the_default_horizon_missed(self, tmp_path):
+        from datetime import timedelta
+
+        from poa.models import utcnow
+
+        app = self._app(tmp_path)
+        try:
+            app.config.set("signals.loss_cooldown_minutes", 20)
+            engine = app.engine
+            stamp = (utcnow() - timedelta(minutes=16)).isoformat()
+            engine.journal._connection.execute(
+                "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+                "trade_duration, direction, state, direction_confidence, "
+                "duration_confidence, overall_confidence, setup_quality, "
+                "outcome, outcome_at, source) VALUES ('l16', ?, 'AUD/CHF OTC', "
+                "5, 30, 'CALL', 'SETTLED', 88, 80, 85, 'STRONG', 'loss', ?, ?)",
+                (stamp, stamp, getattr(engine.source, "name", None)),
+            )
+            engine.journal._connection.commit()
+            assert engine._last_loss_for("AUD/CHF OTC") is not None
         finally:
             app.shutdown()
 
@@ -3011,6 +3111,32 @@ class TestLearningFromRealTrades:
             assert len(self._filed(app)) == 2
         finally:
             app.shutdown()
+
+    def test_the_refusal_survives_a_restart(self, tmp_path):
+        # The platform's re-send window does not care that the app
+        # relaunched: the deal id is persisted with the row, and a fresh
+        # process seeds its dedup from the journal before collecting.
+        app = self._app(tmp_path)
+        try:
+            self._called(app, "PUT")
+            app.engine.source.take_settled = lambda: [
+                {**self._trade(), "id": "deal-restart"}
+            ]
+            app._collect_real_trades()
+            assert len(self._filed(app)) == 1
+        finally:
+            app.shutdown()
+
+        relaunched = self._app(tmp_path)  # same journal, new process
+        try:
+            self._called(relaunched, "PUT")
+            relaunched.engine.source.take_settled = lambda: [
+                {**self._trade(), "id": "deal-restart"}
+            ]
+            relaunched._collect_real_trades()
+            assert len(self._filed(relaunched)) == 1  # still just the one
+        finally:
+            relaunched.shutdown()
 
     def test_a_trade_nobody_called_teaches_the_score_nothing(self, tmp_path):
         """The outcome is real and stays in the journal. What it must not do

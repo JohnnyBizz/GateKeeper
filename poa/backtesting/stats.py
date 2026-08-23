@@ -185,6 +185,23 @@ SCORE_BANDS: tuple[tuple[int, int], ...] = (
 )
 
 
+def band_of(score: float) -> tuple[int, int] | None:
+    """Which band a score belongs to — every score, gaps included.
+
+    The bands are written as integer edges, but the scores are not integers:
+    the shown confidence rounds to one decimal, so 89.6 is a value the
+    journal actually holds. Read literally, ``85 <= 89.6 <= 89`` and
+    ``90 <= 89.6 <= 94`` are both false, and the call silently vanished
+    from the very split the overheat evidence rests on. A band owns
+    everything from its low edge up to — not including — the next band's
+    low edge, and the top band owns its high edge too.
+    """
+    for low, high in SCORE_BANDS:
+        if low <= score < high + 1 or (high == SCORE_BANDS[-1][1] and score == high):
+            return (low, high)
+    return None
+
+
 def score_bands(outcomes: Sequence[Outcome]) -> list[dict[str, Any]]:
     """Win rate by score band.
 
@@ -197,7 +214,7 @@ def score_bands(outcomes: Sequence[Outcome]) -> list[dict[str, Any]]:
     for low, high in SCORE_BANDS:
         band = [
             o for o in outcomes
-            if o.outcome in ("win", "loss") and low <= o.confidence <= high
+            if o.outcome in ("win", "loss") and band_of(o.confidence) == (low, high)
         ]
         if not band:
             continue
