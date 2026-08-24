@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import platform
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -384,6 +385,17 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     for key, value in (overlay or {}).items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = _deep_merge(out[key], value)
+        elif isinstance(out.get(key), dict):
+            # A scalar where a whole section belongs — ``alerts: true`` is a
+            # plausible hand-edit meaning "turn alerts on". Taking it would
+            # erase every default under the section, crash the next ``set``
+            # into it (the migration was the first to hit that, as a
+            # TypeError at startup), and write the damage back on save. The
+            # section's defaults stay; the stray value is noted and dropped.
+            log.warning(
+                "config: %r holds a whole section, not a single value; "
+                "ignoring %r and keeping the defaults", key, value,
+            )
         else:
             out[key] = value
     return out
@@ -574,6 +586,19 @@ def load_config(path: str | Path | None = None) -> Config:
     return config
 
 
+def _stored_section(file_data: dict[str, Any], name: str) -> dict[str, Any]:
+    """The file's own mapping for one section, or ``{}``.
+
+    A scalar where a map belongs — ``alerts: true`` is a plausible hand-edit
+    meaning "turn alerts on" — must not crash the migration with a
+    ``TypeError`` on the ``in`` test. The loader itself survives a corrupt
+    value and falls back to defaults; the migration cannot be the one step
+    that strands the file.
+    """
+    section = file_data.get(name)
+    return section if isinstance(section, dict) else {}
+
+
 def _migrate(config: Config, file_data: dict[str, Any]) -> None:
     """Bring a settings file written by an older version up to date.
 
@@ -607,7 +632,7 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         # a file that has never heard of the key — the migration would decide
         # it had nothing to do and write nothing, and every later ``save``
         # would keep overlaying the old file.
-        if "min_shown_confidence" not in (file_data.get("signals") or {}):
+        if "min_shown_confidence" not in _stored_section(file_data, "signals"):
             config.set("signals.min_shown_confidence", 62)
             changed.append("signals.min_shown_confidence -> 62")
         # 85 was the previous default and nobody chose it: it was fitted to
@@ -669,10 +694,17 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         # changing colour. Both channels now work with nothing installed
         # (PowerShell for the toast, winsound for the chime), so the old
         # silent default is moved on; silence chosen after this stays chosen.
-        if "sound" not in (file_data.get("alerts") or {}):
+        #
+        # An explicit ``sound: false`` is only moved on Windows, where it
+        # cannot have been an informed choice — there was no sound to
+        # decline. On macOS and Linux the chime always worked, so a written
+        # false there is a real preference and stays.
+        if "sound" not in _stored_section(file_data, "alerts"):
             config.set("alerts.sound", True)
             changed.append("alerts.sound -> on")
-        elif not bool(config.get("alerts.sound", True)):
+        elif platform.system() == "Windows" and not bool(
+            config.get("alerts.sound", True)
+        ):
             config.set("alerts.sound", True)
             changed.append("alerts.sound off -> on")
 

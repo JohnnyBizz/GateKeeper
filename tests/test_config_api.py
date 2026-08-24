@@ -914,11 +914,26 @@ class TestTheSilentDefaultIsMovedOn:
             yaml.safe_dump(data, handle)
         return load_config(path)
 
-    def test_an_older_file_still_on_silent_gets_sound(self, tmp_path):
+    def test_a_windows_file_still_on_silent_gets_sound(self, tmp_path, monkeypatch):
+        import poa.config as config_module
+
+        monkeypatch.setattr(config_module.platform, "system", lambda: "Windows")
         config = self._config(
             tmp_path, {"config_version": 2, "alerts": {"sound": False}}
         )
         assert config.get("alerts.sound") is True
+
+    def test_a_silence_that_always_worked_is_a_real_choice(self, tmp_path, monkeypatch):
+        # On macOS and Linux the chime always played, so a written false
+        # there was informed and stays — only Windows had no sound to
+        # decline.
+        import poa.config as config_module
+
+        monkeypatch.setattr(config_module.platform, "system", lambda: "Darwin")
+        config = self._config(
+            tmp_path, {"config_version": 2, "alerts": {"sound": False}}
+        )
+        assert config.get("alerts.sound") is False
 
     def test_an_older_file_that_never_chose_lands_on_the_new_default(self, tmp_path):
         config = self._config(tmp_path, {"config_version": 2, "alerts": {}})
@@ -934,3 +949,14 @@ class TestTheSilentDefaultIsMovedOn:
         from poa.config import DEFAULTS
 
         assert DEFAULTS["alerts"]["sound"] is True
+
+    def test_a_scalar_where_a_section_belongs_does_not_stop_the_start(self, tmp_path):
+        # ``alerts: true`` is a plausible hand-edit meaning "turn alerts
+        # on". The migration's ``in`` test raised a TypeError on it, and
+        # load_config has no guard around the migration — so the app died
+        # at startup over a file the loader itself would have survived.
+        config = self._config(
+            tmp_path, {"config_version": 2, "alerts": True, "signals": True}
+        )
+        assert config.get("alerts.sound") is True  # migrated, not crashed
+        assert config.get("signals.min_shown_confidence") == 62

@@ -881,6 +881,15 @@ class OverlayViewModel:
         if not self.notice_title or float(self._now()) >= self.notice_until:
             return _blank_notice()
         if self.notice_asset:
+            # The user complied: the chart the banner points at is the chart
+            # on screen. A glowing instruction to go where you already are is
+            # the stale answer again — "You're on EUR/USD" over a panel whose
+            # header says GBP/USD.
+            if (self.notice_asset, self.notice_timeframe) == (
+                str(self.asset),
+                int(self.chart_timeframe),
+            ):
+                return _blank_notice()
             standing = {
                 (str(row.get("asset", "")), int(row.get("timeframe") or 0)): bool(
                     row.get("actionable")
@@ -1038,7 +1047,6 @@ class OverlayViewModel:
             asset = str(row.get("asset", ""))
             timeframe = int(row.get("timeframe") or 0)
             expiry = int(row.get("expiry") or 0)
-            short = format_duration(timeframe).replace(" ", "") if timeframe else ""
             actionable = bool(row.get("actionable"))
             # A setup found on another chart was scored against the expiry that
             # suits *that* chart, which is usually not the one the platform is
@@ -1051,7 +1059,7 @@ class OverlayViewModel:
                     "asset": asset,
                     "timeframe": timeframe,
                     "expiry": expiry,
-                    "label": f"{asset.replace(' OTC', '')} {short}".strip(),
+                    "label": tab_label(asset, timeframe),
                     "needs": _compact_duration(expiry) if mismatched else "",
                     "mismatched": mismatched,
                     "score": row.get("score"),
@@ -1159,6 +1167,19 @@ class OverlayViewModel:
         elif self.signal.state is SignalState.INVALIDATED:
             warnings.insert(0, "Setup invalidated — do not treat the last signal as live.")
         return warnings[:4]
+
+
+def tab_label(asset: str, timeframe: int) -> str:
+    """The shorthand a watchlist tab shows — ``GBP/USD 5SEC``.
+
+    Shared with the switch banner's title on purpose: the banner points at a
+    tab, and a reader matches them by string. Two copies of this expression
+    would drift the first time one of them was tweaked, and the tests that
+    pin "the same shorthand as the tab" would only catch it if someone
+    remembered to break both.
+    """
+    short = format_duration(int(timeframe)).replace(" ", "") if timeframe else ""
+    return f"{str(asset).replace(' OTC', '')} {short}".strip()
 
 
 def _blank_notice() -> dict[str, Any]:

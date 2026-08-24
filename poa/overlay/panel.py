@@ -424,33 +424,45 @@ class OverlayPanel:
             return y
         colour = notice.get("color") or COLORS["accent"]
         detail = str(notice.get("detail") or "")
-        wrap = INNER - 28
-        lines = (
-            max(1, min(3, int(self._width_of(detail, self.f_label) // wrap) + 1))
-            if detail
-            else 0
-        )
-        height = 30 + lines * 13
+        # The card holds the headline only, and the instruction flows beneath
+        # it at whatever height it really renders. The first version sized
+        # one card around both by estimating the wrap from the string width —
+        # and Tk breaks at word boundaries, so a two-and-a-bit-line estimate
+        # renders as four lines and the overflow lands on the market card
+        # below. Estimating text height is how the verdict face got clipped
+        # twice; measuring is the fix, and the panel's flowing-prose idiom
+        # already cannot overlap.
         self._card(
-            PAD, y, INNER, height, radius=12, fill="#1d2942", fill_to="#151d30",
+            PAD, y, INNER, 32, radius=12, fill="#1d2942", fill_to="#151d30",
             border=colour, glow=colour,
             glow_strength=0.95 * self._pulse_phase(), tags="frame notice",
         )
-        self._text(PAD + 14, y + 16, str(notice.get("title", ""))[:42],
+        self._text(PAD + 14, y + 17, str(notice.get("title", ""))[:42],
                    self.f_button, colour, "w", tags="frame notice")
+        bottom = y + 32
         if detail:
-            self.c.create_text(
-                PAD + 14, y + 27, text=detail, font=self.f_label,
-                fill=COLORS["dim"], anchor="nw", width=wrap,
+            item = self.c.create_text(
+                PAD + 2, y + 37, text=detail, font=self.f_label,
+                fill=COLORS["dim"], anchor="nw", width=INNER - 4,
                 tags="frame notice",
             )
+            # Never below one line's worth: the headless stub answers bbox
+            # with a fixed box, and a bottom edge that walked backwards would
+            # draw the rest of the panel over the banner.
+            bottom = y + 37 + 13
+            try:
+                bounds = self.c.bbox(item)
+                if bounds:
+                    bottom = max(bottom, bounds[3] + 3)
+            except tk.TclError:  # pragma: no cover - window closing
+                pass
         asset = str(notice.get("asset") or "")
         if asset:
             timeframe = int(notice.get("timeframe") or 0) or None
             self._clickable(
                 "notice", lambda name=asset, tf=timeframe: self.on_asset(name, tf)
             )
-        return y + height + 8
+        return bottom + 8
 
     def _draw_market(self, data: dict[str, Any], y: int) -> int:
         """The pair, the price, and the shape of the session so far."""
