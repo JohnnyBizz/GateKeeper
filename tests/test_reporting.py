@@ -649,6 +649,35 @@ class TestTheLedgerPoolsEverySession:
         assert ledger["pair"][0].label == "EUR/USD OTC"  # most called first
         assert ledger["hour"][0].label == "09:00"
 
+    def test_the_live_record_prints_once_when_the_race_runs(self, tmp_path):
+        # The race table leads with the live strategy; the 13:41 report of
+        # 2026-08-24 then closed the section by appending the same row
+        # again — the one record printed twice, reading as two statements.
+        import sqlite3
+
+        from poa.reporting.ledger import collect_ledger, ledger_lines
+
+        journal = self._filled(tmp_path)
+        try:
+            journal._connection.execute(
+                "UPDATE signals SET experiment = 'mirror' WHERE id = 'a1'"
+            )
+            journal._connection.commit()
+            lines = ledger_lines(collect_ledger(journal, source="feed"))
+        finally:
+            journal.close()
+        assert sum("live strategy" in line for line in lines) == 1
+
+    def test_without_shadows_the_closing_summary_still_prints(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger, ledger_lines
+
+        journal = self._filled(tmp_path)
+        try:
+            lines = ledger_lines(collect_ledger(journal, source="feed"))
+        finally:
+            journal.close()
+        assert sum("live strategy" in line for line in lines) == 1
+
     def test_an_empty_journal_writes_no_ledger_at_all(self, tmp_path):
         from poa.reporting.ledger import collect_ledger
 

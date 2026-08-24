@@ -188,6 +188,11 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
             "",
         ]
         lines.extend(_row_line(row) for row in race)
-        lines.append("")
-    lines.append(_row_line(total).replace("   ", "", 1))
+    else:
+        # The closing summary line — only when the race table did not just
+        # print the same row. With shadows in the journal the live strategy
+        # leads the race table, and the 2026-08-24 13:41 report showed what
+        # appending it again looks like: the same record twice, reading as
+        # though two different things were being said.
+        lines.append(_row_line(total).replace("   ", "", 1))
     return lines

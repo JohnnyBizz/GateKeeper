@@ -846,3 +846,53 @@ tested against recorded reality instead of costing another month of
 sessions first. The analysis that reads it — entry-second velocity joined
 against settled outcomes — comes after the mirror verdict, on data this
 archive will by then hold.
+
+---
+
+## 2026-08-24 — the 13:41 sitting: best on record, and the race's first standings
+
+One hour two minutes, 49 calls, **29W/20L — 59.2% [45.2, 71.8] — the first
+sitting whose point estimate clears break-even** (54.6% at this session's
+83% payout). Said with both hands on the table:
+
+* The interval straddles break-even; one sitting proves nothing.
+* **Always-BUY on the same entries was 69.4% — it beat the tool by 10.2
+  points.** The hour trended hard, and the wins were two sustained rides
+  (a nine-PUT run on EUR/RUB at 81.8%, an AUD/NZD CALL run at 78.6%).
+  AED/CNY — last session's hero pair — went 0 for 7.
+* AUC 51.9% [33.1, 69.3]: the score still ranks winners no better than
+  a shrug.
+
+**Pooled record, 472 settled: 42.6% [38.2, 47.1].** Upper bound still
+below a coin flip; the mirror's complement is 57.4% [52.9, 61.8]. Note
+what payout does to that: at 92% (break-even 52.1%) the complement
+clears at its lower bound; at 83% (break-even 54.6%) it does not. Pair
+selection by payout is now part of the question, not a detail.
+
+**The race's first real rates** (in-sample, one build old):
+
+| rulebook | settled | rate |
+|---|---|---|
+| thirty-second | 99 | 46.5% |
+| live strategy | 472 | 42.6% |
+| loose-70 | 26 | 30.8% |
+| strict-85 | 28 | **17.9%** |
+| three-minute | 26 | 15.4% |
+| mirror | 10 | (needs 20) |
+
+Two readings jump out. First, **score anti-correlates with winning at
+the top of the scale**: pooled 85–89 settles 44.8% against 36.5% for
+90–94, and the strict-85 shadow — only the "best" calls — is the worst
+runner on the board. Consistent with the mirror mechanism, and more
+reason the mirror verdict matters. Second, **the three-minute horizon is
+now measured bad three ways** (live 3 MIN 29.8%/47, the shadow 15.4%/26,
+and the 22:27 session's 34.1%/41): the "longer expiry = calmer read"
+hypothesis is losing on every measurement that exists.
+
+The mirror sits at 10 of the 20+ settled calls its pre-registered test
+needs — shadows accrue slower than live rows because they sample at the
+sweep's cadence — so one to two more sittings decide it.
+
+Also fixed from this report: the ledger printed the live strategy's row
+twice once the race table existed (once leading the race, once as the
+old closing summary line).
