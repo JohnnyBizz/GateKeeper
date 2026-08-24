@@ -260,12 +260,15 @@ class OverlayApp:
         # supposed to be visible — a tool that adjusts itself silently is
         # indistinguishable from one that never adjusts at all.
         try:
+            # breakeven_rate lives in backtesting.stats (risk.py's spelling is
+            # breakeven_win_rate) — the wrong module here was swallowed by
+            # this very except and silently killed the whole feature once.
+            from ..backtesting.stats import breakeven_rate
             from ..reporting.ledger import (
                 collect_ledger,
                 record_highlights,
                 record_summary,
             )
-            from ..risk import breakeven_rate
 
             opening = collect_ledger(
                 self.engine.journal,

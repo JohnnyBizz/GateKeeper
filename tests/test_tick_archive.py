@@ -135,6 +135,79 @@ class TestABrokenArchiveNeverBreaksTheFeed:
         assert len(_rows(tmp_path / "t.db")) == 1
 
 
+class TestTransientTroubleIsNotFatal:
+    """The archive retires only for unrecoverable errors. A database briefly
+    locked by a sibling process is a wait and a retry — retiring the whole
+    archive over a collision would discard a session of the exact input
+    this file exists to keep."""
+
+    class _FlakyConn:
+        def __init__(self, real, failures=1):
+            self._real = real
+            self._failures = failures
+
+        def executemany(self, *a, **kw):
+            if self._failures > 0:
+                self._failures -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return self._real.executemany(*a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def test_a_locked_database_requeues_and_lands_next_flush(self, tmp_path):
+        archive = TickArchive(tmp_path / "t.db", flush_rows=1000)
+        archive.add("EURUSD_otc", 1.0, 1.0)
+        archive.flush()  # opens the connection, writes the first row
+        archive._conn = self._FlakyConn(archive._conn, failures=1)
+
+        archive.add("EURUSD_otc", 2.0, 1.1)
+        archive.flush()  # hits the lock; the batch goes back in the queue
+        assert archive.available  # not retired
+        assert archive.archived == 2  # the buffered row still counts
+
+        archive.flush()  # the retry lands it
+        archive.close()
+        assert len(_rows(tmp_path / "t.db")) == 2
+
+    def test_a_real_error_still_retires_it_after_one_line(self, tmp_path):
+        class Broken:
+            def executemany(self, *a, **kw):
+                raise sqlite3.DatabaseError("malformed")
+
+            def close(self):
+                pass
+
+        archive = TickArchive(tmp_path / "t.db", flush_rows=1000)
+        archive.add("EURUSD_otc", 1.0, 1.0)
+        archive.flush()
+        archive._conn = Broken()
+        archive.add("EURUSD_otc", 2.0, 1.1)
+        archive.flush()
+        assert archive.available is False
+
+
+class TestALongRunPrunesToo:
+    def test_the_window_is_reenforced_without_a_restart(self, tmp_path):
+        # Pruning only at first touch made "bounded" false for exactly the
+        # always-on deployment: a dashboard left serving never restarts.
+        import time as _time
+
+        clock = [0.0]
+        archive = TickArchive(
+            tmp_path / "t.db", retention_days=14.0, flush_rows=1,
+            prune_every_seconds=100.0, clock=lambda: clock[0],
+        )
+        now = _time.time()
+        archive.add("EURUSD_otc", now - 30 * 86400, 1.0)  # a month old
+        assert len(_rows(tmp_path / "t.db")) == 1  # written; prune not due
+        clock[0] = 200.0
+        archive.add("EURUSD_otc", now, 1.1)  # this flush re-enforces
+        archive.close()
+        kept = _rows(tmp_path / "t.db")
+        assert [row[2] for row in kept] == [1.1]
+
+
 class TestTheFeedFeedsTheArchive:
     """The wiring: every tick the builders bucket is archived whole."""
 
@@ -183,6 +256,29 @@ class TestTheFeedFeedsTheArchive:
         source._handle("updateStream", [["EURUSD_otc", 1_786_662_001, 1.10]])
         assert source._builder.forming is not None
 
+    def test_the_archive_writes_outside_the_feed_lock(self):
+        # Everything under the source's lock is shared candle state the
+        # engine's capture() also waits on; a disk flush there stalls both
+        # the socket and the panel. The archive must be fed after release.
+        seen: list[bool] = []
+
+        class Watcher:
+            def __init__(self, source):
+                self._source = source
+
+            def extend(self, ticks):
+                seen.append(self._source._lock.locked())
+
+        from poa.feed.source import FeedChartSource
+
+        source = FeedChartSource(port=59999)
+        source.tick_archive = Watcher(source)
+        source._handle(
+            "changeSymbol", ["changeSymbol", {"asset": "EURUSD_otc", "period": 60}]
+        )
+        source._handle("updateStream", [["EURUSD_otc", 1_786_662_001, 1.10]])
+        assert seen == [False]
+
 
 class TestTheBuilderWiresItFromConfig:
     def test_the_feed_source_gets_an_archive_by_default(self, tmp_path, monkeypatch):
@@ -209,3 +305,19 @@ class TestTheBuilderWiresItFromConfig:
 
         source = chart_detection.build_source(config)
         assert source.tick_archive is None
+
+    def test_a_retention_typo_does_not_stop_the_start(self, tmp_path):
+        # "the application always starts" is build_source's stated contract,
+        # and a YAML typo is a note in the log, not a crash at launch.
+        from poa import chart_detection
+        from poa.config import Config
+
+        config = Config()
+        config.set("capture.source", "feed")
+        config.set("capture.auto_launch_browser", False)
+        config.set("storage.tick_archive", str(tmp_path / "ticks.db"))
+        config.set("storage.tick_retention_days", "two-weeks")
+
+        source = chart_detection.build_source(config)
+        assert source.tick_archive is not None
+        assert source.tick_archive.retention_days == 14.0

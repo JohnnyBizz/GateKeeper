@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..backtesting.stats import band_of
+from ..backtesting.stats import band_of, wilson_interval
 from ..logging_setup import get_logger
 from ..models import format_duration
 
@@ -185,22 +185,50 @@ def mirror_duel(
         key = (str(row.get("asset")), int(row.get("trade_duration") or 0))
         pool.setdefault(key, []).append((when, row))
 
-    duel = {"pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0}
-    for when, mirror_row in sorted(mirrors, key=lambda item: item[0]):
+    # Maximum-cardinality matching, not a greedy walk. Any greedy order —
+    # first-come or tightest-gap-first alike — can let one mirror take the
+    # only live row another mirror could pair with while its own alternative
+    # goes unused, undercounting the exact number the promotion decision
+    # reads. Augmenting paths (Kuhn's algorithm) find every pair that can
+    # exist; candidates are tried tightest gap first so, among maximum
+    # matchings, near ones are preferred.
+    adjacency: list[list[tuple[tuple[str, int], int]]] = []
+    for when, mirror_row in mirrors:
         key = (
             str(mirror_row.get("asset")),
             int(mirror_row.get("trade_duration") or 0),
         )
-        candidates = pool.get(key) or []
-        best = None
-        for index, (live_when, _live_row) in enumerate(candidates):
+        options: list[tuple[float, tuple[str, int], int]] = []
+        for l_index, (live_when, _live_row) in enumerate(pool.get(key) or []):
             gap = abs((live_when - when).total_seconds())
-            if gap <= window_seconds and (best is None or gap < best[0]):
-                best = (gap, index)
-        if best is None:
-            continue
-        _gap, index = best
-        _live_when, live_row = candidates.pop(index)  # each live row pairs once
+            if gap <= window_seconds:
+                options.append((gap, key, l_index))
+        options.sort(key=lambda option: option[0])
+        adjacency.append([(key, l_index) for _gap, key, l_index in options])
+
+    live_match: dict[tuple[tuple[str, int], int], int] = {}
+
+    def _assign(m_index: int, visited: set) -> bool:
+        # Path length is bounded by the matching size — dozens, not
+        # thousands — so recursion is comfortably within limits.
+        for node in adjacency[m_index]:
+            if node in visited:
+                continue
+            visited.add(node)
+            holder = live_match.get(node)
+            if holder is None or _assign(holder, visited):
+                live_match[node] = m_index
+                return True
+        return False
+
+    for m_index in range(len(mirrors)):
+        if adjacency[m_index]:
+            _assign(m_index, set())
+
+    duel = {"pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0}
+    for (key, l_index), m_index in live_match.items():
+        mirror_row = mirrors[m_index][1]
+        live_row = pool[key][l_index][1]
         duel["pairs"] += 1
         if str(live_row.get("direction")) != str(mirror_row.get("direction")):
             duel["opposite"] += 1
@@ -315,31 +343,18 @@ def _row_line(row: LedgerRow) -> str:
     )
 
 
-def _wilson(wins: int, settled: int) -> tuple[float, float]:
-    """95% Wilson interval, in percent — the same arithmetic the session
-    header uses, so the race speaks the same language as the headline."""
-    import math
-
-    z = 1.96
-    p = wins / settled
-    denom = 1 + z * z / settled
-    centre = (p + z * z / (2 * settled)) / denom
-    half = (
-        z
-        * math.sqrt(p * (1 - p) / settled + z * z / (4 * settled * settled))
-        / denom
-    )
-    return (centre - half) * 100.0, (centre + half) * 100.0
-
-
 def _race_line(row: LedgerRow) -> str:
     """A race row carries its interval: these rows are the ones a promotion
     decision reads, and a bare rate over forty calls invites exactly the
-    overclaim the rest of the report exists to prevent."""
+    overclaim the rest of the report exists to prevent. The interval is
+    ``wilson_interval`` from the stats module — the same arithmetic as the
+    session header, imported rather than re-implemented, so the two can
+    never silently disagree."""
     line = _row_line(row)
     if row.settled >= MEANINGFUL:
-        low, high = _wilson(row.wins, row.settled)
-        line += f"  [{low:.1f}, {high:.1f}]"
+        interval = wilson_interval(row.wins, row.settled)
+        if interval is not None:
+            line += f"  [{interval[0]:.1f}, {interval[1]:.1f}]"
     return line
 
 

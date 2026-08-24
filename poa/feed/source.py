@@ -230,15 +230,24 @@ class FeedChartSource(ChartSource):
     def stop(self) -> None:
         self._stop.set()
         thread = self._thread
+        still_running = False
         if thread is not None:
             thread.join(timeout=3.0)
+            still_running = thread.is_alive()
         self._thread = None
-        # After the join, so the feed thread is done writing into it.
-        if self.tick_archive is not None:
+        # Closed only once the feed thread has actually exited. A join with
+        # a timeout is a request, not a guarantee — closing the archive
+        # under a thread still flushing into it would trade a clean
+        # shutdown for a spurious "archive disabled" and a race. The
+        # archive's own lock makes the race harmless now, but a leaked
+        # connection at exit is still the cheaper failure.
+        if self.tick_archive is not None and not still_running:
             try:
                 self.tick_archive.close()
             except Exception:  # pragma: no cover - defensive
                 pass
+        elif still_running:  # pragma: no cover - timing
+            log.debug("feed thread still busy; leaving the tick archive open")
 
     # -- the listener -------------------------------------------------------
 
@@ -379,6 +388,22 @@ class FeedChartSource(ChartSource):
     def _handle(
         self, event: str | None, payload: Any, direction: str = "in"
     ) -> None:
+        kept = self._absorb(event, payload, direction)
+        # The archive writes after the lock is released: everything under
+        # the lock is shared candle state the engine's capture() also waits
+        # on, and a disk flush there — worst of all the first flush's
+        # retention prune — would stall both the socket and the panel. The
+        # review measured that exact stall before it shipped.
+        if kept and self.tick_archive is not None:
+            try:
+                self.tick_archive.extend(kept)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    def _absorb(
+        self, event: str | None, payload: Any, direction: str = "in"
+    ) -> list[Any] | None:
+        """Digest one message under the lock; returns ticks to archive."""
         with self._lock:
             self._last_message = time.monotonic()
 
@@ -500,16 +525,10 @@ class FeedChartSource(ChartSource):
                             )
                             self._charts[key] = builder
                         builder.add(tick)
-                    # The same ticks the builders just bucketed, kept whole.
-                    # Archived after the builders rather than before, so a
-                    # slow disk delays telemetry and never the market.
-                    if self.tick_archive is not None and kept:
-                        try:
-                            self.tick_archive.extend(kept)
-                        except Exception:  # pragma: no cover - defensive
-                            pass
                     self._advance_all(max(tick.timestamp for tick in ticks))
-                    return
+                    # The same ticks the builders just bucketed, handed out
+                    # whole for archiving once the lock is off.
+                    return kept
 
             # Last resort, and only while nothing is known: any message the
             # page itself sent that names an asset and a period is about the

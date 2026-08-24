@@ -69,13 +69,24 @@ def build_source(config: Config) -> ChartSource:
             # a synthetic chart archiving itself would be data about nothing.
             tick_archive = None
             if str(config.get("storage.tick_archive", "") or "").strip():
-                from ..storage.ticks import TickArchive
+                from ..storage.ticks import RETENTION_DAYS, TickArchive
 
+                # A YAML typo in the retention number must not stop the app:
+                # this try only catches source errors, and "the application
+                # always starts" is this function's stated contract.
+                try:
+                    retention = float(
+                        config.get("storage.tick_retention_days", RETENTION_DAYS)
+                    )
+                except (TypeError, ValueError):
+                    log.warning(
+                        "storage.tick_retention_days is not a number; "
+                        "using %s days", RETENTION_DAYS,
+                    )
+                    retention = RETENTION_DAYS
                 tick_archive = TickArchive(
                     config.resolve_path("storage.tick_archive"),
-                    retention_days=float(
-                        config.get("storage.tick_retention_days", 14.0)
-                    ),
+                    retention_days=retention,
                 )
 
             return FeedChartSource(
