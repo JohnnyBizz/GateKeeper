@@ -653,8 +653,6 @@ class TestTheLedgerPoolsEverySession:
         # The race table leads with the live strategy; the 13:41 report of
         # 2026-08-24 then closed the section by appending the same row
         # again — the one record printed twice, reading as two statements.
-        import sqlite3
-
         from poa.reporting.ledger import collect_ledger, ledger_lines
 
         journal = self._filled(tmp_path)
@@ -730,6 +728,22 @@ class TestTheMirrorDuel:
             self._row(0, second=30, experiment="mirror"),
         ]
         assert mirror_duel(live, shadows)["pairs"] == 1
+
+    def test_a_greedy_first_claim_cannot_drop_a_valid_pair(self):
+        # M1 sits nearest L2; a first-come walk would give L2 to M1 and
+        # leave M2 — inside 90s of L2 only — unpairable, reporting one pair
+        # where two exist. Matching tightest-gap-first finds both.
+        from poa.reporting.ledger import mirror_duel
+
+        live = [
+            self._row(0, second=0),          # L1
+            self._row(1, second=20),         # L2
+        ]
+        shadows = [
+            self._row(1, second=10, experiment="mirror"),   # M1: near both
+            self._row(1, second=55, experiment="mirror"),   # M2: only L2
+        ]
+        assert mirror_duel(live, shadows)["pairs"] == 2
 
     def test_only_the_mirror_enters_the_duel(self):
         from poa.reporting.ledger import mirror_duel

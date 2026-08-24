@@ -2247,6 +2247,53 @@ class TestASetupYouCannotSeeSpeaksUp:
             app.shutdown()
 
 
+class TestTheSessionOpensOnTheRecordInTheApp:
+    """The wiring, not the arithmetic: the record-at-start feature once
+    shipped dead because a wrong import was swallowed by its own defensive
+    except — the suite stayed green by testing the pieces and never the
+    app actually doing it at startup."""
+
+    def test_a_journal_with_a_record_reaches_the_panel_note(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp
+        from poa.storage.journal import Journal
+
+        db = tmp_path / "j.db"
+        journal = Journal(str(db))
+        start = datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
+        for i in range(25):
+            journal._connection.execute(
+                "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+                "trade_duration, direction, state, direction_confidence, "
+                "duration_confidence, overall_confidence, setup_quality, "
+                "outcome, source) VALUES (?, ?, 'EUR/USD OTC', 60, 30, "
+                "'CALL', 'SETTLED', 86, 80, 87, 'STRONG', ?, 'synthetic')",
+                (
+                    f"seed-{i}",
+                    (start + timedelta(minutes=i)).isoformat(),
+                    "win" if i % 3 else "loss",
+                ),
+            )
+        journal._connection.commit()
+        journal.close()
+
+        config = load_config()
+        config.set("storage.database", str(db))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("storage.report_dir", str(tmp_path / "r"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        app = OverlayApp(config)
+        try:
+            assert app.vm.record_note != ""
+            assert "break-even" in app.vm.record_note
+        finally:
+            app.shutdown()
+
+
 class TestTheAlertSaysWhatToSwitchTo:
     """91 minutes on one 1 MIN chart while the 5 SEC charts lit and faded.
 
