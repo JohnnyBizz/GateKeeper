@@ -913,6 +913,73 @@ class TestATrippedBrakeOwnsThePanel:
         assert DEFAULTS["risk"]["max_losses_in_a_row"] == 4
         assert DEFAULTS["risk"]["max_daily_loss_percent"] == 10.0
 
+    def test_the_switch_banner_stands_down_with_everything_else(self):
+        # The banner is the loudest act-now cue on the panel; a brake that
+        # dims the tabs but leaves a glowing SWITCH instruction has not
+        # stood anything down.
+        vm = self._vm(losses=4)
+        vm.post_notice(
+            "GBP/USD 5MIN — CALL 88", "Switch it.",
+            asset="GBP/USD OTC", timeframe=300,
+        )
+        assert vm.render()["notice"]["show"] is False
+        vm.session.record(True)  # the brake releases...
+        assert vm.render()["notice"]["show"] is True  # ...and it may speak
+
+
+class TestTheSwitchBanner:
+    """The one message on the panel with a deadline.
+
+    A setup on a chart the user is not on stands for a bar or two; by the
+    watchlist row it is one coloured tile among nine. The banner sits first
+    under the header, says the move, and clicking it does the panel's half
+    of the switch — same as clicking the chart's tab.
+    """
+
+    def _vm(self, asset="GBP/USD OTC", timeframe=5):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.watchlist = [
+            {"asset": asset, "timeframe": timeframe, "expiry": 30,
+             "direction": "PUT", "score": 88.0, "actionable": True},
+        ]
+        vm.post_notice(
+            "GBP/USD 5SEC — PUT 88",
+            "You're on EUR/USD 1 MIN — open GBP/USD OTC on a 5 SEC chart.",
+            asset=asset, timeframe=timeframe,
+        )
+        return vm
+
+    def test_it_is_drawn_above_the_market_strip(self, panel_module):
+        panel = _panel(panel_module, self._vm())
+        panel.refresh()
+        banner = _find(panel, "PUT 88")
+        strip = _find(panel, "CHART   ·")
+        assert banner and strip
+        assert banner[0]["y"] < strip[0]["y"]
+
+    def test_it_says_the_move(self, panel_module):
+        panel = _panel(panel_module, self._vm())
+        panel.refresh()
+        assert _find(panel, "open GBP/USD OTC on a 5 SEC chart")
+
+    def test_a_click_opens_the_chart_it_names(self, panel_module):
+        opened = []
+        panel = _panel(
+            panel_module, self._vm(),
+            on_asset=lambda name, tf=None: opened.append((name, tf)),
+        )
+        panel.refresh()
+        _click(panel, "notice")
+        assert opened == [("GBP/USD OTC", 5)]
+
+    def test_no_notice_draws_no_banner(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        assert not _find(panel, "PUT 88")
+        assert "notice<Button-1>" not in panel.c.recorder.binds
+
 
 class TestTheCallFreshnessStrip:
     """How late into the call an entry made now would be — drawn only while a

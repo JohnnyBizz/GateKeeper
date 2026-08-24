@@ -26,7 +26,7 @@ from ..logging_setup import get_logger, install_crash_handlers, setup_logging
 from ..models import format_duration, utcnow
 from ..feed.ticks import display_symbol
 from ..risk import SessionStats
-from .viewmodel import OverlayViewModel, ScanState
+from .viewmodel import OverlayViewModel, ScanState, direction_color
 
 log = get_logger(__name__)
 
@@ -1119,8 +1119,20 @@ class OverlayApp:
         finds the user rather than the other way round, and that needs a
         noise, once, on the transition into being tradeable — not on every
         sweep while it stays that way.
+
+        The noise has to say what to *do*, against where the user actually
+        is. The 91-minute session of 2026-08-23 was traded entirely on one
+        1 MIN chart while the 5 SEC charts lit and faded unseen: the old
+        message named the chart that fired and never said *you are not on
+        it*. So the body now contrasts the two — switch this pair to 5 SEC,
+        open that pair — and the same instruction lands as a banner on the
+        panel itself, because the panel is the one channel that cannot be
+        missed the way a toast can (and on Windows the toast was broken for
+        eight releases without anyone noticing).
         """
-        here = (self.vm.asset, int(self.vm.chart_timeframe))
+        here_asset = str(self.vm.asset)
+        here_tf = int(self.vm.chart_timeframe)
+        here = (here_asset, here_tf)
         live = {
             (str(row["asset"]), int(row.get("timeframe") or 0))
             for row in rows
@@ -1132,13 +1144,19 @@ class OverlayApp:
         # later is worth announcing again.
         self._announced = live
 
+        # Of everything announced this sweep, the strongest one takes the
+        # panel banner — one instruction at a time, or it is a second
+        # watchlist rather than a message.
+        banner: tuple[float, dict[str, Any]] | None = None
         for row in rows:
             asset = str(row.get("asset", ""))
             timeframe = int(row.get("timeframe") or 0)
             if (asset, timeframe) not in fresh:
                 continue
             direction = str(row.get("direction", ""))
-            where = f"{asset} {format_duration(timeframe)}" if timeframe else asset
+            score = float(row.get("score") or 0.0)
+            tf_label = format_duration(timeframe) if timeframe else ""
+            where = f"{asset} {tf_label}" if timeframe else asset
             expiry = int(row.get("expiry") or 0)
             # Record it. A setup on a watched chart is a call the tool made —
             # it named a pair, a direction and an expiry — and until now it was
@@ -1159,19 +1177,50 @@ class OverlayApp:
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     log.warning("could not journal a watchlist call: %s", exc)
-            # The expiry belongs in the alert, not just the panel: it is the
-            # one thing the user has to change on the platform before the
-            # setup being described is the trade they would place.
+            # What to do about it, from where the user is sitting. The same
+            # pair on another chart length is a tab-switch; another pair is a
+            # chart to open. Either way the expiry follows, because it is the
+            # one thing to change on the platform before the setup being
+            # described is the trade that would be placed.
             take = f" Set a {format_duration(expiry)} expiry." if expiry else ""
-            self.engine.emit_alert(
+            if asset == here_asset and timeframe and timeframe != here_tf:
+                move = (
+                    f"You're watching this pair on the "
+                    f"{format_duration(here_tf)} chart — switch it to "
+                    f"{tf_label}.{take}"
+                )
+            else:
+                move = (
+                    f"You're on {here_asset} {format_duration(here_tf)} — "
+                    f"open {asset} on a {tf_label} chart.{take}"
+                    if tf_label
+                    else f"You're on {here_asset} "
+                    f"{format_duration(here_tf)} — open {asset}.{take}"
+                )
+            alert = self.engine.emit_alert(
                 kind="watchlist",
                 title=f"{where} — {direction}",
-                body=(
-                    f"{direction} setup on {where} at "
-                    f"{float(row.get('score') or 0):.0f}/100.{take}"
-                ),
-                confidence=float(row.get("score") or 0.0),
+                body=f"{direction} {score:.0f}/100 on {where}. {move}",
+                confidence=score,
             )
+            # The banner keys off whether the alert actually went out, so the
+            # manager's one decision about interrupting the user — enabled,
+            # notify list, stand-down, cooldown — is made exactly once.
+            if alert is not None and (banner is None or score > banner[0]):
+                short = tf_label.replace(" ", "")
+                shown = f"{asset.replace(' OTC', '')} {short}".strip()
+                banner = (
+                    score,
+                    {
+                        "title": f"{shown} — {direction} {score:.0f}",
+                        "detail": move,
+                        "color": direction_color(direction),
+                        "asset": asset,
+                        "timeframe": timeframe,
+                    },
+                )
+        if banner is not None:
+            self.vm.post_notice(**banner[1])
 
     def _toggle_risk(self) -> None:
         """Fold the risk block away, and remember that across restarts."""

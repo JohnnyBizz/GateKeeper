@@ -8,6 +8,7 @@ a stale verdict cannot survive a state the tracker has marked dead.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -2242,6 +2243,134 @@ class TestASetupYouCannotSeeSpeaksUp:
             app.engine.alerts.settings.enabled = False
             self._sweep(app, self._rows(("GBP/USD OTC", 84.0, True, "PUT")))
             assert heard == []
+        finally:
+            app.shutdown()
+
+
+class TestTheAlertSaysWhatToSwitchTo:
+    """91 minutes on one 1 MIN chart while the 5 SEC charts lit and faded.
+
+    The old announcement named the chart that fired and never said the user
+    was not on it — on a platform where the pair is four tabs and the panel's
+    watchlist was the only place the difference showed. The message now
+    contrasts the chart that fired against the chart on screen, and the same
+    instruction lands as a banner on the panel itself, where it cannot be
+    missed the way a toast can.
+    """
+
+    def _app(self, tmp_path):
+        return TestEveryWatchedChartCounts()._app(tmp_path)
+
+    def _heard(self, app):
+        heard: list = []
+        app.engine.alerts.add_notifier(
+            type("N", (), {"name": "t", "send": lambda s, a: heard.append(a)})()
+        )
+        return heard
+
+    def _sweep(self, app, rows):
+        app._watch_results.put(list(rows))
+        app._collect_watchlist()
+
+    def _row(self, asset, timeframe, direction="PUT", score=88.0, expiry=30):
+        return {
+            "asset": asset, "timeframe": timeframe, "direction": direction,
+            "score": score, "expiry": expiry, "actionable": True,
+        }
+
+    def test_another_pair_says_where_you_are_and_what_to_open(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            heard = self._heard(app)
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            (alert,) = heard
+            assert "You're on EUR/USD OTC 1 MIN" in alert.body
+            assert "open GBP/USD OTC on a 5 SEC chart" in alert.body
+            assert "Set a 30 SEC expiry." in alert.body
+        finally:
+            app.shutdown()
+
+    def test_the_same_pair_on_another_timeframe_says_switch(self, tmp_path):
+        """The user's own case: watching 1 MIN while the 5 SEC chart fires."""
+        app = self._app(tmp_path)
+        try:
+            heard = self._heard(app)
+            self._sweep(app, [self._row("EUR/USD OTC", 5)])
+            (alert,) = heard
+            assert "watching this pair on the 1 MIN chart" in alert.body
+            assert "switch it to 5 SEC" in alert.body
+        finally:
+            app.shutdown()
+
+    def test_the_panel_banner_carries_the_same_instruction(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            notice = app.vm.render()["notice"]
+            assert notice["show"] is True
+            # The same shorthand as the watchlist tab it points at.
+            assert notice["title"] == "GBP/USD 5SEC — PUT 88"
+            assert "open GBP/USD OTC on a 5 SEC chart" in notice["detail"]
+            assert notice["asset"] == "GBP/USD OTC"
+            assert notice["timeframe"] == 5
+        finally:
+            app.shutdown()
+
+    def test_the_strongest_setup_takes_the_banner(self, tmp_path):
+        """One instruction at a time, or it is a second watchlist."""
+        app = self._app(tmp_path)
+        try:
+            self._sweep(app, [
+                self._row("GBP/USD OTC", 5, score=71.0),
+                self._row("AUD/CHF OTC", 60, direction="CALL", score=92.0),
+                self._row("USD/JPY OTC", 5, score=80.0),
+            ])
+            assert "AUD/CHF" in app.vm.render()["notice"]["title"]
+        finally:
+            app.shutdown()
+
+    def test_a_suppressed_alert_posts_no_banner(self, tmp_path):
+        """The manager decides about interrupting the user, exactly once."""
+        app = self._app(tmp_path)
+        try:
+            app.engine.alerts.settings.enabled = False
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            assert app.vm.render()["notice"]["show"] is False
+        finally:
+            app.shutdown()
+
+    def test_the_banner_expires_on_its_own(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            assert app.vm.render()["notice"]["show"] is True
+            app.vm._now = lambda: time.time() + 31.0
+            assert app.vm.render()["notice"]["show"] is False
+        finally:
+            app.shutdown()
+
+    def test_the_banner_dies_with_its_setup(self, tmp_path):
+        """A standing instruction to switch to a setup that has gone is the
+        stale-answer mistake with an arrow pointing at it."""
+        app = self._app(tmp_path)
+        try:
+            live = self._row("GBP/USD OTC", 5)
+            self._sweep(app, [live])
+            assert app.vm.render()["notice"]["show"] is True
+            gone = dict(live, actionable=False, score=40.0, direction="WAIT")
+            self._sweep(app, [gone])
+            assert app.vm.render()["notice"]["show"] is False
+        finally:
+            app.shutdown()
+
+    def test_a_chart_that_leaves_the_sweep_takes_its_banner_along(self, tmp_path):
+        """The platform dropping a tab must not leave its instruction up."""
+        app = self._app(tmp_path)
+        try:
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            assert app.vm.render()["notice"]["show"] is True
+            app.vm.watchlist = []
+            assert app.vm.render()["notice"]["show"] is False
         finally:
             app.shutdown()
 

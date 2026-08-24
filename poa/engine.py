@@ -448,13 +448,19 @@ class AnalysisEngine:
 
     def emit_alert(
         self, kind: str, title: str, body: str, confidence: float = 0.0
-    ) -> None:
+    ) -> Alert | None:
         """Raise an alert that did not come from tracking one signal.
 
         The watchlist reads charts nobody has open, so there is no tracked
         change behind those setups — nothing was followed, because nothing was
         on screen. They still deserve the same noise, and go through the same
         manager so the cooldown and the notify list apply.
+
+        Returns the alert if one actually went out, else None — so a caller
+        with its own way of showing things (the panel's switch banner) can key
+        off the manager's one decision about whether the user should be
+        interrupted, instead of re-implementing the cooldown, the stand-down
+        and the enabled switch and drifting from them one by one.
         """
         try:
             alert = self.alerts.announce(
@@ -462,9 +468,9 @@ class AnalysisEngine:
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("could not raise %s: %s", kind, exc)
-            return
+            return None
         if alert is None:
-            return
+            return None
         try:
             self.journal.record_alert(
                 kind=alert.kind,
@@ -475,6 +481,7 @@ class AnalysisEngine:
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("could not file the alert: %s", exc)
+        return alert
 
     def latest_series(self) -> Series | None:
         """The candles behind the current signal, or None before the first read."""
