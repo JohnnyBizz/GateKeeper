@@ -893,3 +893,44 @@ class TestTheWaitingIsCutForShortTrades:
         # The unreadable one is left for the loader's own defaulting; the rest
         # still move, because one bad key is not a reason to strand the file.
         assert config.get("alerts.cooldown_seconds") == 20
+
+
+class TestTheSilentDefaultIsMovedOn:
+    """Sound was off by default for as long as Windows had none to offer.
+
+    No bundled player, and a desktop path that needed a package the build
+    never carried: every Windows install was silent however the settings
+    were set. Both channels now need nothing installed, so the old silent
+    default moves on — and a silence chosen after the move stays chosen.
+    """
+
+    def _config(self, tmp_path, data):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle)
+        return load_config(path)
+
+    def test_an_older_file_still_on_silent_gets_sound(self, tmp_path):
+        config = self._config(
+            tmp_path, {"config_version": 2, "alerts": {"sound": False}}
+        )
+        assert config.get("alerts.sound") is True
+
+    def test_an_older_file_that_never_chose_lands_on_the_new_default(self, tmp_path):
+        config = self._config(tmp_path, {"config_version": 2, "alerts": {}})
+        assert config.get("alerts.sound") is True
+
+    def test_silence_chosen_after_the_move_is_kept(self, tmp_path):
+        config = self._config(
+            tmp_path, {"config_version": 3, "alerts": {"sound": False}}
+        )
+        assert config.get("alerts.sound") is False
+
+    def test_the_default_is_now_on(self):
+        from poa.config import DEFAULTS
+
+        assert DEFAULTS["alerts"]["sound"] is True

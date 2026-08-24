@@ -748,3 +748,65 @@ each answer arriving as a named, repeatable configuration rather than a
 hunch. What it does not buy: any of tonight's rates. In-sample selection
 is still in-sample — a shadow that wins the race earns a promotion trial
 as the live config, not a coronation.
+
+---
+
+## 2026-08-23/24 — the 91-minute solid test, and what it flipped
+
+One sitting, 22:27–23:58 UTC, meant as the first clean three-minute
+session. It was not clean: tabs left over from earlier sittings kept
+5/10/15-second charts in the sweep, so the journal mixes expiries, with
+30 SEC dominant. What it measured anyway:
+
+* **Session, all live calls: 8W/27L, 22.9%, Wilson 95% [13.3, 36.5].**
+  The first session whose entire interval sits below break-even. It
+  included a run of 27 consecutive losses followed by a 7-win AED/CNY
+  cluster — the shape auto-correlation warnings exist for.
+* **Three minutes is not rescuing anything: pooled 3 MIN calls across
+  all sessions now stand at 14W/27L, 34.1% over 41.** The horizon
+  hypothesis had its parallel test running and is losing it.
+* An hour-of-day spread is forming (58.7% at 21:00 UTC vs 25.8% at
+  22:00, both still small samples) and stays under watch, not action.
+
+### The mirror
+
+Pooling every settled live call the tool has ever made — 423 across all
+sessions and expiries — the record is **172W/251L, 40.7%, Wilson 95%
+[36.1, 45.4]**. The upper bound is below a coin flip. A strategy that
+reliably loses to 50/50 is, arithmetically, a strategy whose *opposite*
+reliably beats it: the complement is 59.3% [54.6, 63.9], above the 52.1%
+break-even at its lower bound.
+
+That complement is arithmetic on the past, not a prediction — the same
+in-sample trap this file keeps warning about, at maximum size. So it
+ships as the race's newest shadow instead of as a change to the live
+strategy: **mirror** — the live rulebook, every call recorded with the
+opposite direction, same charts, same moments, same expiry. The roster
+is now six (mirror, fade-overheat, three-minute, thirty-second,
+strict-85, loose-70; the expiry pair doubles as a control group).
+
+**The pre-registered claim: if the anti-signal is real, the mirror's
+pooled record goes above 52.1% out-of-sample within its first twenty-plus
+settled calls' worth of sessions. If it hovers at fifty, the live record
+was noise plus bad luck and the anti-signal is dead.** Either answer is
+worth having, and nothing about the panel's own calls changes until the
+race says so.
+
+### Found while acting on it: Windows never had a notification
+
+The user asked for a pop-up when another timeframe heats up — and the
+audit of that request found there has never been one to miss. The desktop
+notifier's Windows path imported ``win10toast``, which was in neither the
+requirements, the build spec, nor CI, so every Windows install detected
+no channel and silently sent nothing; the sound notifier had no Windows
+default player, so it was silent too. Eight releases of alerts, zero
+delivered on the platform the tool is used on.
+
+Shipped, needing nothing installed: toasts through PowerShell
+(``-EncodedCommand``, fire-and-forget), the system chime through
+``winsound`` (sound now defaults on, migrated), and — because any toast
+can be missed — a switch banner on the always-on-top panel itself. The
+banner names the chart, the side and the expiry, contrasts it with the
+chart the user is on ("switch it to 5 SEC" / "open GBP/USD"), expires in
+thirty seconds, dies early if its setup dies, and stands down with the
+brake like every other act-now cue.

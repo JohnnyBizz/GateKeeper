@@ -360,6 +360,7 @@ class OverlayPanel:
             for key in self._entry_items:
                 self._hide_entry(key)
             return
+        y = self._draw_notice(data, y)
         y = self._draw_market(data, y)
         y = self._draw_watchlist(data, y)
         y = self._draw_signal(data, y)
@@ -402,6 +403,54 @@ class OverlayPanel:
                        self.f_body, COLORS["faint"], "center", tags=f"frame {tag}")
             self._clickable(tag, command)
         return PAD + 38 + 8
+
+    def _draw_notice(self, data: dict[str, Any], y: int) -> int:
+        """The switch banner: a chart the user is not on just became tradeable.
+
+        First thing under the header, above even the pair strip, because it is
+        the one message on the panel with a deadline — a setup stands for a
+        bar or two, and by the row of watchlist tabs it is one coloured tile
+        among nine. It breathes like an actionable verdict, names the chart
+        and the side, and the line under it says the move: switch this pair's
+        timeframe, or open that pair, and what expiry to set. Clicking it does
+        the panel's half of the switch, same as clicking the chart's tab.
+
+        The view model decides whether it shows at all — expiry, the setup
+        dying, the brake — so a banner on screen is always a banner still
+        telling the truth.
+        """
+        notice = data.get("notice") or {}
+        if not notice.get("show"):
+            return y
+        colour = notice.get("color") or COLORS["accent"]
+        detail = str(notice.get("detail") or "")
+        wrap = INNER - 28
+        lines = (
+            max(1, min(3, int(self._width_of(detail, self.f_label) // wrap) + 1))
+            if detail
+            else 0
+        )
+        height = 30 + lines * 13
+        self._card(
+            PAD, y, INNER, height, radius=12, fill="#1d2942", fill_to="#151d30",
+            border=colour, glow=colour,
+            glow_strength=0.95 * self._pulse_phase(), tags="frame notice",
+        )
+        self._text(PAD + 14, y + 16, str(notice.get("title", ""))[:42],
+                   self.f_button, colour, "w", tags="frame notice")
+        if detail:
+            self.c.create_text(
+                PAD + 14, y + 27, text=detail, font=self.f_label,
+                fill=COLORS["dim"], anchor="nw", width=wrap,
+                tags="frame notice",
+            )
+        asset = str(notice.get("asset") or "")
+        if asset:
+            timeframe = int(notice.get("timeframe") or 0) or None
+            self._clickable(
+                "notice", lambda name=asset, tf=timeframe: self.on_asset(name, tf)
+            )
+        return y + height + 8
 
     def _draw_market(self, data: dict[str, Any], y: int) -> int:
         """The pair, the price, and the shape of the session so far."""

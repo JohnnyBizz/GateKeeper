@@ -75,7 +75,17 @@ def _experiment_rows(journal):
 class TestTheRoster:
     def test_absent_means_the_shipped_roster(self):
         assert roster_from_config({}) == DEFAULT_ROSTER
-        assert len(DEFAULT_ROSTER) == 5
+        assert len(DEFAULT_ROSTER) == 6
+
+    def test_the_mirror_is_the_live_rulebook_reversed(self):
+        # 423 pooled calls put the live strategy's Wilson upper bound below
+        # a coin flip; the mirror is the pre-registered test of whether the
+        # complement survives out of sample. Same thresholds, same expiry —
+        # only the side flips.
+        mirror = next(e for e in DEFAULT_ROSTER if e.label == "mirror")
+        assert mirror.invert is True
+        assert mirror.overrides == ()
+        assert mirror.trade_duration is None
 
     def test_both_horizons_are_always_in_the_race(self):
         # Whichever expiry the live strategy drives, the other horizon keeps

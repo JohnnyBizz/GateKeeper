@@ -71,7 +71,10 @@ def _with_new_kinds(kinds: Iterable[Any]) -> tuple[str, ...]:
 class AlertSettings:
     enabled: bool = True
     desktop_notifications: bool = True
-    sound: bool = False
+    # On by default: the tool's whole job is telling the user something, and
+    # it spent eight releases doing so silently on the platform most installs
+    # run on. The default command needs nothing installed on any platform.
+    sound: bool = True
     sound_command: str = ""
     cooldown_seconds: float = 120.0
     min_confidence: float = 75.0

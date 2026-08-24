@@ -123,7 +123,7 @@ overlay:
   scan_seconds: 0.6        # how long the Scan animation holds before revealing
 
 # Bumped when a stored setting has to change on installs that already exist.
-config_version: 2
+config_version: 3
 
 signals:
   # 62 is set for RATE, not accuracy, and the difference was measured before
@@ -175,9 +175,11 @@ signals:
   # journals its calls under its own label; none of them can reach the
   # panel, the alerts, the calibration record or the cooldown. Their race
   # standings print in every report's ledger. Omit this key for the shipped
-  # roster (fade-overheat, three-minute, thirty-second, strict-85,
-  # loose-70 — the expiry matching the live one doubles as a control
-  # group, and the other keeps its horizon measured); set an empty
+  # roster (mirror — the live rulebook with every call reversed, the
+  # pre-registered test of the pooled record sitting below a coin flip —
+  # plus fade-overheat, three-minute, thirty-second, strict-85, loose-70;
+  # the expiry matching the live one doubles as a control group, and the
+  # other keeps its horizon measured); set an empty
   # list [] to turn racing off; or list your own:
   #   experiments:
   #     - label: my-idea
@@ -190,8 +192,11 @@ signals:
 
 alerts:
   enabled: true
-  desktop_notifications: true
-  sound: false
+  desktop_notifications: true   # nothing to install on any platform: Windows
+                                # toasts go through PowerShell, macOS through
+                                # osascript, Linux through notify-send
+  sound: true              # a chime with each alert. On Windows it is the
+                           # system notification sound, nothing to install.
   sound_command: ""        # leave blank to auto-detect a player
   cooldown_seconds: 20     # suppress repeats of the same alert
   min_confidence: 62       # must match signals.min_shown_confidence, or the

@@ -72,6 +72,11 @@ COLORS = {
 # The chart on screen plus the eight the feed keeps behind it.
 MAX_WATCHED = 9
 
+# How long the switch banner stands before it expires on its own. Long enough
+# to be seen by somebody watching the platform rather than the panel; short
+# enough that what it describes can still be true when they look.
+NOTICE_SECONDS = 30.0
+
 
 def direction_color(direction: Direction | str) -> str:
     key = direction.value if isinstance(direction, Direction) else str(direction)
@@ -296,6 +301,20 @@ class OverlayViewModel:
     # numbers rather than as a thread handle, so the panel can be drawn from
     # it and the whole of it tested without a browser.
     recording: RecordingState = field(default_factory=RecordingState)
+    # The switch banner: a setup on a chart the user is not looking at, said
+    # on the panel itself. Every other channel can be missed — a toast lives
+    # six seconds, a chime is one note, and on Windows both were broken for
+    # eight releases without anyone noticing — but the panel is the one thing
+    # that already sits on top of the platform window. The 2026-08-23 session
+    # was watched for 91 minutes on a single 1 MIN chart while the 5 SEC
+    # charts lit and faded with nothing but a tab changing colour.
+    notice_title: str = ""
+    notice_detail: str = ""
+    notice_color: str = COLORS["accent"]
+    # Which chart the banner is vouching for, so it can die with its setup.
+    notice_asset: str = ""
+    notice_timeframe: int = 0
+    notice_until: float = 0.0
     # Injected so the countdown can be tested without waiting for a minute.
     _now: Any = field(default=time.time, repr=False)
 
@@ -422,6 +441,7 @@ class OverlayViewModel:
             "chart": self._chart(scanning),
             "details": self._details(),
             "watchlist": self._watchlist(),
+            "notice": self._notice(),
             "lesson": self._lesson(),
             "proof": self._proof(),
             "calibration": self._calibration(),
@@ -491,6 +511,10 @@ class OverlayViewModel:
             row["color"] = COLORS["faint"]
             row["mismatched"] = False
             row["needs"] = ""
+        # The switch banner is the loudest act-now cue on the panel; a brake
+        # that dims the tabs but leaves a glowing SWITCH instruction has not
+        # stood anything down.
+        payload["notice"] = _blank_notice()
 
     # ------------------------------------------------------------------
 
@@ -805,12 +829,74 @@ class OverlayViewModel:
         label = f"{total} trade{'' if total == 1 else 's'}"
         if elsewhere:
             # Name them: a count with nowhere to go is a count nobody can act
-            # on, and the whole point is that the pair finds the user.
+            # on, and the whole point is that the pair finds the user. The
+            # timeframe rides along because the pair alone is half an address
+            # — AED/CNY is four tabs on the platform, and the one that fired
+            # is a specific chart length, not a pair.
             names = ", ".join(
-                str(row.get("asset", "")).replace(" OTC", "") for row in elsewhere[:3]
+                f"{str(row.get('asset', '')).replace(' OTC', '')} "
+                f"{_compact_duration(int(row.get('timeframe') or 0))}".strip()
+                for row in elsewhere[:3]
             )
             label = f"{total} — {names}" if not here else f"{total} — here, {names}"
         return {"take_now": total, "take_label": label}
+
+    # ------------------------------------------------------------------
+
+    def post_notice(
+        self,
+        title: str,
+        detail: str,
+        *,
+        color: str | None = None,
+        asset: str = "",
+        timeframe: int = 0,
+        seconds: float = NOTICE_SECONDS,
+    ) -> None:
+        """Put the switch banner up. One at a time: a newer one replaces it."""
+        self.notice_title = str(title)
+        self.notice_detail = str(detail)
+        self.notice_color = color or COLORS["accent"]
+        self.notice_asset = str(asset)
+        self.notice_timeframe = int(timeframe or 0)
+        self.notice_until = float(self._now()) + float(seconds)
+
+    def clear_notice(self) -> None:
+        self.notice_title = ""
+        self.notice_detail = ""
+        self.notice_asset = ""
+        self.notice_timeframe = 0
+        self.notice_until = 0.0
+
+    def _notice(self) -> dict[str, Any]:
+        """The switch banner, if it is still telling the truth.
+
+        Three ways it comes down without being dismissed: its time runs out;
+        the chart it names stops being actionable in the sweep; or the chart
+        leaves the sweep entirely. All three exist for the same reason the
+        verdict blanks during a scan — a standing instruction to switch to a
+        setup that has gone is the stale-answer mistake with an arrow
+        pointing at it.
+        """
+        if not self.notice_title or float(self._now()) >= self.notice_until:
+            return _blank_notice()
+        if self.notice_asset:
+            standing = {
+                (str(row.get("asset", "")), int(row.get("timeframe") or 0)): bool(
+                    row.get("actionable")
+                )
+                for row in self.watchlist
+            }
+            if not standing.get((self.notice_asset, self.notice_timeframe), False):
+                return _blank_notice()
+        return {
+            "show": True,
+            "title": self.notice_title,
+            "detail": self.notice_detail,
+            "color": self.notice_color,
+            "asset": self.notice_asset,
+            "timeframe": self.notice_timeframe,
+        }
 
     def _taught(self) -> str:
         """What the WIN/LOSS buttons have taught the record so far.
@@ -1073,6 +1159,17 @@ class OverlayViewModel:
         elif self.signal.state is SignalState.INVALIDATED:
             warnings.insert(0, "Setup invalidated — do not treat the last signal as live.")
         return warnings[:4]
+
+
+def _blank_notice() -> dict[str, Any]:
+    return {
+        "show": False,
+        "title": "",
+        "detail": "",
+        "color": COLORS["accent"],
+        "asset": "",
+        "timeframe": 0,
+    }
 
 
 def _compact_duration(seconds: int) -> str:

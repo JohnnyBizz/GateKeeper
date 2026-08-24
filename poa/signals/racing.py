@@ -60,6 +60,16 @@ class Experiment:
 
 
 DEFAULT_ROSTER: tuple[Experiment, ...] = (
+    # The mirror: the live rulebook, the opposite side. After 423 pooled
+    # settled calls the live strategy sat at 40.7% — Wilson 95% upper bound
+    # 45.4%, wholly below a coin flip — which makes its complement 59.3%
+    # over the same moments, above the 52.1% break-even at its lower bound
+    # too. That complement is arithmetic on the past, not a prediction;
+    # this experiment is the prediction. It fires exactly when the live
+    # strategy fires and records the other direction, so THE RACE becomes
+    # the cleanest possible A/B: same charts, same moments, same expiry,
+    # opposite call.
+    Experiment("mirror", invert=True),
     Experiment(
         "fade-overheat",
         overrides=(

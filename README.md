@@ -1052,9 +1052,12 @@ a signal and what blocked it.
 🔄 TREND REVERSAL · ⚠️ HIGH VOLATILITY · ⚠️ CONFLICTING SIGNALS ·
 ⚠️ CHART DATA UNRELIABLE`
 
-Delivered to the dashboard, the application log, and native desktop
-notifications (`notify-send` / `osascript` / `win10toast`), with configurable
-minimum confidence, cooldown and per-kind filtering.
+Delivered to the dashboard, the application log, a chime, and native desktop
+notifications (`notify-send` on Linux, `osascript` on macOS, PowerShell toasts
+on Windows — nothing to install on any of them), with configurable minimum
+confidence, cooldown and per-kind filtering. A setup on a chart you are not
+looking at also raises a banner on the overlay panel itself, saying what to
+switch to and what expiry to set.
 
 ### The journal
 

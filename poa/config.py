@@ -104,7 +104,7 @@ TRADE_DURATIONS: tuple[int, ...] = (
 
 # Bumped whenever a stored setting has to change on installs that already
 # exist. See ``_migrate``.
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 
 DEFAULTS: dict[str, Any] = {
     "config_version": CONFIG_VERSION,
@@ -333,7 +333,11 @@ DEFAULTS: dict[str, Any] = {
     "alerts": {
         "enabled": True,
         "desktop_notifications": True,
-        "sound": False,
+        # On by default since v3. It was off while Windows had no default
+        # player anyway; now the chime comes from the standard library and a
+        # tool whose whole job is telling the user something must not
+        # default to doing it silently.
+        "sound": True,
         "sound_command": "",
         # Two minutes was four trades' worth of silence at a thirty-second
         # expiry. The watchlist already only announces on the transition into
@@ -655,6 +659,22 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         if config.get("market.scan_timeframes") is True:
             config.set("market.scan_timeframes", [5, 60])
             changed.append("market.scan_timeframes all -> [5, 60]")
+
+    if stored < 3:
+        # Sound was off by default for as long as Windows — the platform most
+        # installs run on — had no way to make any: no bundled player, and a
+        # desktop-notification path that needed a package the build never
+        # carried. The 2026-08-23 session was watched for 91 minutes on one
+        # chart while the other charts lit and faded with nothing but a tab
+        # changing colour. Both channels now work with nothing installed
+        # (PowerShell for the toast, winsound for the chime), so the old
+        # silent default is moved on; silence chosen after this stays chosen.
+        if "sound" not in (file_data.get("alerts") or {}):
+            config.set("alerts.sound", True)
+            changed.append("alerts.sound -> on")
+        elif not bool(config.get("alerts.sound", True)):
+            config.set("alerts.sound", True)
+            changed.append("alerts.sound off -> on")
 
     config.data["config_version"] = CONFIG_VERSION
     if not changed:
