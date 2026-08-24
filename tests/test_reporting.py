@@ -679,6 +679,106 @@ class TestTheLedgerPoolsEverySession:
         assert sum("live strategy" in line for line in lines) == 1
 
 
+class TestTheMirrorDuel:
+    """The number a promotion actually reads.
+
+    The race table compares pools, and shadow pools sample different
+    moments from the live rows (sweep cadence, no cooldown). Flipping the
+    panel is a decision about the live calls themselves, so the deciding
+    number pairs each mirror call with the very live call it reverses —
+    same chart, same expiry, within seconds — and counts who won.
+    """
+
+    def _row(self, minute, *, asset="EUR/USD OTC", duration=30,
+             direction="CALL", outcome="win", experiment=None, second=0):
+        stamp = (START + timedelta(minutes=minute, seconds=second)).isoformat()
+        return {"timestamp": stamp, "asset": asset, "trade_duration": duration,
+                "direction": direction, "outcome": outcome,
+                "experiment": experiment}
+
+    def test_pairs_match_on_chart_expiry_and_moment(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0, direction="CALL", outcome="loss")]
+        shadows = [self._row(0, second=20, direction="PUT", outcome="win",
+                             experiment="mirror")]
+        duel = mirror_duel(live, shadows)
+        assert duel == {
+            "pairs": 1, "opposite": 1, "mirror_wins": 1, "live_wins": 0,
+        }
+
+    def test_a_far_away_call_is_not_a_pair(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0)]
+        shadows = [self._row(5, experiment="mirror")]
+        assert mirror_duel(live, shadows)["pairs"] == 0
+
+    def test_a_different_expiry_is_a_different_trade(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0, duration=30)]
+        shadows = [self._row(0, second=10, duration=180, experiment="mirror")]
+        assert mirror_duel(live, shadows)["pairs"] == 0
+
+    def test_each_live_call_pairs_once(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0)]
+        shadows = [
+            self._row(0, second=10, experiment="mirror"),
+            self._row(0, second=30, experiment="mirror"),
+        ]
+        assert mirror_duel(live, shadows)["pairs"] == 1
+
+    def test_only_the_mirror_enters_the_duel(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0)]
+        shadows = [self._row(0, second=10, experiment="strict-85")]
+        assert mirror_duel(live, shadows)["pairs"] == 0
+
+    def test_the_report_prints_it_only_past_a_handful_of_pairs(self):
+        from poa.reporting.ledger import LedgerRow, ledger_lines
+
+        def _rows(label, wins, losses):
+            row = LedgerRow(label)
+            row.wins, row.losses = wins, losses
+            return row
+
+        ledger = {
+            "overall": [_rows("live strategy", 234, 293)],
+            "race": [_rows("live strategy", 234, 293), _rows("mirror", 29, 15)],
+            "duel": {"pairs": 31, "opposite": 31, "mirror_wins": 21,
+                     "live_wins": 10},
+        }
+        text = "\n".join(ledger_lines(ledger))
+        assert "HEAD TO HEAD" in text
+        assert "31 pairs, direction opposite in 31" in text
+        assert "the mirror won 21 (67.7%)" in text
+
+        ledger["duel"] = {"pairs": 3, "opposite": 3, "mirror_wins": 2,
+                          "live_wins": 1}
+        assert "HEAD TO HEAD" not in "\n".join(ledger_lines(ledger))
+
+    def test_race_rows_carry_their_intervals(self):
+        from poa.reporting.ledger import LedgerRow, ledger_lines
+
+        live = LedgerRow("live strategy")
+        live.wins, live.losses = 234, 293
+        mirror = LedgerRow("mirror")
+        mirror.wins, mirror.losses = 29, 15
+        thin = LedgerRow("fade-overheat")
+        thin.wins, thin.losses = 4, 2
+        text = "\n".join(ledger_lines(
+            {"overall": [live], "race": [live, mirror, thin], "duel": {}}
+        ))
+        mirror_line = next(l for l in text.splitlines() if "mirror" in l)
+        assert "[51.1, 78.1]" in mirror_line
+        thin_line = next(l for l in text.splitlines() if "fade-overheat" in l)
+        assert "[" not in thin_line  # under the bar: count, no interval
+
+
 class TestTheSessionOpensOnWhatTheRecordSays:
     """"Search for any positive calls" — done honestly: any cell of the
     pooled record qualifies, at any rate, but only with twenty-plus settled
