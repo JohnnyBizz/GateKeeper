@@ -942,3 +942,52 @@ against the archive and the journal first, raced as a shadow second,
 promoted third. The 1–100 scale itself is not the constraint — a wider
 scale on an uncalibrated score would be more precision about a number
 that is not yet true.
+
+---
+
+## 2026-08-24 — the mirror posts its first readable rate: 65.9% over 44
+
+The 15:34 sitting: 55 calls, 33W/22L — **60.0% [46.8, 71.9]**, the second
+consecutive sitting above break-even at the point estimate (92% payout,
+break-even 52.1%). Same asterisks as yesterday's: the interval straddles,
+always-SELL beat the tool by 9.1 points on a hard down-trending stretch,
+and AUC was 50.3% — the score still ranks nothing. The wins were again
+rides: CHF/NOK PUTs, then an eleven-PUT AUD/NZD run at 91.7%.
+
+**The race, now with enough settled to read:**
+
+* **mirror — 29W/15L over 44: 65.9%, Wilson 95% [51.1, 78.1].** The
+  pre-registered claim was "pools above 52.1% out of sample within its
+  first twenty-plus settled calls." At the point estimate it passes with
+  fourteen points to spare. At the interval's lower bound it sits one
+  point short (51.1 vs 52.1). One more ordinary session decides that.
+* **thirty-second (the control): 47.3% [39.9, 54.9] against the live
+  30 SEC pool's 45.8%.** The control tracks the live rate, which is the
+  designed proof that the shadow machinery itself measures honestly —
+  a divergence there would have been a bug report, and there is none.
+* strict-85 (29.0%/62) and three-minute (16.2%/37) continue dying;
+  loose-70 sits at 39.3%/61.
+
+Also newly readable in the pooled record: **AUD/NZD OTC 84.6% over 26**
+[66.5, 93.9], **1 MIN expiry 63.6% over 22** [43.0, 80.3], and 16:00 UTC
+at 61.4%/44 joining 14:00 and 21:00 above break-even. The hour map keeps
+its shape: UTC afternoon good, 22:00–02:00 dreadful.
+
+**Why the mirror is not promoted today.** Two reasons, both structural.
+The interval: promotion on a lower bound below break-even is the
+fitted-to-29-calls mistake at larger scale; one more session settles it
+honestly. And the sampling: shadows evaluate at the sweep's cadence and
+skip the cooldown, so the mirror's 44 moments are not the live rows'
+moments — it can beat the live *pool* without beating the live *call
+beside it*, and flipping the panel is a decision about the live calls
+themselves. The report now measures exactly that: **HEAD TO HEAD** pairs
+each mirror call with the live call it reverses — same chart, same
+expiry, within ninety seconds — and prints who won. The race table's
+rows also now carry their Wilson intervals, because those rows are what
+a promotion reads and a bare rate over forty calls is an invitation to
+overclaim.
+
+The promotion test, pre-registered like the last one: **the mirror's
+pooled lower bound clears 52.1% AND the head-to-head shows the mirror's
+side winning the majority of its pairs.** Both print in the next
+report's ledger with no interpretation needed.

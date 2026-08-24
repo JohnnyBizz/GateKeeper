@@ -317,7 +317,8 @@ class Journal:
         """
         query = (
             "SELECT timestamp, asset, trade_duration, overall_confidence, "
-            "outcome, experiment FROM signals WHERE outcome IN ('win', 'loss') "
+            "direction, outcome, experiment FROM signals "
+            "WHERE outcome IN ('win', 'loss') "
             "AND (notes IS NULL OR notes != 'manual')"
         )
         params: list[Any] = []

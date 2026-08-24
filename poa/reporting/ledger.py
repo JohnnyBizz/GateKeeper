@@ -141,7 +141,74 @@ def collect_ledger(
         # winner here is a named, repeatable configuration — not a vibe.
         "race": [overall]
         + sorted(by_experiment.values(), key=lambda r: -r.settled),
+        "duel": mirror_duel(live, shadows),
     }
+
+
+def mirror_duel(
+    live: list[dict[str, Any]],
+    shadows: list[dict[str, Any]],
+    window_seconds: float = 90.0,
+) -> dict[str, int]:
+    """The mirror against the exact live call it reverses.
+
+    The race table can mislead on its own: shadows sample at the sweep's
+    cadence and skip the cooldown, so their moments are not exactly the
+    live rows' moments — a shadow can beat the live *pool* while losing to
+    the live *call beside it*. Promotion is a decision about flipping the
+    panel's own calls, so the number that decides it is this one: pair
+    each settled mirror row with the nearest settled live row on the same
+    chart at the same expiry within a short window, and count who won.
+
+    Timestamps are ISO strings in one timezone (the journal's own), so
+    they compare as datetimes; rows that fail to parse simply stay out.
+    """
+    from datetime import datetime
+
+    def _when(row: dict[str, Any]) -> Any:
+        try:
+            return datetime.fromisoformat(str(row.get("timestamp")))
+        except (TypeError, ValueError):
+            return None
+
+    mirrors = [
+        (when, row)
+        for row in shadows
+        if str(row.get("experiment")) == "mirror"
+        and (when := _when(row)) is not None
+    ]
+    pool: dict[tuple[str, int], list[tuple[Any, dict[str, Any]]]] = {}
+    for row in live:
+        when = _when(row)
+        if when is None:
+            continue
+        key = (str(row.get("asset")), int(row.get("trade_duration") or 0))
+        pool.setdefault(key, []).append((when, row))
+
+    duel = {"pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0}
+    for when, mirror_row in sorted(mirrors, key=lambda item: item[0]):
+        key = (
+            str(mirror_row.get("asset")),
+            int(mirror_row.get("trade_duration") or 0),
+        )
+        candidates = pool.get(key) or []
+        best = None
+        for index, (live_when, _live_row) in enumerate(candidates):
+            gap = abs((live_when - when).total_seconds())
+            if gap <= window_seconds and (best is None or gap < best[0]):
+                best = (gap, index)
+        if best is None:
+            continue
+        _gap, index = best
+        _live_when, live_row = candidates.pop(index)  # each live row pairs once
+        duel["pairs"] += 1
+        if str(live_row.get("direction")) != str(mirror_row.get("direction")):
+            duel["opposite"] += 1
+        if mirror_row.get("outcome") == "win":
+            duel["mirror_wins"] += 1
+        if live_row.get("outcome") == "win":
+            duel["live_wins"] += 1
+    return duel
 
 
 #: How the record's cells are introduced when pulled out of their tables —
@@ -248,6 +315,34 @@ def _row_line(row: LedgerRow) -> str:
     )
 
 
+def _wilson(wins: int, settled: int) -> tuple[float, float]:
+    """95% Wilson interval, in percent — the same arithmetic the session
+    header uses, so the race speaks the same language as the headline."""
+    import math
+
+    z = 1.96
+    p = wins / settled
+    denom = 1 + z * z / settled
+    centre = (p + z * z / (2 * settled)) / denom
+    half = (
+        z
+        * math.sqrt(p * (1 - p) / settled + z * z / (4 * settled * settled))
+        / denom
+    )
+    return (centre - half) * 100.0, (centre + half) * 100.0
+
+
+def _race_line(row: LedgerRow) -> str:
+    """A race row carries its interval: these rows are the ones a promotion
+    decision reads, and a bare rate over forty calls invites exactly the
+    overclaim the rest of the report exists to prevent."""
+    line = _row_line(row)
+    if row.settled >= MEANINGFUL:
+        low, high = _wilson(row.wins, row.settled)
+        line += f"  [{low:.1f}, {high:.1f}]"
+    return line
+
+
 def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
     """Render the pooled record in the report's own voice."""
     total = ledger["overall"][0]
@@ -281,7 +376,21 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
             "still has to hold up out of sample before it flies the panel.",
             "",
         ]
-        lines.extend(_row_line(row) for row in race)
+        lines.extend(_race_line(row) for row in race)
+        duel = ledger.get("duel") or {}
+        if isinstance(duel, dict) and duel.get("pairs", 0) >= 5:
+            # The number a promotion actually reads: not the mirror's pool
+            # against the live pool — those sample different moments — but
+            # the mirror against the very call it reverses.
+            rate = duel["mirror_wins"] / duel["pairs"] * 100.0
+            lines += [
+                "",
+                "   HEAD TO HEAD — each mirror call against the live call",
+                "   it reverses, same chart and expiry within 90 seconds:",
+                f"   {duel['pairs']} pairs, direction opposite in "
+                f"{duel['opposite']}; the mirror won {duel['mirror_wins']} "
+                f"({rate:.1f}%), the live side {duel['live_wins']}.",
+            ]
     else:
         # The closing summary line — only when the race table did not just
         # print the same row. With shadows in the journal the live strategy
