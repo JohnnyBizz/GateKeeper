@@ -372,6 +372,12 @@ DEFAULTS: dict[str, Any] = {
         # happened in.
         "report_dir": "storage/reports",
         "retain_screenshots": 500,
+        # The feed's raw ticks, kept whole beside the candles they become.
+        # The candles are these ticks bucketed, and the bucketing destroys
+        # how price moved inside each bar — the one input never yet measured.
+        # Bounded by the retention window, pruned at startup. Empty disables.
+        "tick_archive": "storage/ticks.db",
+        "tick_retention_days": 14,
     },
     "logging": {
         "level": "INFO",

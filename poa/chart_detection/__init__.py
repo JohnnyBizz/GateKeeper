@@ -64,6 +64,20 @@ def build_source(config: Config) -> ChartSource:
         try:
             from ..feed.source import FeedChartSource
 
+            # The raw ticks, kept whole beside the candles they become. Built
+            # here because only the live feed has ticks to keep — a replay or
+            # a synthetic chart archiving itself would be data about nothing.
+            tick_archive = None
+            if str(config.get("storage.tick_archive", "") or "").strip():
+                from ..storage.ticks import TickArchive
+
+                tick_archive = TickArchive(
+                    config.resolve_path("storage.tick_archive"),
+                    retention_days=float(
+                        config.get("storage.tick_retention_days", 14.0)
+                    ),
+                )
+
             return FeedChartSource(
                 port=int(config.get("capture.debug_port", 9222)),
                 match=str(config.get("capture.match", "pocketoption")),
@@ -71,6 +85,7 @@ def build_source(config: Config) -> ChartSource:
                 max_candles=max_candles,
                 auto_launch=bool(config.get("capture.auto_launch_browser", True)),
                 refresh_chart=bool(config.get("capture.refresh_chart", True)),
+                tick_archive=tick_archive,
             )
         except (ChartSourceError, ImportError) as exc:
             log.error("Feed source unavailable (%s); falling back to synthetic.", exc)

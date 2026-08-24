@@ -215,6 +215,14 @@ storage:
   database: storage/journal.db
   screenshot_dir: storage/screenshots
   retain_screenshots: 500
+  # The feed's raw ticks, kept whole beside the candles they become. The
+  # candles the analysis reads are these ticks bucketed, and the bucketing
+  # destroys how price moved inside each bar — velocity into an entry, the
+  # final seconds before an expiry — which is the one input never yet
+  # measured. Rows older than the retention window are pruned at startup,
+  # so the file stays bounded. Set empty ("") to turn the archive off.
+  tick_archive: storage/ticks.db
+  tick_retention_days: 14
 
 logging:
   level: INFO              # DEBUG for verbose analysis logging
