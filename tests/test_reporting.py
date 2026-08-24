@@ -678,6 +678,96 @@ class TestTheLedgerPoolsEverySession:
             journal.close()
         assert sum("live strategy" in line for line in lines) == 1
 
+
+class TestTheSessionOpensOnWhatTheRecordSays:
+    """"Search for any positive calls" — done honestly: any cell of the
+    pooled record qualifies, at any rate, but only with twenty-plus settled
+    behind it, because a positive rate over a handful is how every
+    fitted-then-failed threshold in FINDINGS.md got chosen. Said at the top
+    of the record section and on the panel at start, so the refinement loop
+    is visible rather than taken on faith."""
+
+    def _rows(self, label_rate_pairs):
+        from poa.reporting.ledger import LedgerRow
+
+        rows = []
+        for label, wins, losses in label_rate_pairs:
+            row = LedgerRow(label)
+            row.wins, row.losses = wins, losses
+            rows.append(row)
+        return rows
+
+    def _ledger(self):
+        return {
+            "overall": self._rows([("live strategy", 30, 40)]),
+            "expiry": self._rows([("30 SEC", 25, 30), ("3 MIN", 5, 9)]),
+            "band": self._rows([("85-89", 12, 15)]),
+            "pair": self._rows([("AUD/CHF OTC", 13, 11)]),
+            "hour": self._rows([("14:00", 30, 17), ("22:00", 17, 49)]),
+            "race": [],
+        }
+
+    def test_cells_split_by_break_even_with_the_sample_bar_held(self):
+        from poa.reporting.ledger import record_cells
+
+        above, below = record_cells(self._ledger(), 52.1)
+        assert [label for label, _ in above] == [
+            "14:00 UTC", "AUD/CHF OTC",
+        ]  # 63.8 then 54.2 — and 3 MIN (14 settled) never qualifies
+        assert below[0][0] == "22:00 UTC"  # worst first
+
+    def test_the_highlights_lead_with_working_and_failing(self):
+        from poa.reporting.ledger import record_highlights
+
+        lines = "\n".join(record_highlights(self._ledger(), 52.1))
+        assert "WHAT THE RECORD SAYS" in lines
+        assert "Working" in lines and "14:00 UTC  63.8% over 47" in lines
+        assert "Failing" in lines and "22:00 UTC  25.8% over 66" in lines
+
+    def test_nothing_meaningful_says_nothing_at_all(self):
+        from poa.reporting.ledger import record_highlights
+
+        thin = {"expiry": self._rows([("30 SEC", 5, 4)])}
+        assert record_highlights(thin, 52.1) == []
+        assert record_highlights(None, 52.1) == []
+
+    def test_no_winner_is_stated_not_padded(self):
+        from poa.reporting.ledger import record_highlights, record_summary
+
+        losing = {"hour": self._rows([("22:00", 17, 49)])}
+        lines = "\n".join(record_highlights(losing, 52.1))
+        assert "nothing clears break-even" in lines
+        assert "hunting" in record_summary(losing, 52.1)
+
+    def test_the_panel_line_names_the_best_cell(self):
+        from poa.reporting.ledger import record_summary
+
+        note = record_summary(self._ledger(), 52.1)
+        assert "14:00 UTC" in note and "63.8%" in note and "52.1%" in note
+
+    def test_the_report_carries_it_ahead_of_the_tables(self):
+        report = _report()
+        report.ledger = self._ledger()
+        text = build_report(report)
+        assert text.index("WHAT THE RECORD SAYS") < text.index("BY EXPIRY")
+
+    def test_the_view_model_shows_the_note_in_evidence(self):
+        from poa.overlay.viewmodel import OverlayViewModel
+
+        vm = OverlayViewModel()
+        vm.record_note = "Record at start: best cell 14:00 UTC at 64% over 47."
+        assert vm.record_note in vm.render()["tuning"]
+
+
+class TestTheLedgerEdges:
+    """The remaining edges of the pooled record."""
+
+    def _journal(self, tmp_path):
+        return TestTheLedgerPoolsEverySession()._journal(tmp_path)
+
+    def _filled(self, tmp_path):
+        return TestTheLedgerPoolsEverySession()._filled(tmp_path)
+
     def test_an_empty_journal_writes_no_ledger_at_all(self, tmp_path):
         from poa.reporting.ledger import collect_ledger
 

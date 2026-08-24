@@ -35,7 +35,7 @@ from ..backtesting.stats import (
 )
 from ..logging_setup import get_logger
 from ..models import format_duration, utcnow
-from .ledger import collect_ledger, ledger_lines
+from .ledger import collect_ledger, ledger_lines, record_highlights
 
 log = get_logger(__name__)
 
@@ -566,6 +566,11 @@ def _ledger_section(report: SessionReport) -> list[str]:
     lines = _heading(
         "THE RECORD SO FAR", f"{total.settled} settled calls, every session"
     )
+    # The record's verdicts first, then the tables they came from. Anyone
+    # reading a report starts with "so what is working" — the answer was
+    # buried in four tables of rows, and the honest summary of it belongs
+    # ahead of them.
+    lines += record_highlights(report.ledger, report.breakeven)
     lines += ledger_lines(report.ledger)
     return lines
 

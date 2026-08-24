@@ -282,6 +282,10 @@ class OverlayViewModel:
     tuning: list[Any] = field(default_factory=list)
     # Rules the chart has shown to be wrong, and which no longer block.
     retired: list[str] = field(default_factory=list)
+    # What the pooled record said when the session opened — the best cell
+    # above break-even at a meaningful sample, or the honest absence of one.
+    # On the panel so the refinement loop is visible, not taken on faith.
+    record_note: str = ""
     # Every chart the feed is carrying, with its own verdict. The socket
     # delivers them whether or not they are being looked at.
     watchlist: list[Any] = field(default_factory=list)
@@ -448,7 +452,8 @@ class OverlayViewModel:
             "tuning": [
                 adjustment.describe() for adjustment in self.tuning[-2:]
             ]
-            + list(self.retired[-2:]),
+            + list(self.retired[-2:])
+            + ([self.record_note] if self.record_note else []),
             "price": format_price(signal.price) if signal else "--",
             "reason": self._reason(),
             "warnings": self._warnings(),

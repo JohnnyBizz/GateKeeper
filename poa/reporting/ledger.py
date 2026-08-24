@@ -144,6 +144,100 @@ def collect_ledger(
     }
 
 
+#: How the record's cells are introduced when pulled out of their tables —
+#: "14:00" alone reads as a time of day only inside the BY HOUR table.
+_KIND_LABEL = {
+    "expiry": "{} expiry",
+    "band": "scored {}",
+    "pair": "{}",
+    "hour": "{} UTC",
+}
+
+
+def record_cells(
+    ledger: dict[str, list[LedgerRow]] | None, breakeven: float
+) -> tuple[list[tuple[str, LedgerRow]], list[tuple[str, LedgerRow]]]:
+    """The record's standing verdicts: cells above break-even, and the worst.
+
+    A cell is one row of the pooled tables — an expiry, a score band, a
+    pair, an hour — with a meaningful sample. This is the honest form of
+    "search for any positive calls at any percentage": any cell at all
+    qualifies, but only with twenty-plus settled behind it, because a
+    positive rate over a handful is how every fitted-then-failed threshold
+    in FINDINGS.md got chosen.
+    """
+    if not ledger:
+        return [], []
+    scored: list[tuple[str, LedgerRow]] = []
+    for kind in ("expiry", "band", "pair", "hour"):
+        for row in ledger.get(kind) or []:
+            if row.settled >= MEANINGFUL and row.rate is not None:
+                scored.append((_KIND_LABEL[kind].format(row.label), row))
+    above = sorted(
+        (cell for cell in scored if (cell[1].rate or 0) >= breakeven),
+        key=lambda cell: -(cell[1].rate or 0),
+    )
+    below = sorted(
+        (cell for cell in scored if (cell[1].rate or 0) < breakeven),
+        key=lambda cell: (cell[1].rate or 0),
+    )
+    return above, below
+
+
+def record_highlights(
+    ledger: dict[str, list[LedgerRow]] | None, breakeven: float
+) -> list[str]:
+    """The record's answer at the top of the section, not buried in tables.
+
+    Every session now opens on this: what the pooled journal says is
+    working, and what it refuses, before a single new call is made. It is
+    the visible form of the tool refining itself — the same numbers the
+    tables carry, asked the question the user actually has.
+    """
+    above, below = record_cells(ledger, breakeven)
+    if not above and not below:
+        return []
+
+    def _cell(label: str, row: LedgerRow) -> str:
+        return f"{label}  {row.rate:.1f}% over {row.settled}"
+
+    lines = [f"WHAT THE RECORD SAYS   (break-even {breakeven:.1f}%)"]
+    if above:
+        cells = " · ".join(_cell(*cell) for cell in above[:3])
+        lines.append(f"  Working    {cells}")
+    else:
+        lines.append(
+            "  Working    nothing clears break-even at 20+ settled yet"
+        )
+    if below:
+        cells = " · ".join(_cell(*cell) for cell in below[:3])
+        lines.append(f"  Failing    {cells}")
+    lines.append("")
+    return lines
+
+
+def record_summary(
+    ledger: dict[str, list[LedgerRow]] | None, breakeven: float
+) -> str:
+    """One panel-sized line of the same answer, for the session's start."""
+    above, below = record_cells(ledger, breakeven)
+    if not above and not below:
+        return ""
+    if not above:
+        return (
+            f"Record at start: no cell above break-even ({breakeven:.1f}%) "
+            "at 20+ settled — the race is hunting one."
+        )
+    label, row = above[0]
+    more = f" and {len(above) - 1} more" if len(above) > 1 else ""
+    # One decimal, like every rate in the ledger — and never rounded up to
+    # a whole number the record did not earn.
+    return (
+        f"Record at start: best cell {label} at {row.rate:.1f}% over "
+        f"{row.settled}{more}; break-even {breakeven:.1f}%."
+    )
+
+
 def _row_line(row: LedgerRow) -> str:
     count = f"{row.settled} call{'' if row.settled == 1 else 's'}"
     if row.settled < MEANINGFUL:
