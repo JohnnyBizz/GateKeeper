@@ -26,7 +26,7 @@ from ..logging_setup import get_logger, install_crash_handlers, setup_logging
 from ..models import format_duration, utcnow
 from ..feed.ticks import display_symbol
 from ..risk import SessionStats
-from .viewmodel import OverlayViewModel, ScanState, direction_color
+from .viewmodel import OverlayViewModel, ScanState, direction_color, tab_label
 
 log = get_logger(__name__)
 
@@ -1207,12 +1207,11 @@ class OverlayApp:
             # manager's one decision about interrupting the user — enabled,
             # notify list, stand-down, cooldown — is made exactly once.
             if alert is not None and (banner is None or score > banner[0]):
-                short = tf_label.replace(" ", "")
-                shown = f"{asset.replace(' OTC', '')} {short}".strip()
                 banner = (
                     score,
                     {
-                        "title": f"{shown} — {direction} {score:.0f}",
+                        "title": f"{tab_label(asset, timeframe)} — "
+                        f"{direction} {score:.0f}",
                         "detail": move,
                         "color": direction_color(direction),
                         "asset": asset,

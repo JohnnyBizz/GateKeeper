@@ -2374,6 +2374,20 @@ class TestTheAlertSaysWhatToSwitchTo:
         finally:
             app.shutdown()
 
+    def test_the_banner_comes_down_when_the_user_complies(self, tmp_path):
+        """Clicking the banner is its designed interaction — after which a
+        glowing 'You're on EUR/USD' over a panel whose header says GBP/USD
+        is the stale answer again."""
+        app = self._app(tmp_path)
+        try:
+            self._sweep(app, [self._row("GBP/USD OTC", 5)])
+            assert app.vm.render()["notice"]["show"] is True
+            app.vm.asset = "GBP/USD OTC"
+            app.vm.chart_timeframe = 5
+            assert app.vm.render()["notice"]["show"] is False
+        finally:
+            app.shutdown()
+
 
 class TestAKindAddedLaterIsNotSilentlyOff:
     """Nothing exposes the notify list for editing.
