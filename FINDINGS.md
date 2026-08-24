@@ -810,3 +810,39 @@ banner names the chart, the side and the expiry, contrasts it with the
 chart the user is on ("switch it to 5 SEC" / "open GBP/USD"), expires in
 thirty seconds, dies early if its setup dies, and stands down with the
 brake like every other act-now cue.
+
+---
+
+## 2026-08-24 — the bottleneck audit: compute is fine, the ticks were the loss
+
+Asked directly whether the analysis has a resolvable bottleneck, measured
+rather than guessed:
+
+* **Compute: no.** One full evaluation over 600 candles costs ~14.5 ms;
+  a worst-case sweep — nine pairs, two chart lengths, the live rulebook
+  plus six shadows — is ~1.8 s, on a 15-second background cycle that
+  already skips unchanged charts. The deferred shared-evaluation
+  optimisation stays deferred; there is nothing to win there yet.
+* **Statistics: bounded by calendar, not code.** Twenty-plus settled
+  calls per question is variance, and the racing harness already
+  multiplies each session by seven rulebooks. No shortcut exists.
+* **Information: yes — the ticks.** The feed delivers the market several
+  times a second and everything downstream reads only the candles those
+  ticks are bucketed into. The bucketing destroys how price moved inside
+  each bar — velocity into an entry, direction runs in the final seconds
+  — the input FINDINGS has ranked highest-value and untouched since the
+  ledger shipped. Every session run without capturing it is that data
+  lost permanently.
+
+**Shipped: the tick archive.** A sidecar SQLite (``storage/ticks.db``,
+config ``storage.tick_archive``) fed from the feed's own updateStream
+handling: batched writes so the socket thread never pays a disk write per
+tick, pruned to a fourteen-day window at first touch so the file stays
+bounded, and defensive to the point of vanishing — any storage failure
+logs once and degrades to a no-op, because losing telemetry is an
+inconvenience and stalling the market reader is not. It changes no call,
+no gate and no number; it is pure collection, so the next idea can be
+tested against recorded reality instead of costing another month of
+sessions first. The analysis that reads it — entry-second velocity joined
+against settled outcomes — comes after the mirror verdict, on data this
+archive will by then hold.

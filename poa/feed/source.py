@@ -148,6 +148,7 @@ class FeedChartSource(ChartSource):
         auto_launch: bool = True,
         profile_dir: Any = None,
         refresh_chart: bool = True,
+        tick_archive: Any = None,
     ) -> None:
         if websockets is None:  # pragma: no cover - guaranteed by requirements
             raise ChartSourceError("Reading the feed needs the 'websockets' package.")
@@ -158,6 +159,12 @@ class FeedChartSource(ChartSource):
         self.auto_launch = bool(auto_launch)
         self.profile_dir = profile_dir
         self.refresh_chart = bool(refresh_chart)
+        # Where the raw ticks are kept, if anywhere. The candles every reader
+        # sees are these ticks bucketed, and the bucketing destroys the one
+        # input never yet measured — how price moved inside the bar. Optional
+        # and best-effort: a broken archive is telemetry lost, never a feed
+        # stalled.
+        self.tick_archive = tick_archive
         self._launched = False
 
         self._lock = threading.Lock()
@@ -226,6 +233,12 @@ class FeedChartSource(ChartSource):
         if thread is not None:
             thread.join(timeout=3.0)
         self._thread = None
+        # After the join, so the feed thread is done writing into it.
+        if self.tick_archive is not None:
+            try:
+                self.tick_archive.close()
+            except Exception:  # pragma: no cover - defensive
+                pass
 
     # -- the listener -------------------------------------------------------
 
@@ -465,9 +478,11 @@ class FeedChartSource(ChartSource):
                     # a watchlist that costs nothing to keep.
                     period = int(self._period or 60)
                     keep = self._watchable()
+                    kept: list[Any] = []
                     for tick in ticks:
                         if keep is not None and tick.symbol not in keep:
                             continue
+                        kept.append(tick)
                         self._add_fast(tick, period)
                         if tick.symbol == self._asset:
                             self._asset_seen = time.monotonic()
@@ -485,6 +500,14 @@ class FeedChartSource(ChartSource):
                             )
                             self._charts[key] = builder
                         builder.add(tick)
+                    # The same ticks the builders just bucketed, kept whole.
+                    # Archived after the builders rather than before, so a
+                    # slow disk delays telemetry and never the market.
+                    if self.tick_archive is not None and kept:
+                        try:
+                            self.tick_archive.extend(kept)
+                        except Exception:  # pragma: no cover - defensive
+                            pass
                     self._advance_all(max(tick.timestamp for tick in ticks))
                     return
 
