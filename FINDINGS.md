@@ -896,3 +896,49 @@ sweep's cadence — so one to two more sittings decide it.
 Also fixed from this report: the ledger printed the live strategy's row
 twice once the race table existed (once leading the race, once as the
 old closing summary line).
+
+---
+
+## 2026-08-24 — the record now opens every session, and where new inputs come from
+
+Asked for three things: sessions that start by finding what has been
+positive, the record visibly informing the scoring each session (the
+direction floor included), and new non-redundant scoring components.
+
+**Shipped: WHAT THE RECORD SAYS.** Every session now opens on the pooled
+journal's standing verdicts — the best and worst cells (expiry, score
+band, pair, hour) with twenty-plus settled, against break-even — logged
+at startup, carried on the panel's EVIDENCE fold, and printed at the top
+of every report's record section ahead of the tables. "Any positive
+calls at any percentage", done honestly: any cell qualifies, at any
+rate, but only over a meaningful sample, because a positive rate over a
+handful is how every fitted-then-failed threshold in this file got
+chosen. As of 472 settled the honest answer is thin: 14:00 UTC
+(63.8%/47), 21:00 UTC (58.7%/46) and AUD/CHF OTC (54.2%/24) clear
+break-even; nothing else at 20+ does.
+
+**Declined, for measured cause: per-session gate mutation.** Letting the
+last call or the last session move the gates is the trap with the
+longest rap sheet here — 85 was fitted to 29 calls and died on the next
+batch; the cascade guard felt obviously right and measured worse;
+auto-tune is pinned off precisely so the experiment has a fixed target.
+The floor and the rest of the rulebook change at promotion time, on
+20-plus out-of-sample calls — the mirror is one to two sessions from
+exactly that decision, and the calibrated score-to-probability remap
+(85–89 settles 44.8%, 90–94 settles 36.5% — the top of the scale is
+measured backwards) is next in the promotion queue behind it.
+
+**On new components:** more indicators is the redundant direction — RSI,
+MACD and momentum already overlap, and AUC over 49 recent calls was
+51.9%: the problem is not too few voters, it is that the vote does not
+map to a probability. The non-redundant inputs, in order: tick
+microstructure (velocity into the entry, direction runs — now archived
+every session, joinable to settled calls, the only input the candles
+cannot express), hour-of-day and pair conditioning (the ledger already
+measures the spread; the engine ignores it), and cross-pair lead-lag
+(the socket carries the whole market at once; nothing reads one pair to
+inform another). Each enters the same way everything enters: measured
+against the archive and the journal first, raced as a shadow second,
+promoted third. The 1–100 scale itself is not the constraint — a wider
+scale on an uncalibrated score would be more precision about a number
+that is not yet true.

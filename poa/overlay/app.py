@@ -254,6 +254,33 @@ class OverlayApp:
                 ", ".join(e.label for e in self._racing.roster),
             )
 
+        # The session opens on what the record already says: the pooled
+        # journal's best and worst cells at twenty-plus settled, logged here
+        # and carried onto the panel's EVIDENCE fold. The refinement loop is
+        # supposed to be visible — a tool that adjusts itself silently is
+        # indistinguishable from one that never adjusts at all.
+        try:
+            from ..reporting.ledger import (
+                collect_ledger,
+                record_highlights,
+                record_summary,
+            )
+            from ..risk import breakeven_rate
+
+            opening = collect_ledger(
+                self.engine.journal,
+                source=getattr(self.engine.source, "name", None),
+            )
+            breakeven = breakeven_rate(
+                float(self.config.get("market.payout", 0.92))
+            )
+            for line in record_highlights(opening, breakeven):
+                if line.strip():
+                    log.info("%s", line.strip())
+            self.vm.record_note = record_summary(opening, breakeven)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("could not read the record at start: %s", exc)
+
         # Every chart looked at this session, for the report written at the end.
         self._charts_seen: set[str] = set()
         # Watched charts already announced, so a setup that stands for several
