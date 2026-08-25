@@ -23,10 +23,23 @@ from typing import Any, Callable
 from ..config import Config, data_root, load_config
 from ..engine import AnalysisEngine
 from ..logging_setup import get_logger, install_crash_handlers, setup_logging
-from ..models import format_duration, utcnow
+from ..models import Direction, format_duration, utcnow
 from ..feed.ticks import display_symbol
 from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState, direction_color, tab_label
+
+
+def _shown_side(argued: str, inverted: bool) -> str:
+    """The side the panel would show for a read arguing ``argued``.
+
+    A function on purpose: the record-at-start feature shipped dead once
+    because its wiring was only ever tested in pieces, and this is the
+    piece hand-trade matching rides on. The flip rule itself lives on
+    ``Direction.opposite`` — one place, not three.
+    """
+    if inverted and argued in ("CALL", "PUT"):
+        return Direction(argued).opposite.value
+    return argued
 
 log = get_logger(__name__)
 
@@ -273,6 +286,7 @@ class OverlayApp:
             opening = collect_ledger(
                 self.engine.journal,
                 source=getattr(self.engine.source, "name", None),
+                policy=self.engine.policy,
             )
             breakeven = breakeven_rate(
                 float(self.config.get("market.payout", 0.92))
@@ -404,9 +418,15 @@ class OverlayApp:
 
         # Note what this chart is calling, so a trade the platform settles
         # later can be matched to the call it was taken on rather than to
-        # whatever happens to be on screen by then.
+        # whatever happens to be on screen by then. The SHOWN side, not the
+        # read's: since the promotion the user trades the reverse of the
+        # read, and the watchlist path learned this while this one —
+        # the primary trading surface — did not, until review caught it.
         score = getattr(signal, "score", None) if signal is not None else None
-        named = getattr(getattr(score, "direction", None), "value", None)
+        named = _shown_side(
+            getattr(getattr(score, "direction", None), "value", None) or "",
+            self._inverting,
+        )
         if named in ("CALL", "PUT"):
             regime = ""
             mtf = getattr(signal, "mtf", None)
@@ -536,6 +556,12 @@ class OverlayApp:
                 source=getattr(self.engine.source, "name", None),
                 chart_timeframe=series.timeframe_seconds,
                 trade_duration=self.engine.trade_duration,
+                # Only trades from the current rulebook era. This record
+                # holds a veto over live setups, and a direction across the
+                # 2026-08-25 flip means the opposite thing — pre-flip trades
+                # judging the promoted rulebook would silence exactly the
+                # calls the promotion measured.
+                policy=self.engine.policy,
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.debug("could not read the settled record: %s", exc)
@@ -915,6 +941,18 @@ class OverlayApp:
                 seen.add((asset, target))
         return out
 
+    @property
+    def _inverting(self) -> bool:
+        """Whether the promoted reversal is on — the panel shows the
+        reverse of the read, so everything that matches a side to what the
+        user saw has to flip with it."""
+        try:
+            return bool(
+                getattr(self.engine.gate_settings(), "invert_calls", False)
+            )
+        except Exception:  # pragma: no cover - defensive
+            return False
+
     def _watch_worker(self, charts: Any, measured: Any = None) -> None:
         """Off the UI thread. Evaluates only; records and alerts nothing.
 
@@ -944,6 +982,10 @@ class OverlayApp:
                 self._read_at.clear()
                 self._read_was.clear()
                 self._read_ctx = context
+
+            # Once per sweep, not once per chart: reading it rebuilds the
+            # whole GateSettings from config, and it cannot change mid-loop.
+            inverting = self._inverting
 
             for asset, timeframe, series in self._with_other_timeframes(charts):
                 key = (asset, timeframe)
@@ -988,13 +1030,19 @@ class OverlayApp:
                             or signal
                         )
 
-                # The direction the *score* argues for, which is what a trade
-                # on this chart would be matched against later. The verdict is
-                # usually WAIT, and WAIT is not a side.
-                argued = getattr(
-                    getattr(getattr(signal, "score", None), "direction", None),
-                    "value",
-                    "",
+                # The side a trade on this chart would be matched against
+                # later. The verdict is usually WAIT, and WAIT is not a side
+                # — so the score's argued side stands in. Since the
+                # 2026-08-25 promotion the panel SHOWS the reverse of the
+                # read, and the user trades what the panel shows, so the
+                # matching side flips with it.
+                argued = _shown_side(
+                    getattr(
+                        getattr(getattr(signal, "score", None), "direction", None),
+                        "value",
+                        "",
+                    ),
+                    inverting,
                 )
                 row = {
                     "asset": asset,
@@ -1204,6 +1252,7 @@ class OverlayApp:
                     self.engine.journal.record(
                         watched, None,
                         source=getattr(self.engine.source, "name", None),
+                        policy=self.engine.policy,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     log.warning("could not journal a watchlist call: %s", exc)
@@ -1999,6 +2048,7 @@ class OverlayApp:
                     # Persisted so a restart still refuses this deal if the
                     # platform mentions it again.
                     deal_id=deal_id,
+                    policy=self.engine.policy,
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not file a settled trade: %s", exc)
@@ -2027,11 +2077,17 @@ class OverlayApp:
         what the MARKET line is now showing at the moment the button is
         pressed, so it is a visible assumption rather than a hidden one — and
         a trade taken against it is a trade this cannot learn from correctly.
+
+        The SHOWN side since the promotion: the panel instructs the reverse
+        of the read, the user trades what the panel shows, and a row filed
+        under the read's label would record the direction they never took.
         """
         signal = self.vm.signal
         score = getattr(signal, "score", None) if signal is not None else None
         direction = getattr(score, "direction", None)
-        name = getattr(direction, "value", None)
+        name = _shown_side(
+            getattr(direction, "value", None) or "", self._inverting
+        )
         if name not in ("CALL", "PUT"):
             # Nothing scored — during a scan, or before the first read. The
             # tally still moves; there is simply nothing to attribute.
@@ -2055,6 +2111,7 @@ class OverlayApp:
                 market_regime=regime,
                 source=getattr(self.engine.source, "name", None),
                 price=getattr(signal, "price", None),
+                policy=self.engine.policy,
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("could not file the manual outcome: %s", exc)
@@ -2422,6 +2479,7 @@ class OverlayApp:
                 # drawing problem take the report down with it, at the one
                 # moment there is no next frame to recover on.
                 lesson=self.vm._lesson(),
+                policy=self.engine.policy,
             )
             return write_report(report, self._report_dir())
         except Exception as exc:  # pragma: no cover - never block the exit

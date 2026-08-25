@@ -30,6 +30,17 @@ class Direction(str, Enum):
     NO_TRADE = "NO_TRADE"
 
     @property
+    def opposite(self) -> "Direction":
+        """The other side. WAIT and NO_TRADE have none and return
+        themselves — the one rule for the flip, kept in one place, because
+        the promotion briefly had it written three ways in three files."""
+        if self is Direction.CALL:
+            return Direction.PUT
+        if self is Direction.PUT:
+            return Direction.CALL
+        return self
+
+    @property
     def emoji(self) -> str:
         return {
             Direction.CALL: "\U0001f7e2",

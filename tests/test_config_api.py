@@ -960,3 +960,43 @@ class TestTheSilentDefaultIsMovedOn:
         )
         assert config.get("alerts.sound") is True  # migrated, not crashed
         assert config.get("signals.min_shown_confidence") == 62
+
+
+class TestThePromotionReachesOldInstalls:
+    """Config v4: the 2026-08-25 promotion. An install that has ever saved
+    its settings holds every key explicitly, so without a migration the
+    flip would reach nobody who has ever run the app."""
+
+    def _config(self, tmp_path, data):
+        import yaml
+
+        from poa.config import load_config
+
+        path = tmp_path / "config.yaml"
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle)
+        return load_config(path)
+
+    def test_an_older_file_gets_the_flip_and_drops_the_old_cooldown(self, tmp_path):
+        config = self._config(tmp_path, {
+            "config_version": 3,
+            "signals": {"loss_cooldown_minutes": 3},
+        })
+        assert config.get("signals.invert_calls") is True
+        assert config.get("signals.loss_cooldown_minutes") == 0
+
+    def test_a_cooldown_the_user_chose_survives_the_promotion(self, tmp_path):
+        config = self._config(tmp_path, {
+            "config_version": 3,
+            "signals": {"loss_cooldown_minutes": 7},
+        })
+        assert config.get("signals.invert_calls") is True
+        assert config.get("signals.loss_cooldown_minutes") == 7
+
+    def test_a_refusal_made_after_the_promotion_is_kept(self, tmp_path):
+        config = self._config(tmp_path, {
+            "config_version": 4,
+            "signals": {"invert_calls": False, "loss_cooldown_minutes": 3},
+        })
+        assert config.get("signals.invert_calls") is False
+        assert config.get("signals.loss_cooldown_minutes") == 3

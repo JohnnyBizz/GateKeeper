@@ -991,3 +991,91 @@ The promotion test, pre-registered like the last one: **the mirror's
 pooled lower bound clears 52.1% AND the head-to-head shows the mirror's
 side winning the majority of its pairs.** Both print in the next
 report's ledger with no interpretation needed.
+
+---
+
+## 2026-08-25 — THE PROMOTION: the test passed, and the panel now reverses its reads
+
+The 14:55 sitting (3h13m, 64 settled) delivered the two numbers the
+pre-registered promotion test named, and both came back passed:
+
+* **Mirror pooled: 78W/31L over 109 — 71.6%, Wilson 95% [62.5, 79.2].**
+  The lower bound clears the 52.1% break-even by more than ten points.
+* **Head to head: 34 pairs, direction opposite in 33 — the mirror won
+  19 (55.9%), the live side 15.** A majority, as the test required.
+
+By the rule this file set in advance, the mirror is promoted. The
+shipped rulebook now shows the OPPOSITE of the side the read argues
+(``signals.invert_calls: true``), applied after every gate and demotion
+— those rules were measured on the read and refuse the moments where
+the read itself is unsafe. Every reversed call says so on the panel.
+The cooldown returns to zero: the mirror's record was earned without
+one, and its edge concentrated in exactly the windows the cooldown
+blanks (the old three-minute figure was measured on un-flipped calls
+and does not carry over; the loss brake still stands). Config v4
+migrates existing installs; a post-promotion refusal is kept.
+
+**Stated with the promotion, so nobody reads the 71.6% as a forecast:**
+
+* The head-to-head majority is thin — 19-15 is consistent with a coin
+  flip on directly-paired moments ([~39, 71] at 95%). The gap between
+  the pool (71.6%) and the pairs (55.9%) says much of the mirror's
+  edge lives in the moments the old panel did NOT call — cooldown
+  windows and sweep-only reads — which the promoted panel now surfaces.
+  Honest expectation for the flipped panel: somewhere between the two
+  numbers, not the pool's headline.
+* The thirty-second control diverged low this sitting (40.8% over 314
+  against the live 30 SEC pool's 46.7%) — consistent with sweep-cadence
+  moments being worse for the raw read, which is the same mechanism
+  that feeds the mirror. Watched, not alarming: the intervals still
+  brush.
+* The sitting itself was 45.3% [33.7, 57.4] at an 84% payout — the two
+  above-break-even sittings did not repeat, AUC 46.1%. More evidence
+  the raw read has no edge; the reversal is where the record points.
+
+**The race after the flip:** every shadow keeps racing the RAW rulebook
+(the promotion's inversion is stripped for the race, so each record
+stays continuous with its own past). The mirror row is therefore now
+the live panel's control and should track it; a new **pre-flip** row
+keeps the un-reversed rulebook measured, so the flip stays falsifiable
+— if the regime that made the mirror right ends, that pair of rows is
+where it shows first.
+
+**Pre-registered next:** fade-overheat — invert exactly the 90+ reads —
+stands at 33W/7L over 40, **82.5% [68.0, 91.3]**, the strongest interval
+on the board and the same finding that licensed the ceiling. Its bar:
+**hold above 60% at 60+ settled**, and the ceiling's refusals become
+reversed calls instead of silence. Until then the 90+ reads stay refused,
+exactly as the promoted rulebook was raced.
+
+And the demotion criterion, set now while nobody is arguing with a good
+number: **if the promoted panel's own settled record pools below the
+break-even of its sessions' payouts over any 60+ settled calls, or the
+pre-flip row starts beating the mirror row over 40+ paired sittings,
+the flip comes back off.** The reversal is a measured rule like every
+other one here — it lives on the same terms it was born on.
+
+### The promotion's own sweep, before it shipped
+
+The pre-ship review of the flip found seven, four of them the kind that
+corrupt the experiment rather than crash the app — all fixed before any
+build carried the promotion:
+
+* The open chart's call memory and the WIN/LOSS buttons still filed the
+  READ's side while the panel instructed its reverse — every real trade
+  on the primary surface would have been recorded backwards, feeding the
+  vetoing record with inverted outcomes.
+* The calibration veto and the record tables pooled both eras. A journal
+  row's direction means the opposite thing across the flip, so rows now
+  carry a ``policy`` stamp ('read'/'reversed'; legacy rows are read-side)
+  and every era-sensitive reader — the veto, THE RECORD SO FAR, WHAT THE
+  RECORD SAYS — reads only the current one. Without this, a pair that
+  was "working" for the old rulebook would recommend exactly the wrong
+  side of the new one, and installs with the most history would silence
+  the promoted calls hardest.
+* The head-to-head would have paired two identical policies after the
+  flip. The duel's challenger is now the pre-flip shadow when it exists
+  (the pre-registered demotion comparison, perfectly paired at sweep
+  cadence) and the live rows on older journals.
+* The flip rule itself was written three ways in three files; it now
+  lives once, on ``Direction.opposite``.

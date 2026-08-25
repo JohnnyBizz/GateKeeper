@@ -632,6 +632,7 @@ def collect(
     measurement: str = "",
     lesson: str = "",
     ended: datetime | None = None,
+    policy: str | None = None,
 ) -> SessionReport:
     """Gather this session's rows out of the journal.
 
@@ -688,6 +689,9 @@ def collect(
         lesson=lesson,
         # The one part of the report that is allowed to look past this
         # session: the pooled record is where the open questions — expiry,
-        # pair, hour — accrete their answers one session at a time.
-        ledger=collect_ledger(journal, source=source),
+        # pair, hour — accrete their answers one session at a time. One
+        # rulebook era at a time, though: rows across the 2026-08-25 flip
+        # mean the opposite thing, so the tables pool the current policy's
+        # rows only, and the race carries every labelled record whole.
+        ledger=collect_ledger(journal, source=source, policy=policy),
     )

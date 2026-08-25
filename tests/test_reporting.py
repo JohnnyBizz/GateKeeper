@@ -703,6 +703,7 @@ class TestTheMirrorDuel:
         duel = mirror_duel(live, shadows)
         assert duel == {
             "pairs": 1, "opposite": 1, "mirror_wins": 1, "live_wins": 0,
+            "challenger": "live",
         }
 
     def test_a_far_away_call_is_not_a_pair(self):
@@ -791,6 +792,106 @@ class TestTheMirrorDuel:
         assert "[51.1, 78.1]" in mirror_line
         thin_line = next(l for l in text.splitlines() if "fade-overheat" in l)
         assert "[" not in thin_line  # under the bar: count, no interval
+
+
+class TestOneRulebookEraAtATime:
+    """A direction across the 2026-08-25 flip means the opposite thing.
+
+    The calibration record holds a veto and the record tables drive
+    attention, so both read only the current policy's rows — a pair that
+    was "working" for the old rulebook would recommend exactly the wrong
+    side of the new one, and pre-flip trades would silence exactly the
+    calls the promotion measured.
+    """
+
+    def _journal(self, tmp_path):
+        return TestTheLedgerPoolsEverySession()._journal(tmp_path)
+
+    def _row(self, journal, id, *, policy, outcome="win", notes=None,
+             experiment=None):
+        journal._connection.execute(
+            "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
+            "trade_duration, direction, state, direction_confidence, "
+            "duration_confidence, overall_confidence, setup_quality, "
+            "outcome, notes, source, experiment, policy) VALUES "
+            "(?, ?, 'EUR/USD OTC', 60, 30, 'CALL', 'SETTLED', 86, 80, 87, "
+            "'STRONG', ?, ?, 'feed', ?, ?)",
+            (id, (START + timedelta(minutes=len(id))).isoformat(),
+             outcome, notes, experiment, policy),
+        )
+        journal._connection.commit()
+
+    def test_the_ledger_pools_only_the_current_era(self, tmp_path):
+        from poa.reporting.ledger import collect_ledger
+
+        journal = self._journal(tmp_path)
+        try:
+            for i in range(3):
+                self._row(journal, f"old{i}", policy=None)  # legacy read-era
+            self._row(journal, "new1", policy="reversed", outcome="loss")
+            self._row(journal, "shadow1", policy=None, experiment="mirror")
+
+            reversed_era = collect_ledger(journal, source="feed",
+                                          policy="reversed")
+            assert reversed_era["overall"][0].settled == 1
+            read_era = collect_ledger(journal, source="feed", policy="read")
+            assert read_era["overall"][0].settled == 3
+            # The race carries every labelled record whole, either way.
+            assert any(r.label == "mirror" for r in reversed_era["race"])
+        finally:
+            journal.close()
+
+    def test_the_calibration_veto_reads_only_its_own_era(self, tmp_path):
+        journal = self._journal(tmp_path)
+        try:
+            self._row(journal, "oldtrade", policy=None, notes="manual")
+            self._row(journal, "newtrade", policy="reversed", notes="manual",
+                      outcome="loss")
+            reversed_era = journal.calibration_records(policy="reversed")
+            assert len(reversed_era) == 1 and reversed_era[0].won is False
+            read_era = journal.calibration_records(policy="read")
+            assert len(read_era) == 1 and read_era[0].won is True
+            everything = journal.calibration_records()
+            assert len(everything) == 2  # None keeps the old behaviour
+        finally:
+            journal.close()
+
+    def test_the_duel_challenger_is_the_pre_flip_rulebook_when_it_exists(self):
+        from poa.reporting.ledger import mirror_duel
+
+        def row(minute, *, direction, outcome, experiment=None):
+            return {
+                "timestamp": (START + timedelta(minutes=minute)).isoformat(),
+                "asset": "EUR/USD OTC", "trade_duration": 30,
+                "direction": direction, "outcome": outcome,
+                "experiment": experiment,
+            }
+
+        live = [row(0, direction="PUT", outcome="win")]
+        shadows = [
+            row(0, direction="CALL", outcome="loss", experiment="pre-flip"),
+            row(0, direction="PUT", outcome="win", experiment="mirror"),
+        ]
+        duel = mirror_duel(live, shadows)
+        assert duel["challenger"] == "pre-flip"
+        assert duel == {"pairs": 1, "opposite": 1, "mirror_wins": 1,
+                        "live_wins": 0, "challenger": "pre-flip"}
+
+        # Without pre-flip rows (a pre-promotion journal), the live rows
+        # challenge — the original promotion comparison, unchanged.
+        old = mirror_duel(
+            [row(0, direction="CALL", outcome="loss")],
+            [row(0, direction="PUT", outcome="win", experiment="mirror")],
+        )
+        assert old["challenger"] == "live" and old["pairs"] == 1
+
+    def test_the_flip_rule_lives_in_one_place(self):
+        from poa.models import Direction
+
+        assert Direction.CALL.opposite is Direction.PUT
+        assert Direction.PUT.opposite is Direction.CALL
+        assert Direction.WAIT.opposite is Direction.WAIT
+        assert Direction.NO_TRADE.opposite is Direction.NO_TRADE
 
 
 class TestTheSessionOpensOnWhatTheRecordSays:

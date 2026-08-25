@@ -58,7 +58,7 @@ class LedgerRow:
 
 
 def collect_ledger(
-    journal: Any, source: str | None = None
+    journal: Any, source: str | None = None, policy: str | None = None
 ) -> dict[str, list[LedgerRow]] | None:
     """Pool every settled tool call in the journal, split four ways.
 
@@ -80,6 +80,17 @@ def collect_ledger(
     # with it on equal, labelled terms.
     live = [r for r in rows if not r.get("experiment")]
     shadows = [r for r in rows if r.get("experiment")]
+
+    # One rulebook era at a time. A direction across the 2026-08-25 flip
+    # means the opposite thing, so pooling both eras into one table would
+    # let a pair that was "working" for the old rulebook recommend exactly
+    # the wrong side of the new one. 'read' includes the legacy NULL rows
+    # (everything from before the column existed was read-side); the race
+    # table is unaffected — each shadow's meaning is fixed by its label.
+    if policy == "read":
+        live = [r for r in live if r.get("policy") in (None, "read")]
+    elif policy is not None:
+        live = [r for r in live if r.get("policy") == policy]
 
     overall = LedgerRow("live strategy")
     by_expiry: dict[int, LedgerRow] = {}
@@ -149,16 +160,19 @@ def mirror_duel(
     live: list[dict[str, Any]],
     shadows: list[dict[str, Any]],
     window_seconds: float = 90.0,
-) -> dict[str, int]:
-    """The mirror against the exact live call it reverses.
+) -> dict[str, Any]:
+    """The two policies against each other at the same moments.
 
-    The race table can mislead on its own: shadows sample at the sweep's
-    cadence and skip the cooldown, so their moments are not exactly the
-    live rows' moments — a shadow can beat the live *pool* while losing to
-    the live *call beside it*. Promotion is a decision about flipping the
-    panel's own calls, so the number that decides it is this one: pair
-    each settled mirror row with the nearest settled live row on the same
-    chart at the same expiry within a short window, and count who won.
+    The race table can mislead on its own: pooled rates sample different
+    moments. The duel pairs rows chart-by-chart, expiry-by-expiry, within
+    a short window, and counts who won. Who duels whom depends on the era:
+
+    * Since the promotion, the **pre-flip** shadow (the old rulebook)
+      challenges the **mirror** (the promoted one) — the pre-registered
+      demotion comparison, and a perfect pairing because both race at the
+      same sweep cadence over the same charts.
+    * On a journal from before the pre-flip shadow existed, the live rows
+      challenge the mirror — the original promotion comparison.
 
     Timestamps are ISO strings in one timezone (the journal's own), so
     they compare as datetimes; rows that fail to parse simply stay out.
@@ -177,8 +191,14 @@ def mirror_duel(
         if str(row.get("experiment")) == "mirror"
         and (when := _when(row)) is not None
     ]
+    pre_flip = [
+        row for row in shadows if str(row.get("experiment")) == "pre-flip"
+    ]
+    challenger_rows = pre_flip if pre_flip else live
+    challenger = "pre-flip" if pre_flip else "live"
+
     pool: dict[tuple[str, int], list[tuple[Any, dict[str, Any]]]] = {}
-    for row in live:
+    for row in challenger_rows:
         when = _when(row)
         if when is None:
             continue
@@ -225,7 +245,10 @@ def mirror_duel(
         if adjacency[m_index]:
             _assign(m_index, set())
 
-    duel = {"pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0}
+    duel: dict[str, Any] = {
+        "pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0,
+        "challenger": challenger,
+    }
     for (key, l_index), m_index in live_match.items():
         mirror_row = mirrors[m_index][1]
         live_row = pool[key][l_index][1]
@@ -394,17 +417,23 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
         lines.extend(_race_line(row) for row in race)
         duel = ledger.get("duel") or {}
         if isinstance(duel, dict) and duel.get("pairs", 0) >= 5:
-            # The number a promotion actually reads: not the mirror's pool
-            # against the live pool — those sample different moments — but
-            # the mirror against the very call it reverses.
+            # The number a promotion — or a demotion — actually reads: not
+            # pool against pool, which sample different moments, but the
+            # two policies paired at the same moments. Since the flip the
+            # challenger is the pre-flip rulebook; before it, the live rows.
             rate = duel["mirror_wins"] / duel["pairs"] * 100.0
+            versus = (
+                "the pre-flip rulebook"
+                if duel.get("challenger") == "pre-flip"
+                else "the live call it reverses"
+            )
             lines += [
                 "",
-                "   HEAD TO HEAD — each mirror call against the live call",
-                "   it reverses, same chart and expiry within 90 seconds:",
+                f"   HEAD TO HEAD — each mirror call against {versus},",
+                "   same chart and expiry within 90 seconds:",
                 f"   {duel['pairs']} pairs, direction opposite in "
                 f"{duel['opposite']}; the mirror won {duel['mirror_wins']} "
-                f"({rate:.1f}%), the live side {duel['live_wins']}.",
+                f"({rate:.1f}%), the other side {duel['live_wins']}.",
             ]
     else:
         # The closing summary line — only when the race table did not just
