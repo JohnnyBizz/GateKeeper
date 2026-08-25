@@ -75,17 +75,27 @@ def _experiment_rows(journal):
 class TestTheRoster:
     def test_absent_means_the_shipped_roster(self):
         assert roster_from_config({}) == DEFAULT_ROSTER
-        assert len(DEFAULT_ROSTER) == 6
+        assert len(DEFAULT_ROSTER) == 7
 
-    def test_the_mirror_is_the_live_rulebook_reversed(self):
+    def test_the_mirror_is_the_raw_rulebook_reversed(self):
         # 423 pooled calls put the live strategy's Wilson upper bound below
-        # a coin flip; the mirror is the pre-registered test of whether the
-        # complement survives out of sample. Same thresholds, same expiry —
-        # only the side flips.
+        # a coin flip; the mirror was the pre-registered test of whether the
+        # complement survives out of sample — and since the 2026-08-25
+        # promotion it is the live panel's own control. Same thresholds,
+        # same expiry — only the side flips.
         mirror = next(e for e in DEFAULT_ROSTER if e.label == "mirror")
         assert mirror.invert is True
         assert mirror.overrides == ()
         assert mirror.trade_duration is None
+
+    def test_the_pre_flip_rulebook_keeps_racing(self):
+        # The un-reversed rulebook the panel used before the promotion —
+        # kept in the race so the flip stays falsifiable. No overrides, no
+        # inversion: the raw read, journalled at the sweep's cadence.
+        pre_flip = next(e for e in DEFAULT_ROSTER if e.label == "pre-flip")
+        assert pre_flip.invert is False
+        assert pre_flip.overrides == ()
+        assert pre_flip.trade_duration is None
 
     def test_both_horizons_are_always_in_the_race(self):
         # Whichever expiry the live strategy drives, the other horizon keeps
@@ -220,6 +230,27 @@ class TestOneSetupIsOneRowPerRulebook:
             # The same experiment runs fine on bars its expiry can cover.
             book.sweep_chart(engine, "EUR/USD OTC", 5, object(), None)
             assert len(_experiment_rows(journal)) == 1
+        finally:
+            journal.close()
+
+    def test_the_race_always_measures_the_raw_rulebook(self, tmp_path):
+        # The promoted inversion (invert_calls) flips the PANEL, not the
+        # race: a shadow whose baseline silently flipped on promotion day
+        # would be a new experiment wearing an old label. Every experiment
+        # gets settings with the inversion stripped, whatever the engine's
+        # own configuration says.
+        class _InvertingEngine(_FakeEngine):
+            def gate_settings(self):
+                return GateSettings(invert_calls=True)
+
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _InvertingEngine(journal, _real_signal())
+            self._book(Experiment("solo")).sweep_chart(
+                engine, "EUR/USD OTC", 60, object(), None
+            )
+            (asked,) = engine.asked
+            assert asked[1].invert_calls is False
         finally:
             journal.close()
 

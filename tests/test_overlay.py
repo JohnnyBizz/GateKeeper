@@ -1973,15 +1973,29 @@ class TestTheWinLossButtonsTeachIt:
         finally:
             app.shutdown()
 
-    def test_it_is_filed_under_the_scored_direction_not_the_verdict(self, tmp_path):
-        """WAIT is not a direction. The score always describes one.
+    def test_it_is_filed_under_the_shown_side_not_the_verdict(self, tmp_path):
+        """WAIT is not a direction; and since the promotion the shown side
+        is the read's reverse.
 
-        The verdict is what the gates decided; the score is the case that was
-        being argued, and it is what the calibration is keyed on. Filing under
-        the verdict would key a number to a side it was never computed for.
+        The verdict is what the gates decided; the score is the case that
+        was being argued; and what the user actually trades is what the
+        panel SHOWS — which, with the promoted reversal on (the shipped
+        default), is the opposite of the read. A PUT read files as the
+        CALL the user was instructed to take.
         """
         app = self._app(tmp_path)
         try:
+            assert app.engine.policy == "reversed"  # the shipped default
+            self._signal(app, direction="PUT")
+            app._adjust(1, 0)
+            assert self._filed(app)[0].direction == "CALL"
+        finally:
+            app.shutdown()
+
+    def test_without_the_flip_the_read_side_is_filed(self, tmp_path):
+        app = self._app(tmp_path)
+        try:
+            app.config.set("signals.invert_calls", False)
             self._signal(app, direction="PUT")
             app._adjust(1, 0)
             assert self._filed(app)[0].direction == "PUT"
@@ -2247,6 +2261,31 @@ class TestASetupYouCannotSeeSpeaksUp:
             app.shutdown()
 
 
+class TestHandTradesMatchTheShownSide:
+    """Since the promotion the panel shows the reverse of the read, and the
+    user trades what the panel shows — so the side a hand trade is matched
+    against must flip with it, or every matched trade would be filed
+    against the side the user never saw."""
+
+    def test_the_shown_side_reverses_with_the_promotion(self):
+        from poa.overlay.app import _shown_side
+
+        assert _shown_side("CALL", True) == "PUT"
+        assert _shown_side("PUT", True) == "CALL"
+
+    def test_without_the_flip_the_read_is_the_side(self):
+        from poa.overlay.app import _shown_side
+
+        assert _shown_side("CALL", False) == "CALL"
+        assert _shown_side("PUT", False) == "PUT"
+
+    def test_no_side_stays_no_side(self):
+        from poa.overlay.app import _shown_side
+
+        assert _shown_side("", True) == ""
+        assert _shown_side("WAIT", True) == "WAIT"
+
+
 class TestTheSessionOpensOnTheRecordInTheApp:
     """The wiring, not the arithmetic: the record-at-start feature once
     shipped dead because a wrong import was swallowed by its own defensive
@@ -2264,12 +2303,16 @@ class TestTheSessionOpensOnTheRecordInTheApp:
         journal = Journal(str(db))
         start = datetime(2026, 8, 24, 14, 0, tzinfo=timezone.utc)
         for i in range(25):
+            # Stamped into the current era: the ledger the note is built
+            # from reads only rows made under the promoted (reversed)
+            # rulebook, which is the shipped default this app boots with.
             journal._connection.execute(
                 "INSERT INTO signals (id, timestamp, asset, chart_timeframe, "
                 "trade_duration, direction, state, direction_confidence, "
                 "duration_confidence, overall_confidence, setup_quality, "
-                "outcome, source) VALUES (?, ?, 'EUR/USD OTC', 60, 30, "
-                "'CALL', 'SETTLED', 86, 80, 87, 'STRONG', ?, 'synthetic')",
+                "outcome, source, policy) VALUES (?, ?, 'EUR/USD OTC', 60, "
+                "30, 'CALL', 'SETTLED', 86, 80, 87, 'STRONG', ?, "
+                "'synthetic', 'reversed')",
                 (
                     f"seed-{i}",
                     (start + timedelta(minutes=i)).isoformat(),
@@ -3964,7 +4007,7 @@ class TestASetupOnAWatchedChartIsACall:
         app = self._app(tmp_path)
         try:
             written = []
-            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.journal.record = lambda sig, shot, source=None, policy=None: written.append(sig)
             app.engine.emit_alert = lambda **kw: None
             app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
 
@@ -3980,7 +4023,7 @@ class TestASetupOnAWatchedChartIsACall:
         app = self._app(tmp_path)
         try:
             written = []
-            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.journal.record = lambda sig, shot, source=None, policy=None: written.append(sig)
             app.engine.emit_alert = lambda **kw: None
             app.vm.asset, app.vm.chart_timeframe = "GBP/USD", 5
 
@@ -3994,7 +4037,7 @@ class TestASetupOnAWatchedChartIsACall:
         app = self._app(tmp_path)
         try:
             written = []
-            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.journal.record = lambda sig, shot, source=None, policy=None: written.append(sig)
             app.engine.emit_alert = lambda **kw: None
             app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
 
@@ -4009,7 +4052,7 @@ class TestASetupOnAWatchedChartIsACall:
         app = self._app(tmp_path)
         try:
             written = []
-            app.engine.journal.record = lambda sig, shot, source=None: written.append(sig)
+            app.engine.journal.record = lambda sig, shot, source=None, policy=None: written.append(sig)
             app.engine.emit_alert = lambda **kw: None
             app.vm.asset, app.vm.chart_timeframe = "EUR/USD", 60
 

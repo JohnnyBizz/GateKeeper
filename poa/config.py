@@ -105,7 +105,7 @@ TRADE_DURATIONS: tuple[int, ...] = (
 
 # Bumped whenever a stored setting has to change on installs that already
 # exist. See ``_migrate``.
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 
 DEFAULTS: dict[str, Any] = {
     "config_version": CONFIG_VERSION,
@@ -277,14 +277,22 @@ DEFAULTS: dict[str, Any] = {
         # moment the move it is reading has already mostly run. Set 0 to
         # turn the ceiling off.
         "overheat_ceiling": 90,
-        # Stand down on a pair for this many minutes after one of the tool's
-        # own calls on it settles as a loss. Measured before shipping over
-        # the three sessions with row-level records: on the session with the
-        # chase pattern it removed five losses and one win (50.0% -> 60.0%)
-        # and changed nothing on the others. The cascade variant (stand down
-        # everywhere after clustered losses) was measured too, cost winners,
-        # and did not ship. Set 0 to turn it off.
-        "loss_cooldown_minutes": 3,
+        # Show the OPPOSITE of the side the read argues. The promotion of
+        # 2026-08-25, by the pre-registered test: the mirror — this exact
+        # rulebook with every call reversed — settled 109 out-of-sample
+        # paper calls at 71.6% [62.5, 79.2] while the read's own side
+        # pooled 44.0% over 638 settled, and won the head-to-head 19-15
+        # against the very calls it reverses. The panel says so on every
+        # reversed call. Set false to show the raw read's side again.
+        "invert_calls": True,
+        # Off since the 2026-08-25 promotion: the mirror's record was
+        # earned WITHOUT a cooldown (shadows race the bare rulebook), and
+        # its edge concentrated in exactly the moments the cooldown
+        # blanks — the promoted configuration is the one that was tested.
+        # The cooldown's own measurement was made on the un-flipped calls
+        # and does not carry over. The loss brake still protects the
+        # user. Set minutes here to bring it back.
+        "loss_cooldown_minutes": 0,
         # Refuse to call charts paying under this fraction. Arithmetic, not
         # a chart reading: at a 72% payout break-even is 58.1% and nothing
         # measured here has ever cleared that bar; at 92% it is 52.1%.
@@ -713,6 +721,26 @@ def _migrate(config: Config, file_data: dict[str, Any]) -> None:
         ):
             config.set("alerts.sound", True)
             changed.append("alerts.sound off -> on")
+
+    if stored < 4:
+        # The 2026-08-25 promotion. The pre-registered test passed — the
+        # mirror's pooled lower bound cleared break-even and it won the
+        # head-to-head against the very calls it reverses — so the shipped
+        # rulebook now reverses its reads, and the cooldown (measured on
+        # the un-flipped calls, and blanking exactly the moments the
+        # mirror's record was earned in) goes back to zero unless the user
+        # chose their own number. Written explicitly so files that save
+        # every key carry the promotion rather than overlay the old world.
+        signals_stored = _stored_section(file_data, "signals")
+        if "invert_calls" not in signals_stored:
+            config.set("signals.invert_calls", True)
+            changed.append("signals.invert_calls -> on (the promotion)")
+        cooldown = signals_stored.get("loss_cooldown_minutes")
+        if cooldown is None or cooldown == 3:
+            # 3 was the shipped default nobody chose; any other number is
+            # the user's own and stays.
+            config.set("signals.loss_cooldown_minutes", 0)
+            changed.append("signals.loss_cooldown_minutes -> 0")
 
     config.data["config_version"] = CONFIG_VERSION
     if not changed:

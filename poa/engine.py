@@ -136,6 +136,22 @@ class AnalysisEngine:
     def gate_settings(self) -> GateSettings:
         return GateSettings.from_config(self.config.section("signals"))
 
+    @property
+    def policy(self) -> str:
+        """Which rulebook era live and manual rows are written under.
+
+        'reversed' since the 2026-08-25 promotion flipped the panel's
+        calls, 'read' when the flip is off. Stamped on every row a person
+        or the panel produces, because a direction recorded across the
+        flip means the opposite thing — and the calibration veto and the
+        record tables read only their own era.
+        """
+        try:
+            inverted = bool(getattr(self.gate_settings(), "invert_calls", False))
+        except Exception:  # pragma: no cover - defensive
+            inverted = False
+        return "reversed" if inverted else "read"
+
     def update_settings(self, changes: dict[str, Any]) -> dict[str, Any]:
         """Apply UI setting changes and report what actually took effect."""
         applied: dict[str, Any] = {}
@@ -334,7 +350,10 @@ class AnalysisEngine:
                 )
             if opens:
                 try:
-                    self.journal.record(signal, screenshot_path, source=source_name)
+                    self.journal.record(
+                        signal, screenshot_path, source=source_name,
+                        policy=self.policy,
+                    )
                 except Exception as exc:  # pragma: no cover - defensive
                     log.warning("journal write failed: %s", exc)
 

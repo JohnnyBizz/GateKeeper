@@ -156,6 +156,17 @@ class GateSettings:
     # this are worse than setups passing it" — and a claim the chart disagrees
     # with is not prudence, it is a rule quietly costing money.
     advisory: frozenset[str] = frozenset()
+    #: Show the OPPOSITE of the side the read argues. The promotion of
+    #: 2026-08-25: the mirror — this exact rulebook with every call
+    #: reversed — settled 109 out-of-sample paper calls at 71.6%
+    #: [62.5, 79.2] while the read's own side pooled 44.0% over 638, and
+    #: won its pre-registered head-to-head 19-15 against the very calls it
+    #: reverses. Applied after every gate and demotion, because those
+    #: rules were measured on the read and refuse the moments where the
+    #: read itself is unsafe. False here for the same reason as the floor
+    #: and the ceiling: a bare ``GateSettings()`` must not smuggle in a
+    #: product decision — the shipped config makes it.
+    invert_calls: bool = False
 
     @classmethod
     def from_config(cls, section: dict[str, Any]) -> "GateSettings":
@@ -208,6 +219,9 @@ class GateSettings:
                 section.get("avoid_weak_regimes", defaults.avoid_weak_regimes)
             ),
             advisory=frozenset(section.get("advisory_gates", ()) or ()),
+            invert_calls=bool(
+                section.get("invert_calls", defaults.invert_calls)
+            ),
         )
 
 

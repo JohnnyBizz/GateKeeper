@@ -149,12 +149,26 @@ signals:
                                   # The score maxes out when every component
                                   # agrees, and that is the most stretched
                                   # moment of the move, not the safest. 0 = off.
-  loss_cooldown_minutes: 3        # after one of the tool's own calls on a
-                                  # pair loses, stand that pair down this
-                                  # long. Measured: removed five losses and
-                                  # one win from the session that had the
-                                  # chase pattern, changed nothing elsewhere.
-                                  # 0 = off.
+  invert_calls: true              # show the OPPOSITE of the side the read
+                                  # argues. Promoted 2026-08-25 by the
+                                  # pre-registered test: the mirror — this
+                                  # rulebook reversed — settled 109 paper
+                                  # calls at 71.6% [62.5, 79.2] out of
+                                  # sample while the read's own side pooled
+                                  # 44.0% over 638 settled, and won the
+                                  # head-to-head 19-15 against the very
+                                  # calls it reverses. Every reversed call
+                                  # says so on the panel. false = show the
+                                  # raw read's side again.
+  loss_cooldown_minutes: 0        # off since the promotion: the mirror's
+                                  # record was earned WITHOUT a cooldown,
+                                  # and its edge concentrated in exactly
+                                  # the moments the cooldown blanks. The
+                                  # old 3-minute figure was measured on
+                                  # the un-flipped calls and does not
+                                  # carry over. The loss brake still
+                                  # protects you. Set minutes to bring
+                                  # it back.
   min_payout: 0.80                # refuse charts paying under this fraction.
                                   # At 72% payout break-even is 58.1% — a bar
                                   # nothing measured here has cleared. At 92%
@@ -173,14 +187,15 @@ signals:
   # Shadow strategies raced against the live one, on paper, every session.
   # Each experiment reads the same charts under its own rulebook and
   # journals its calls under its own label; none of them can reach the
-  # panel, the alerts, the calibration record or the cooldown. Their race
-  # standings print in every report's ledger. Omit this key for the shipped
-  # roster (mirror — the live rulebook with every call reversed, the
-  # pre-registered test of the pooled record sitting below a coin flip —
-  # plus fade-overheat, three-minute, thirty-second, strict-85, loose-70;
-  # the expiry matching the live one doubles as a control group, and the
-  # other keeps its horizon measured); set an empty
-  # list [] to turn racing off; or list your own:
+  # panel or the alerts. Every shadow races the RAW rulebook — the
+  # promotion's inversion is stripped for the race, so each record stays
+  # continuous with its own past. Their standings print in every report's
+  # ledger. Omit this key for the shipped roster (mirror — the raw
+  # rulebook reversed, which since the 2026-08-25 promotion is the live
+  # panel's own control; pre-flip — the un-reversed rulebook the panel
+  # used before, kept racing so the flip stays falsifiable; plus
+  # fade-overheat, three-minute, thirty-second, strict-85, loose-70);
+  # set an empty list [] to turn racing off; or list your own:
   #   experiments:
   #     - label: my-idea
   #       overrides: {min_shown_confidence: 80, overheat_ceiling: 88}

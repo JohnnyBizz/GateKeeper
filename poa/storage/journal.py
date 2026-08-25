@@ -162,6 +162,15 @@ class Journal:
             # in-memory dedup dies with the process; this is what lets a
             # restart refuse a deal the platform re-mentions afterwards.
             ("deal_id", "deal_id TEXT"),
+            # Which rulebook era a live or manual row was made under:
+            # 'reversed' since the 2026-08-25 promotion flipped the panel's
+            # calls, 'read' when the flip is off, NULL for rows from before
+            # the column existed (all of them read-side). A row's direction
+            # means something different across the flip, so any reader that
+            # pools rows into one verdict — the calibration veto, the record
+            # tables — filters on this. Experiment rows leave it NULL: their
+            # meaning is fixed by their label.
+            ("policy", "policy TEXT"),
         ):
             if column not in existing:
                 log.info("adding journal column %s", column)
@@ -317,7 +326,7 @@ class Journal:
         """
         query = (
             "SELECT timestamp, asset, trade_duration, overall_confidence, "
-            "direction, outcome, experiment FROM signals "
+            "direction, outcome, experiment, policy FROM signals "
             "WHERE outcome IN ('win', 'loss') "
             "AND (notes IS NULL OR notes != 'manual')"
         )
@@ -397,6 +406,7 @@ class Journal:
         screenshot_path: str | None = None,
         source: str | None = None,
         experiment: str | None = None,
+        policy: str | None = None,
     ) -> str:
         """Persist a signal. Returns the signal id.
 
@@ -404,9 +414,13 @@ class Journal:
         a demo run's outcomes out of a live run's win rate. ``experiment``
         names the shadow strategy that made this call; the live strategy
         leaves it None, and every reader of live results filters on that.
+        ``policy`` stamps which rulebook era a live row belongs to —
+        'reversed' since the promotion, 'read' without it — because a
+        direction recorded across the flip means the opposite thing.
         """
         row = _signal_to_row(signal, screenshot_path, source)
         row["experiment"] = experiment
+        row["policy"] = policy
         columns = ", ".join(row)
         placeholders = ", ".join(f":{key}" for key in row)
         with self._lock:
@@ -432,6 +446,7 @@ class Journal:
         price: float | None = None,
         timestamp: datetime | None = None,
         deal_id: str | None = None,
+        policy: str | None = None,
     ) -> str:
         """File a trade the user took themselves, already settled.
 
@@ -468,6 +483,7 @@ class Journal:
             "reason": "Taken manually; outcome entered by hand.",
             "notes": "manual",
             "deal_id": str(deal_id) if deal_id is not None else None,
+            "policy": policy,
         }
         columns = ", ".join(row)
         placeholders = ", ".join(f":{key}" for key in row)
@@ -770,6 +786,7 @@ class Journal:
         chart_timeframe: int | None = None,
         trade_duration: int | None = None,
         limit: int = 2000,
+        policy: str | None = None,
     ) -> list[Any]:
         """Settled real trades, reduced to what calibration needs from them.
 
@@ -809,6 +826,18 @@ class Journal:
             "AND notes = 'manual'"
         )
         params: list[Any] = []
+        # A direction across the 2026-08-25 flip means the opposite thing,
+        # and this record holds a veto over live setups — pooling the two
+        # eras would judge the promoted rulebook by the un-flipped one's
+        # trades. 'read' includes the legacy NULL rows (every row from
+        # before the column existed was read-side); 'reversed' takes only
+        # rows stamped since the promotion. None keeps the old unfiltered
+        # behaviour for callers that predate eras.
+        if policy == "read":
+            query += " AND (policy IS NULL OR policy = 'read')"
+        elif policy is not None:
+            query += " AND policy = ?"
+            params.append(str(policy))
         for column, value in (
             ("asset", asset),
             ("source", source),

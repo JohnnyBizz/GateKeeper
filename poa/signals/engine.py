@@ -440,6 +440,35 @@ class SignalEngine:
                     "90%+ is a different game."
                 )
 
+        # The reversal, last of all. It flips only a call that survived
+        # every gate and demotion above, because those rules were measured
+        # on the READ and refuse the moments where the read itself is
+        # unsafe — overheated, unpaid, unfit. Promoted 2026-08-25 after
+        # the pre-registered test: the mirror (this exact rulebook,
+        # opposite side) settled its out-of-sample paper record above
+        # break-even at the interval's lower bound and won the
+        # head-to-head against the very calls it reverses. Everything
+        # else on the signal still describes the read — the score, the
+        # narrative, the invalidation — and the first sentence of the
+        # reason says the call is its reverse, so the panel never shows a
+        # side without saying where it came from.
+        if (
+            bool(getattr(request.settings, "invert_calls", False))
+            and signal.direction in (Direction.CALL, Direction.PUT)
+        ):
+            read_side = signal.direction
+            signal.direction = read_side.opposite
+            signal.headline = f"{signal.direction.value} — REVERSED READ"
+            signal.reason = (
+                f"The read argues {read_side.value} at "
+                f"{direction_confidence:.0f}/100; the call is "
+                f"{signal.direction.value} because the measured record "
+                "runs against reads like this one: pooled below a coin "
+                "flip on their own side, above break-even reversed "
+                "(the mirror experiment, promoted 2026-08-25). "
+                + signal.reason
+            )
+
         if signal.direction in (Direction.CALL, Direction.PUT):
             signal.expires_at = now + _timedelta(request.trade_duration)
 

@@ -129,6 +129,69 @@ class TestWaitIsTheDefault:
         )
 
 
+class TestThePromotedReversal:
+    """The 2026-08-25 promotion: the panel shows the reverse of the read.
+
+    The pre-registered test passed — the mirror settled 109 out-of-sample
+    paper calls with its Wilson lower bound above break-even, and won the
+    head-to-head 19-15 against the very calls it reverses — so the shipped
+    rulebook flips its calls. The flip is the LAST step: every gate and
+    demotion still judges the read, because those rules were measured on
+    the read and refuse the moments where the read itself is unsafe.
+    """
+
+    def test_a_surviving_call_is_shown_reversed(self):
+        series = pullback_trend(400, direction=1)
+        raw = evaluate(series)
+        assert raw.actionable and raw.direction is Direction.CALL  # control
+
+        flipped = evaluate(series, settings=GateSettings(invert_calls=True))
+        assert flipped.direction is Direction.PUT
+        assert flipped.actionable
+        assert "REVERSED READ" in flipped.headline
+        assert "The read argues CALL" in flipped.reason
+        # The read itself is untouched: same argued side, same conviction.
+        assert flipped.score.direction is Direction.CALL
+        assert flipped.direction_confidence == pytest.approx(
+            raw.direction_confidence
+        )
+
+    def test_it_reverses_both_ways(self):
+        flipped = evaluate(
+            pullback_trend(400, direction=-1),
+            settings=GateSettings(invert_calls=True),
+        )
+        assert flipped.direction is Direction.CALL
+        assert "The read argues PUT" in flipped.reason
+
+    def test_the_demotions_still_judge_the_read(self):
+        # An overheated read stays refused: the flip never resurrects a
+        # moment the measured rules refuse — it only reverses survivors.
+        refused = evaluate(
+            pullback_trend(400, direction=1),
+            settings=GateSettings(invert_calls=True, overheat_ceiling=50.0),
+        )
+        assert refused.direction is Direction.WAIT
+        assert "OVERHEATED" in refused.headline
+
+    def test_wait_is_never_flipped(self):
+        waiting = evaluate(
+            choppy_series(400), settings=GateSettings(invert_calls=True)
+        )
+        assert waiting.direction in (Direction.WAIT, Direction.NO_TRADE)
+
+    def test_off_in_a_bare_settings_and_on_in_the_shipped_config(self):
+        # Same rule as the floor and the ceiling: a bare GateSettings()
+        # must not smuggle in a product decision — the config makes it.
+        from poa.config import DEFAULTS
+
+        assert GateSettings().invert_calls is False
+        assert DEFAULTS["signals"]["invert_calls"] is True
+        # And the promoted configuration is the one that was raced: the
+        # mirror's record was earned without a cooldown.
+        assert DEFAULTS["signals"]["loss_cooldown_minutes"] == 0
+
+
 class TestDirectionalSignals:
     def test_a_clean_uptrend_can_produce_a_call(self):
         signal = evaluate(pullback_trend(400, direction=1))
@@ -316,12 +379,16 @@ class TestTheLossCooldown:
         )
         assert signal.direction is Direction.CALL
 
-    def test_the_shipped_config_turns_it_on(self):
+    def test_the_shipped_config_turns_it_off_since_the_promotion(self):
+        # The 3-minute cooldown was measured on the un-flipped calls and
+        # blanked exactly the moments the mirror's promoted record was
+        # earned in; the promoted configuration is the one that was raced.
+        # The rule itself stays available for anyone who sets minutes.
         from poa.config import DEFAULTS
 
         section = DEFAULTS["signals"]
-        assert section["loss_cooldown_minutes"] == 3
-        assert GateSettings.from_config(section).loss_cooldown_minutes == 3.0
+        assert section["loss_cooldown_minutes"] == 0
+        assert GateSettings.from_config(section).loss_cooldown_minutes == 0.0
 
 
 class TestThePayoutFloor:

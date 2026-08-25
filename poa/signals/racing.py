@@ -70,6 +70,15 @@ DEFAULT_ROSTER: tuple[Experiment, ...] = (
     # the cleanest possible A/B: same charts, same moments, same expiry,
     # opposite call.
     Experiment("mirror", invert=True),
+    # The rulebook the panel used before the 2026-08-25 promotion, kept
+    # racing so the flip stays falsifiable: every shadow reads the RAW
+    # rulebook (the promotion's inversion is stripped for the race, so
+    # each experiment's record stays continuous with its own past), which
+    # makes this row the un-flipped panel's ongoing out-of-sample record —
+    # and the mirror row the promoted panel's control. If the regime that
+    # made the mirror right ends, this pair of rows is where it shows
+    # first.
+    Experiment("pre-flip"),
     Experiment(
         "fade-overheat",
         overrides=(
@@ -198,7 +207,6 @@ def _parse_experiment(entry: Any) -> Experiment | None:
     )
 
 
-_OPPOSITE = {Direction.CALL: Direction.PUT, Direction.PUT: Direction.CALL}
 
 
 class ShadowBook:
@@ -231,7 +239,13 @@ class ShadowBook:
         if not self.roster:
             return
         try:
-            base = engine.gate_settings()
+            # The race measures the RAW rulebook: the live panel's
+            # promoted inversion (invert_calls) is stripped here so every
+            # experiment's record stays continuous with its own past —
+            # a shadow whose baseline silently flipped on promotion day
+            # would be a new experiment wearing an old label. Inversion
+            # in the race belongs to the experiments that declare it.
+            base = replace(engine.gate_settings(), invert_calls=False)
         except Exception:  # pragma: no cover - defensive
             return
         source = getattr(engine.source, "name", None)
@@ -264,8 +278,12 @@ class ShadowBook:
             if actionable and not was_open:
                 self._open.add(key)
                 recorded = signal
-                if experiment.invert and signal.direction in _OPPOSITE:
-                    recorded = replace(signal, direction=_OPPOSITE[signal.direction])
+                if experiment.invert and signal.direction in (
+                    Direction.CALL, Direction.PUT
+                ):
+                    recorded = replace(
+                        signal, direction=signal.direction.opposite
+                    )
                 try:
                     engine.journal.record(
                         recorded, source=source, experiment=experiment.label
