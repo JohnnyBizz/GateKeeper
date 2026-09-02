@@ -439,6 +439,48 @@ class Calibration:
             return None
         return best_threshold, best_bucket
 
+    def mirrored(self) -> "Calibration":
+        """The same record, read from the other side of every call.
+
+        Every trade here settled on one side, and the opposite side settled
+        the opposite way at the same moment — a flat expiry is a refund and
+        is never counted, so the swap is exact. The race needs this since
+        the promotion: the live record describes the REVERSED calls the
+        panel shows, while every shadow reads the raw rulebook, and handing
+        the raw rulebook a record of its own reverse would veto it in
+        precisely the conditions it is strongest in.
+        """
+
+        def _swap(bucket: Bucket, label: str | None = None) -> Bucket:
+            return Bucket(
+                label if label is not None else bucket.label,
+                wins=bucket.losses,
+                losses=bucket.wins,
+                min_sample=bucket.min_sample,
+            )
+
+        mirror = Calibration(
+            payout=self.payout,
+            min_sample=self.min_sample,
+            total=self.total,
+            from_real_trades=self.from_real_trades,
+            real_available=self.real_available,
+        )
+        mirror.bands = [_swap(bucket) for bucket in self.bands]
+        mirror.thresholds = [(t, _swap(b)) for t, b in self.thresholds]
+        mirror.duration_thresholds = [
+            (t, _swap(b)) for t, b in self.duration_thresholds
+        ]
+        mirror.by_regime = {k: _swap(b) for k, b in self.by_regime.items()}
+        mirror.by_hour = {k: _swap(b) for k, b in self.by_hour.items()}
+        # A CALL on this side was a PUT on the other, and its record with it.
+        other_side = {"CALL": "PUT", "PUT": "CALL"}
+        mirror.by_direction = {
+            other_side.get(name, name): _swap(bucket, other_side.get(name, name))
+            for name, bucket in self.by_direction.items()
+        }
+        return mirror
+
     def best_hours(self, limit: int = 3) -> list[tuple[int, Bucket]]:
         ranked = [
             (hour, bucket)

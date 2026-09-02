@@ -461,6 +461,14 @@ class Journal:
         chart either way; which of us pressed the button does not change what
         the market did next. ``notes`` marks where it came from, so the two can
         still be told apart by anything that needs to.
+
+        ``policy`` says which side ``direction`` names: 'read' for the side
+        the read argued, 'reversed' for its opposite — the call the promoted
+        panel shows. It is a property of the row, not of the era it was
+        written in: a trade taken on a WAIT verdict's lean is a read-side
+        trade even while the panel's own calls are being reversed, and it
+        is stamped 'read' so the reversed era's calibration — which holds a
+        veto — never learns a read-side outcome as though it were its own.
         """
         stamp = (timestamp or utcnow()).isoformat()
         row = {
@@ -724,11 +732,29 @@ class Journal:
             row = self._connection.execute("SELECT COUNT(*) AS n FROM signals").fetchone()
         return int(row["n"])
 
+    @staticmethod
+    def _policy_clause(policy: str | None) -> tuple[str, list[Any]]:
+        """The SQL for one rulebook era, shared by every era-aware reader.
+
+        A direction across the 2026-08-25 flip means the opposite thing.
+        'read' includes the legacy NULL rows (every row from before the
+        column existed named the read's side); any other value matches
+        exactly; None keeps the old unfiltered behaviour for callers that
+        predate eras — a session tally counts the user's trades whichever
+        side they were named under.
+        """
+        if policy is None:
+            return "", []
+        if policy == "read":
+            return " AND (policy IS NULL OR policy = 'read')", []
+        return " AND policy = ?", [str(policy)]
+
     def statistics(
         self,
         asset: str | None = None,
         source: str | None = None,
         since: datetime | None = None,
+        policy: str | None = None,
     ) -> dict[str, Any]:
         """Aggregate performance over settled signals.
 
@@ -739,6 +765,15 @@ class Journal:
         ``since`` scopes them to one stretch of time, which is what makes a
         *session* tally a session tally rather than the whole history of the
         file.
+
+        ``policy`` scopes ONLY the by-direction split, to rows whose
+        direction is named under that rulebook — a direction across the
+        2026-08-25 flip means the opposite thing, so that split must never
+        pool both sides. The totals count every trade regardless: a hand
+        trade taken on a WAIT lean is stamped 'read' even in the reversed
+        era (see ``record_manual``), and it is still a trade the user
+        placed. The dashboard passes the engine's current policy; the
+        panel's session tally passes nothing.
         """
         query = (
             "SELECT direction, trade_duration, chart_timeframe, setup_quality, "
@@ -757,14 +792,22 @@ class Journal:
         if since is not None:
             query += " AND timestamp >= ?"
             params.append(since.isoformat())
-        query += " ORDER BY timestamp ASC"
+        order = " ORDER BY timestamp ASC"
+        clause, extra = self._policy_clause(policy)
         with self._lock:
-            rows = self._connection.execute(query, params).fetchall()
+            rows = self._connection.execute(query + order, params).fetchall()
+            era_rows = (
+                rows
+                if not clause
+                else self._connection.execute(
+                    query + clause + order, params + extra
+                ).fetchall()
+            )
 
         from ..backtesting.stats import summarise_outcomes
 
-        return summarise_outcomes(
-            [
+        def _outcomes(found: Any) -> list[dict[str, Any]]:
+            return [
                 {
                     "direction": r["direction"],
                     "trade_duration": r["trade_duration"],
@@ -775,9 +818,15 @@ class Journal:
                     "regime": r["market_regime"],
                     "timestamp": r["timestamp"],
                 }
-                for r in rows
+                for r in found
             ]
-        )
+
+        summary = summarise_outcomes(_outcomes(rows))
+        if era_rows is not rows:
+            summary["by_direction"] = summarise_outcomes(_outcomes(era_rows))[
+                "by_direction"
+            ]
+        return summary
 
     def calibration_records(
         self,
@@ -828,16 +877,14 @@ class Journal:
         params: list[Any] = []
         # A direction across the 2026-08-25 flip means the opposite thing,
         # and this record holds a veto over live setups — pooling the two
-        # eras would judge the promoted rulebook by the un-flipped one's
-        # trades. 'read' includes the legacy NULL rows (every row from
-        # before the column existed was read-side); 'reversed' takes only
-        # rows stamped since the promotion. None keeps the old unfiltered
-        # behaviour for callers that predate eras.
-        if policy == "read":
-            query += " AND (policy IS NULL OR policy = 'read')"
-        elif policy is not None:
-            query += " AND policy = ?"
-            params.append(str(policy))
+        # sides would judge the promoted rulebook by read-side trades.
+        # ``policy`` names which side a row's direction is (see
+        # ``record_manual``): 'read' includes the legacy NULL rows and a
+        # hand trade taken on a WAIT lean whichever era it was placed in;
+        # 'reversed' is a trade on a call the promoted panel showed.
+        clause, extra = self._policy_clause(policy)
+        query += clause
+        params.extend(extra)
         for column, value in (
             ("asset", asset),
             ("source", source),

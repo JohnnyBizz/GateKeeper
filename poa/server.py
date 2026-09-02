@@ -213,7 +213,12 @@ def create_app(config: Config | None = None, autostart: bool = True) -> FastAPI:
     def statistics(
         asset: str | None = None, source: str | None = None
     ) -> dict[str, Any]:
-        return engine.journal.statistics(asset=asset, source=source)
+        # The totals count every trade; only the by-direction split is
+        # scoped to the engine's policy, because since the promotion a
+        # direction means the opposite thing across the flip.
+        return engine.journal.statistics(
+            asset=asset, source=source, policy=getattr(engine, "policy", None)
+        )
 
     @app.get("/api/alerts")
     def alerts(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:

@@ -1927,8 +1927,9 @@ class TestTheWinLossButtonsTeachIt:
         config.set("capture.source", "synthetic")
         return OverlayApp(config)
 
-    def _signal(self, app, direction="CALL", score=72.0):
-        """A gated signal: WAIT on the panel, still scored for a direction."""
+    def _signal(self, app, direction="CALL", score=72.0, verdict=None):
+        """A gated signal: WAIT on the panel, still scored for a direction —
+        or, given ``verdict``, the call the panel actually showed."""
         from types import SimpleNamespace
         from poa.models import Direction
 
@@ -1936,6 +1937,7 @@ class TestTheWinLossButtonsTeachIt:
         app.vm.chart_timeframe = 60
         app.vm.signal = SimpleNamespace(
             score=SimpleNamespace(direction=Direction[direction]),
+            direction=Direction[verdict] if verdict else Direction.WAIT,
             direction_confidence=score,
             duration_confidence=88.0,
             price=1.19280,
@@ -1949,6 +1951,13 @@ class TestTheWinLossButtonsTeachIt:
             chart_timeframe=60,
             trade_duration=app.engine.trade_duration,
         )
+
+    def _stamped(self, app):
+        """Every hand trade's side and the label that side is named under."""
+        rows = app.engine.journal._connection.execute(
+            "SELECT direction, policy FROM signals WHERE notes = 'manual'"
+        ).fetchall()
+        return [(row["direction"], row["policy"]) for row in rows]
 
     def test_a_win_is_filed(self, tmp_path):
         app = self._app(tmp_path)
@@ -1973,22 +1982,39 @@ class TestTheWinLossButtonsTeachIt:
         finally:
             app.shutdown()
 
-    def test_it_is_filed_under_the_shown_side_not_the_verdict(self, tmp_path):
-        """WAIT is not a direction; and since the promotion the shown side
-        is the read's reverse.
+    def test_a_trade_on_a_wait_lean_is_filed_on_the_read_side(self, tmp_path):
+        """WAIT is not a direction — and it is not a reversed call either.
 
-        The verdict is what the gates decided; the score is the case that
-        was being argued; and what the user actually trades is what the
-        panel SHOWS — which, with the promoted reversal on (the shipped
-        default), is the opposite of the read. A PUT read files as the
-        CALL the user was instructed to take.
+        With the promoted reversal on (the shipped default) the panel only
+        instructs the reverse when the verdict IS a call. A demoted or WAIT
+        verdict still shows the read's lean — the headline and the MARKET
+        line both point the read's way — so a trade taken on it is a
+        read-side trade: filed under the read's side, stamped 'read', and
+        kept out of the reversed era's vetoing record. For one release it
+        was flipped regardless, and every such trade went in backwards.
         """
         app = self._app(tmp_path)
         try:
             assert app.engine.policy == "reversed"  # the shipped default
-            self._signal(app, direction="PUT")
+            self._signal(app, direction="PUT")  # verdict WAIT
             app._adjust(1, 0)
-            assert self._filed(app)[0].direction == "CALL"
+            assert self._stamped(app) == [("PUT", "read")]
+            assert app.engine.journal.calibration_records(policy="reversed") == []
+            assert len(app.engine.journal.calibration_records(policy="read")) == 1
+        finally:
+            app.shutdown()
+
+    def test_a_trade_on_a_shown_reversed_call_is_filed_on_the_shown_side(
+        self, tmp_path
+    ):
+        """A PUT read shown as CALL: the user traded the CALL they were
+        instructed to take, and the row says so — under 'reversed'."""
+        app = self._app(tmp_path)
+        try:
+            self._signal(app, direction="PUT", verdict="CALL")
+            app._adjust(1, 0)
+            assert self._stamped(app) == [("CALL", "reversed")]
+            assert len(app.engine.journal.calibration_records(policy="reversed")) == 1
         finally:
             app.shutdown()
 
@@ -1996,9 +2022,9 @@ class TestTheWinLossButtonsTeachIt:
         app = self._app(tmp_path)
         try:
             app.config.set("signals.invert_calls", False)
-            self._signal(app, direction="PUT")
+            self._signal(app, direction="PUT", verdict="PUT")
             app._adjust(1, 0)
-            assert self._filed(app)[0].direction == "PUT"
+            assert self._stamped(app) == [("PUT", "read")]
         finally:
             app.shutdown()
 
@@ -2263,27 +2289,69 @@ class TestASetupYouCannotSeeSpeaksUp:
 
 class TestHandTradesMatchTheShownSide:
     """Since the promotion the panel shows the reverse of the read, and the
-    user trades what the panel shows — so the side a hand trade is matched
-    against must flip with it, or every matched trade would be filed
-    against the side the user never saw."""
+    user trades what the panel shows — so the side a hand trade is filed
+    and matched under is the side the panel SHOWED, read off the signal
+    in hand, and the label says which side that was."""
 
-    def test_the_shown_side_reverses_with_the_promotion(self):
-        from poa.overlay.app import _shown_side
+    def _signal(self, verdict, read):
+        from types import SimpleNamespace
+        from poa.models import Direction
 
-        assert _shown_side("CALL", True) == "PUT"
-        assert _shown_side("PUT", True) == "CALL"
+        return SimpleNamespace(
+            direction=Direction[verdict],
+            score=SimpleNamespace(direction=Direction[read]),
+        )
 
-    def test_without_the_flip_the_read_is_the_side(self):
-        from poa.overlay.app import _shown_side
+    def test_a_reversed_call_files_the_shown_side_as_reversed(self):
+        from poa.overlay.app import _filing_for
 
-        assert _shown_side("CALL", False) == "CALL"
-        assert _shown_side("PUT", False) == "PUT"
+        assert _filing_for(self._signal("CALL", "PUT")) == ("CALL", "reversed")
+        assert _filing_for(self._signal("PUT", "CALL")) == ("PUT", "reversed")
 
-    def test_no_side_stays_no_side(self):
-        from poa.overlay.app import _shown_side
+    def test_an_unflipped_call_files_the_read_side_as_read(self):
+        from poa.overlay.app import _filing_for
 
-        assert _shown_side("", True) == ""
-        assert _shown_side("WAIT", True) == "WAIT"
+        assert _filing_for(self._signal("PUT", "PUT")) == ("PUT", "read")
+        assert _filing_for(self._signal("CALL", "CALL")) == ("CALL", "read")
+
+    def test_a_wait_verdict_files_the_read_lean_as_read(self):
+        """A demoted or WAIT verdict shows the read's lean; a trade on it
+        is a read-side trade whatever the panel's policy is."""
+        from poa.overlay.app import _filing_for
+
+        assert _filing_for(self._signal("WAIT", "PUT")) == ("PUT", "read")
+        assert _filing_for(self._signal("NO_TRADE", "CALL")) == ("CALL", "read")
+
+    def test_nothing_scored_files_nothing(self):
+        from types import SimpleNamespace
+        from poa.models import Direction
+        from poa.overlay.app import _filing_for
+
+        assert _filing_for(None) == ("", "read")
+        unscored = SimpleNamespace(direction=Direction.WAIT, score=None)
+        assert _filing_for(unscored) == ("", "read")
+
+    def test_the_answer_comes_from_the_signal_not_a_flag(self, tmp_path):
+        """The flag can change between the evaluation and the button press
+        (a settings edit, a reload); the panel is still showing the old
+        evaluation, and that is what the trade was taken on."""
+        from poa.config import load_config
+        from poa.overlay.app import OverlayApp, _filing_for
+
+        config = load_config()
+        config.set("storage.database", str(tmp_path / "j.db"))
+        config.set("storage.screenshot_dir", str(tmp_path / "s"))
+        config.set("logging.file", str(tmp_path / "p.log"))
+        config.set("alerts.desktop_notifications", False)
+        config.set("capture.source", "synthetic")
+        app = OverlayApp(config)
+        try:
+            app.vm.signal = self._signal("CALL", "PUT")  # shown reversed
+            app.config.set("signals.invert_calls", False)  # flag flips after
+            assert app.engine.policy == "read"
+            assert _filing_for(app.vm.signal) == ("CALL", "reversed")
+        finally:
+            app.shutdown()
 
 
 class TestTheSessionOpensOnTheRecordInTheApp:
