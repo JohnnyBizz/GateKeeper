@@ -32,6 +32,7 @@ every other rate: below twenty settled calls, a count and no percentage.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
@@ -239,16 +240,39 @@ class ShadowBook:
         if not self.roster:
             return
         try:
+            live = engine.gate_settings()
             # The race measures the RAW rulebook: the live panel's
             # promoted inversion (invert_calls) is stripped here so every
             # experiment's record stays continuous with its own past —
             # a shadow whose baseline silently flipped on promotion day
             # would be a new experiment wearing an old label. Inversion
             # in the race belongs to the experiments that declare it.
-            base = replace(engine.gate_settings(), invert_calls=False)
+            base = replace(live, invert_calls=False)
         except Exception:  # pragma: no cover - defensive
             return
+        # And the raw rulebook's own RECORD. The calibration in hand
+        # describes the calls the live panel shows — since the promotion,
+        # the reverse of the read — so the shadows get its mirror image:
+        # the same trades, settled from the read's side. Handed the live
+        # record as it was, the regime and measured-edge vetoes refused
+        # the raw read exactly where the reversed calls were weakest,
+        # which is where the raw read is strongest; the pre-flip row
+        # under-measured the old rulebook, and the pre-registered demotion
+        # trigger it feeds leaned toward never firing.
+        if getattr(live, "invert_calls", False) and calibration is not None:
+            mirror = getattr(calibration, "mirrored", None)
+            if callable(mirror):
+                calibration = mirror()
+            else:
+                # Better no record than a backwards one.
+                log.debug("a record that cannot be mirrored is kept out of the race")
+                calibration = None
         source = getattr(engine.source, "name", None)
+        # One evaluation per distinct question. The mirror and the pre-flip
+        # rulebook ask the chart the same one — same settings, same expiry
+        # — and differ only in which side they record, so the second read
+        # would be the first read again at the sweep's cost.
+        answers: dict[tuple[str, int | None], Any] = {}
         for experiment in self.roster:
             # An expiry shorter than the chart's own bars cannot be settled
             # honestly: the bar covering the expiry closes after the trade
@@ -261,15 +285,21 @@ class ShadowBook:
             ):
                 continue
             key = (experiment.label, asset, int(timeframe))
+            settings = experiment.settings(base)
+            question = (repr(settings), experiment.trade_duration)
             try:
-                signal = engine.evaluate_series(
-                    series,
-                    asset,
-                    timeframe,
-                    calibration,
-                    trade_duration=experiment.trade_duration,
-                    settings=experiment.settings(base),
-                )
+                if question in answers:
+                    signal = answers[question]
+                else:
+                    signal = engine.evaluate_series(
+                        series,
+                        asset,
+                        timeframe,
+                        calibration,
+                        trade_duration=experiment.trade_duration,
+                        settings=settings,
+                    )
+                    answers[question] = signal
             except Exception as exc:  # pragma: no cover - defensive
                 log.debug("shadow %s failed on %s: %s", experiment.label, asset, exc)
                 continue
@@ -277,12 +307,14 @@ class ShadowBook:
             was_open = key in self._open
             if actionable and not was_open:
                 self._open.add(key)
-                recorded = signal
-                if experiment.invert and signal.direction in (
+                # Its own id: a shared evaluation must not share a primary
+                # key, or the second rulebook's row would replace the first's.
+                recorded = replace(signal, id=uuid.uuid4().hex[:12])
+                if experiment.invert and recorded.direction in (
                     Direction.CALL, Direction.PUT
                 ):
                     recorded = replace(
-                        signal, direction=signal.direction.opposite
+                        recorded, direction=recorded.direction.opposite
                     )
                 try:
                     engine.journal.record(

@@ -46,6 +46,7 @@ class _FakeEngine:
         self.signal = signal
         self.source = SimpleNamespace(name="feed")
         self.asked = []
+        self.calibrations = []
 
     def gate_settings(self):
         return GateSettings()
@@ -55,6 +56,7 @@ class _FakeEngine:
         import uuid
 
         self.asked.append((trade_duration, settings))
+        self.calibrations.append(calibration)
         if self.signal is None:
             return None
         # A real evaluation mints a fresh signal every time; the fake has to
@@ -260,6 +262,132 @@ class TestOneSetupIsOneRowPerRulebook:
             engine = _FakeEngine(journal, _real_signal())
             ShadowBook(()).sweep_chart(engine, "EUR/USD OTC", 60, object(), None)
             assert engine.asked == []
+        finally:
+            journal.close()
+
+
+class _InvertingEngine(_FakeEngine):
+    """An engine whose live panel runs the promoted reversal."""
+
+    def gate_settings(self):
+        return GateSettings(invert_calls=True)
+
+
+class TestTheRaceReadsTheRawRecord:
+    """Since the promotion the live calibration describes the REVERSED
+    calls the panel shows. Every shadow reads the raw rulebook, so it is
+    handed the record's mirror image — the same trades from the read's
+    side — or the regime and measured-edge vetoes would refuse the raw
+    read exactly where it is strongest, and the pre-flip row would
+    under-measure the old rulebook the demotion trigger reads."""
+
+    def _calibration(self):
+        from poa.backtesting.calibration import Record, build_calibration
+
+        records = [
+            Record(score=85.0, won=True, regime="TRENDING", hour=9,
+                   direction="CALL")
+        ] * 30
+        records += [
+            Record(score=85.0, won=False, regime="RANGING", hour=10,
+                   direction="PUT")
+        ] * 10
+        return build_calibration(records, payout=0.92)
+
+    def test_mirroring_swaps_every_count(self):
+        original = self._calibration()
+        mirror = original.mirrored()
+        assert mirror.total == 40 and mirror.payout == 0.92
+        band = mirror.band_for(85.0)
+        assert (band.wins, band.losses) == (10, 30)
+        trending = mirror.by_regime["TRENDING"]
+        assert (trending.wins, trending.losses) == (0, 30)
+        assert mirror.by_hour[9].losses == 30
+        # A CALL on one side was a PUT on the other, record and all.
+        assert mirror.by_direction["PUT"].losses == 30
+        assert mirror.by_direction["CALL"].wins == 10
+        for (_t, mine), (_u, theirs) in zip(
+            mirror.thresholds, original.thresholds
+        ):
+            assert (mine.wins, mine.losses) == (theirs.losses, theirs.wins)
+        # The original is untouched.
+        assert original.band_for(85.0).wins == 30
+
+    def test_an_inverting_engine_hands_the_shadows_the_mirror(self, tmp_path):
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _InvertingEngine(journal, _real_signal())
+            record = self._calibration()
+            ShadowBook((Experiment("solo"),)).sweep_chart(
+                engine, "EUR/USD OTC", 60, object(), record
+            )
+            (given,) = engine.calibrations
+            assert given is not record
+            assert given.band_for(85.0).wins == 10  # the other side
+        finally:
+            journal.close()
+
+    def test_without_the_flip_the_record_passes_through(self, tmp_path):
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _FakeEngine(journal, _real_signal())
+            record = self._calibration()
+            ShadowBook((Experiment("solo"),)).sweep_chart(
+                engine, "EUR/USD OTC", 60, object(), record
+            )
+            assert engine.calibrations == [record]
+        finally:
+            journal.close()
+
+    def test_a_record_that_cannot_be_mirrored_is_withheld(self, tmp_path):
+        # Better no record than a backwards one.
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _InvertingEngine(journal, _real_signal())
+            ShadowBook((Experiment("solo"),)).sweep_chart(
+                engine, "EUR/USD OTC", 60, object(), object()
+            )
+            assert engine.calibrations == [None]
+        finally:
+            journal.close()
+
+
+class TestOneQuestionIsAskedOnce:
+    """The mirror and the pre-flip rulebook ask the chart the same question
+    and differ only in which side they record, so one evaluation serves
+    both — and each still gets its own row under its own id."""
+
+    def test_the_mirror_and_the_pre_flip_share_one_read(self, tmp_path):
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _FakeEngine(journal, _real_signal(direction=1))
+            roster = tuple(
+                e for e in DEFAULT_ROSTER if e.label in ("mirror", "pre-flip")
+            )
+            assert len(roster) == 2
+            ShadowBook(roster).sweep_chart(
+                engine, "EUR/USD OTC", 60, object(), None
+            )
+            assert len(engine.asked) == 1
+            rows = journal._connection.execute(
+                "SELECT id, experiment, direction FROM signals "
+                "WHERE experiment IS NOT NULL ORDER BY experiment"
+            ).fetchall()
+            assert [(r["experiment"], r["direction"]) for r in rows] == [
+                ("mirror", "PUT"), ("pre-flip", "CALL"),
+            ]
+            assert rows[0]["id"] != rows[1]["id"]
+        finally:
+            journal.close()
+
+    def test_a_different_expiry_is_a_different_question(self, tmp_path):
+        journal = Journal(str(tmp_path / "j.db"))
+        try:
+            engine = _FakeEngine(journal, _real_signal())
+            ShadowBook(
+                (Experiment("a"), Experiment("b", trade_duration=180))
+            ).sweep_chart(engine, "EUR/USD OTC", 60, object(), None)
+            assert len(engine.asked) == 2
         finally:
             journal.close()
 

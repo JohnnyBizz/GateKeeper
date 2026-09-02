@@ -181,7 +181,18 @@ def check_gates(
         call = score_direction(mtf, Direction.CALL)
         put = score_direction(mtf, Direction.PUT)
         lean = call.direction if call.total >= put.total else put.direction
-        won = (change > 0) is (lean is Direction.CALL)
+        # Judged on the side the panel would have SHOWN had the gate let it
+        # through. Under the promoted reversal that is the lean's opposite:
+        # the allowed calls above settle on the reversed side, and judging
+        # the raw lean here graded every gate by the wrong side — a gate
+        # protecting the flipped panel read as one costing it money, and
+        # auto-tune would have retired it.
+        shown = (
+            lean.opposite
+            if getattr(gate_settings, "invert_calls", False)
+            else lean
+        )
+        won = (change > 0) is (shown is Direction.CALL)
 
         for failure in signal.gates.failures:
             verdict = verdicts.setdefault(failure.name, GateVerdict(failure.name))

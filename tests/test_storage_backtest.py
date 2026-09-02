@@ -236,6 +236,31 @@ class TestSettlementIsolation:
         assert tmp_journal.statistics(source="screen")["wins"] == 1
         assert tmp_journal.statistics(source="synthetic")["settled"] == 0
 
+    def test_the_by_direction_split_is_scoped_to_one_rulebook(self, tmp_journal):
+        # A direction across the 2026-08-25 flip means the opposite thing,
+        # so the dashboard's by-direction split must never pool both sides
+        # — while the totals count every trade whichever side it was named
+        # under (a hand trade on a WAIT lean is stamped 'read' even in the
+        # reversed era, and it is still a trade the user placed).
+        flipped = make_signal(pullback_trend(400, direction=1), trade_duration=60)
+        flipped.price = 1.08
+        tmp_journal.record(flipped, source="screen", policy="reversed")
+        legacy = make_signal(pullback_trend(400, direction=1), trade_duration=60)
+        legacy.price = 1.08
+        tmp_journal.record(legacy, source="screen")  # before the column: NULL
+        later = utcnow() + timedelta(seconds=90)
+        tmp_journal.resolve_outcomes(1.0805, later, source="screen")
+
+        def split_size(stats):
+            return sum(group["signals"] for group in stats["by_direction"])
+
+        everything = tmp_journal.statistics(source="screen")
+        assert everything["settled"] == 2 and split_size(everything) == 2
+        for side in ("reversed", "read"):
+            scoped = tmp_journal.statistics(source="screen", policy=side)
+            assert scoped["settled"] == 2  # the totals never lose a trade
+            assert split_size(scoped) == 1  # the split sees one side
+
     def test_an_old_journal_file_gains_the_source_column(self, tmp_path):
         import sqlite3
 

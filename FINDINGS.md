@@ -1079,3 +1079,118 @@ build carried the promotion:
   cadence) and the live rows on older journals.
 * The flip rule itself was written three ways in three files; it now
   lives once, on ``Direction.opposite``.
+
+## 2026-09-02 — the sweep behind the flip: four more ways the promotion could have corrupted its own experiment
+
+No session has been measured on the flipped panel yet. The 2026-08-25
+sitting's report never arrived, and the 2026-08-29 launch died a few
+seconds after opening — no code path closes the panel on its own (the
+only window-destroying call is the ✕ button; engine and UI failures are
+caught and logged), so that crash is either native, or external
+(Defender killing an unsigned exe is the leading suspect), and the log
+at ``%LOCALAPPDATA%\GateKeeper\storage\poa.log`` decides which. It is
+unresolved until that file is read.
+
+In the meantime the whole package was reviewed at high effort — not the
+flip's diff, which two sweeps had already read, but everything that
+*consumes* a direction now that a direction means the opposite thing.
+Eight findings; four of them corrupt the experiment rather than crash
+the app. All fixed before any build carried them further.
+
+### The four that mattered
+
+* **The gate audit graded blocked setups on the wrong side.** Allowed
+  calls settle on ``signal.direction`` — reversed since the promotion —
+  but a blocked setup was judged on the raw lean the scorer preferred.
+  Under the reversal a gate blocking reads that win 60% on the read's
+  side is a gate refusing setups the flipped panel would LOSE 60% on;
+  the audit called it "costly", and with ``signals.auto_tune`` on,
+  ``_retire_costly_gates`` would have demoted it to advisory and the
+  panel would have started showing exactly those setups. Blocked setups
+  are now judged on the side the panel would have shown. The test runs
+  the audit raw and flipped on one chart and requires every count to
+  swap.
+* **The race read the raw rulebook with the reversed rulebook's record.**
+  Since the promotion the replay simulates reversed calls and the real
+  trades are stamped 'reversed', so the calibration describes the
+  reversed side — and every shadow, stripped of the inversion, was
+  handed it as is. ``regime_record`` (blocking, never advisory) then
+  refused the raw read in exactly the regimes where the reversed call is
+  weakest, which is where the raw read is strongest; ``measured_edge``
+  vetoed on the reversed side's real record. The pre-flip row was
+  under-measuring the old rulebook — biasing the pre-registered demotion
+  trigger toward never firing — and the mirror's post-promotion record
+  ran under a different veto than the 109 calls that promoted it. The
+  race now receives ``Calibration.mirrored()``: every bucket with wins
+  and losses swapped, CALL and PUT relabelled. The swap is exact because
+  a flat expiry is a refund and is never counted. A record that cannot
+  be mirrored is withheld from the race rather than handed over
+  backwards.
+* **Hand trades on WAIT and demoted verdicts were filed backwards.** The
+  engine only reverses a CALL/PUT verdict. A demoted read keeps its
+  headline — ``CALL SETUP — OVERHEATED`` — and the MARKET line points the
+  read's way, so a trade taken on that lean is a READ-side trade. Every
+  filing path flipped it regardless: the WIN/LOSS buttons filed it under
+  the reverse, the reversed era's vetoing calibration learned "PUT at 88
+  won" from a CALL that won, and the open chart's call memory stored the
+  reverse so a platform-settled CALL failed to match and was filed with
+  no score. One rule now lives in ``_filing_for``: the side flips only
+  when a CALL/PUT verdict was actually shown, and the row's ``policy``
+  stamp is a property of the row — which side its direction names — so a
+  WAIT-lean trade is stamped 'read' even while the panel's own calls are
+  stamped 'reversed'. The buttons, the open chart, the watchlist and the
+  platform-deal matcher all share it.
+* **The duel's fallback would have paired a policy with itself.** The
+  ledger filtered the live rows to one era *before* handing them to the
+  duel, so on a journal with no pre-flip rows the mirror's challenger
+  was the reversed-era live rows — the mirror's own side — and past five
+  pairs the report would have printed "direction opposite in 0; the
+  mirror won N, the other side N". The duel now sees every live row and
+  keeps only the read era, whichever era the tables show.
+
+### The four that did not, fixed anyway
+
+The dashboard's ``/api/statistics`` pooled both eras (it takes the
+engine's policy now; the panel's session tally deliberately does not,
+because it counts the user's own trades). The ledger's introduction
+still promised "every settled call this journal holds" over tables that
+show one era. ``_inverting`` re-read the flag ``engine.policy`` already
+owns. And the mirror and the pre-flip rulebook asked every chart the
+same question twice per sweep — one evaluation now serves both, each
+row under its own id, because a shared evaluation with a shared primary
+key would have had the second rulebook's row *replace* the first's.
+
+### What three sweeps in eight days say
+
+Nine findings before the promotion build, seven in the promotion's own
+sweep, eight in this one — and each sweep found consumers of a
+direction that the previous sweep did not think to read. The flip
+changed the meaning of one field everywhere that field is used, and the
+most dangerous places to be wrong are the ones that hold a veto: the
+calibration record, the gate audit, the duel that decides a demotion.
+The discipline stands: no build link goes out without a sweep, and the
+sweep reads what the change *feeds*, not only what it touches.
+
+### This sweep's own sweep
+
+The diff above was reviewed before it shipped, and that review found
+four more — one of them a regression the fixes themselves would have
+introduced. Making ``policy`` a per-row side label meant the dashboard's
+totals, filtered by era, would have silently dropped every hand trade
+taken on a WAIT lean; the totals now count every trade and only the
+by-direction split is era-scoped. The new filing rule re-derived the
+shown side from a config flag read at the moment of the button press,
+which can disagree with the evaluation the panel is still showing (a
+settings edit between the two); it now reads the verdict in hand, and
+the flag-based helpers are gone. The "NULL means read" rule had quietly
+grown a third copy, and an alias read backwards. None of these would
+have been caught by the tests written for the eight findings; all were
+caught by reading what the fixes *fed*.
+
+### Left open
+
+* The flipped panel has **zero settled calls on record**. The promotion
+  is live and unmeasured; the first honest number needs a session that
+  runs. The demotion criteria and fade-overheat's promotion bar are
+  unchanged.
+* The 2026-08-29 crash, pending the log.

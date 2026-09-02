@@ -885,6 +885,50 @@ class TestOneRulebookEraAtATime:
         )
         assert old["challenger"] == "live" and old["pairs"] == 1
 
+    def test_reversed_era_live_rows_never_challenge_the_mirror(self):
+        """A mirror call is the reverse of the raw read, so a live row from
+        the reversed era is the mirror's own side. Pairing the two would
+        print a policy duelling itself — direction opposite in none, "the
+        mirror won N, the other side N"."""
+        from poa.reporting.ledger import mirror_duel
+
+        def row(*, direction, outcome, policy=None, experiment=None):
+            return {
+                "timestamp": START.isoformat(), "asset": "EUR/USD OTC",
+                "trade_duration": 30, "direction": direction,
+                "outcome": outcome, "experiment": experiment,
+                "policy": policy,
+            }
+
+        mirror = [row(direction="PUT", outcome="win", experiment="mirror")]
+        flipped_live = [row(direction="PUT", outcome="win", policy="reversed")]
+        assert mirror_duel(flipped_live, mirror)["pairs"] == 0
+        # The read era still challenges — stamped or legacy NULL alike.
+        for stamp in ("read", None):
+            read_live = [row(direction="CALL", outcome="loss", policy=stamp)]
+            assert mirror_duel(read_live, mirror)["pairs"] == 1
+
+    def test_the_duel_reaches_read_era_rows_whichever_era_the_tables_show(
+        self, tmp_path
+    ):
+        """A post-flip report of a journal without pre-flip rows still
+        gets the original comparison: the tables show one era, the duel
+        sees every live row and keeps the read-era ones."""
+        from poa.reporting.ledger import collect_ledger
+
+        journal = self._journal(tmp_path)
+        try:
+            # Four-character ids land on the same minute (see _row).
+            self._row(journal, "old1", policy=None)  # read-era live
+            self._row(journal, "mir1", policy=None, experiment="mirror")
+            self._row(journal, "new1", policy="reversed")
+            ledger = collect_ledger(journal, source="feed", policy="reversed")
+            assert ledger["overall"][0].settled == 1  # the tables: one era
+            assert ledger["duel"]["challenger"] == "live"
+            assert ledger["duel"]["pairs"] == 1  # old1 — never new1
+        finally:
+            journal.close()
+
     def test_the_flip_rule_lives_in_one_place(self):
         from poa.models import Direction
 

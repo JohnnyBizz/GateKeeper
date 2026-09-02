@@ -57,10 +57,29 @@ class LedgerRow:
         return round(self.wins / self.settled * 100.0, 1)
 
 
+def _in_era(row: dict[str, Any], policy: str | None) -> bool:
+    """Whether a live row's direction is named under the rulebook ``policy``.
+
+    'read' includes the legacy NULL rows — every row from before the
+    column existed named the read's side; None means every era. The SQL
+    twin is ``Journal._policy_clause``; this is the one Python home.
+    """
+    if policy is None:
+        return True
+    stamp = row.get("policy")
+    if policy == "read":
+        return stamp in (None, "read")
+    return stamp == policy
+
+
 def collect_ledger(
     journal: Any, source: str | None = None, policy: str | None = None
 ) -> dict[str, list[LedgerRow]] | None:
     """Pool every settled tool call in the journal, split four ways.
+
+    ``policy`` names the rulebook era the live tables show — 'reversed'
+    since the promotion, 'read' before it, None for everything at once.
+    The race table carries every shadow whole whichever era is asked for.
 
     Returns None when the journal holds nothing settled (or cannot be
     read) — the report then simply carries no ledger section, rather than
@@ -81,16 +100,13 @@ def collect_ledger(
     live = [r for r in rows if not r.get("experiment")]
     shadows = [r for r in rows if r.get("experiment")]
 
-    # One rulebook era at a time. A direction across the 2026-08-25 flip
-    # means the opposite thing, so pooling both eras into one table would
-    # let a pair that was "working" for the old rulebook recommend exactly
-    # the wrong side of the new one. 'read' includes the legacy NULL rows
-    # (everything from before the column existed was read-side); the race
-    # table is unaffected — each shadow's meaning is fixed by its label.
-    if policy == "read":
-        live = [r for r in live if r.get("policy") in (None, "read")]
-    elif policy is not None:
-        live = [r for r in live if r.get("policy") == policy]
+    # The tables show one rulebook era at a time. A direction across the
+    # 2026-08-25 flip means the opposite thing, so pooling both eras into
+    # one table would let a pair that was "working" for the old rulebook
+    # recommend exactly the wrong side of the new one. The race table is
+    # unaffected — each shadow's meaning is fixed by its label — and the
+    # duel picks its own challenger from every live row (see mirror_duel).
+    era_live = [r for r in live if _in_era(r, policy)]
 
     overall = LedgerRow("live strategy")
     by_expiry: dict[int, LedgerRow] = {}
@@ -105,7 +121,7 @@ def collect_ledger(
         bucket.wins += row["outcome"] == "win"
         bucket.losses += row["outcome"] != "win"
 
-    for row in live:
+    for row in era_live:
         won = row["outcome"] == "win"
 
         def tally(bucket: LedgerRow) -> None:
@@ -171,8 +187,11 @@ def mirror_duel(
       challenges the **mirror** (the promoted one) — the pre-registered
       demotion comparison, and a perfect pairing because both race at the
       same sweep cadence over the same charts.
-    * On a journal from before the pre-flip shadow existed, the live rows
-      challenge the mirror — the original promotion comparison.
+    * On a journal from before the pre-flip shadow existed, the READ-era
+      live rows challenge the mirror — the original promotion comparison.
+      Only the read era: a mirror call is the reverse of the raw read, so a
+      live row from the reversed era is the mirror's own side, and pairing
+      the two would print a policy duelling itself.
 
     Timestamps are ISO strings in one timezone (the journal's own), so
     they compare as datetimes; rows that fail to parse simply stay out.
@@ -194,7 +213,8 @@ def mirror_duel(
     pre_flip = [
         row for row in shadows if str(row.get("experiment")) == "pre-flip"
     ]
-    challenger_rows = pre_flip if pre_flip else live
+    read_live = [r for r in live if _in_era(r, "read")]
+    challenger_rows = pre_flip if pre_flip else read_live
     challenger = "pre-flip" if pre_flip else "live"
 
     pool: dict[tuple[str, int], list[tuple[Any, dict[str, Any]]]] = {}
@@ -385,10 +405,13 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
     """Render the pooled record in the report's own voice."""
     total = ledger["overall"][0]
     lines = [
-        "Every settled call this journal holds, across every session — the",
-        "tool's own calls only, settled by their charts' prices. Calls",
-        "cluster inside sessions and sessions inside days, so read the",
-        "direction of a column, not its decimals. A row under "
+        "Every settled call this journal holds under the current rulebook,",
+        "across every session — the tool's own calls only, settled by their",
+        "charts' prices. (A direction across the 2026-08-25 flip means the",
+        "opposite thing, so the other era's rows stay out of these tables;",
+        "the race below keeps every shadow whole.) Calls cluster inside",
+        "sessions and sessions inside days, so read the direction of a",
+        "column, not its decimals. A row under "
         f"{MEANINGFUL} calls",
         "shows no rate: it is not hiding, it is too small to have one.",
         "",

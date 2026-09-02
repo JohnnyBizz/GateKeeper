@@ -931,6 +931,36 @@ class TestARuleTheChartDisproves:
         # And the headline is a sentence either way.
         assert isinstance(report.headline(), str) and report.headline()
 
+    def test_the_audit_judges_blocked_setups_on_the_shown_side(self):
+        """Under the promoted reversal the panel would have SHOWN the
+        opposite of the lean had a gate let it through, so a blocked setup
+        is judged on that side. Judged on the raw lean, every gate
+        protecting the flipped panel read as one costing it money — and
+        auto-tune would have retired it."""
+        from poa.backtesting.gatecheck import check_gates
+        from poa.signals.gates import GateSettings
+
+        series = pullback_trend(500, direction=1)
+        raw = check_gates(
+            series, trade_duration=180, payout=0.92, settings=GateSettings()
+        )
+        flipped = check_gates(
+            series, trade_duration=180, payout=0.92,
+            settings=GateSettings(invert_calls=True),
+        )
+        assert raw.allowed + sum(v.blocked for v in raw.verdicts) > 0
+        # The same moments, the other side: every count swaps.
+        assert (flipped.allowed_wins, flipped.allowed_losses) == (
+            raw.allowed_losses, raw.allowed_wins
+        )
+        twins = {v.name: v for v in raw.verdicts}
+        assert len(flipped.verdicts) == len(raw.verdicts)
+        for verdict in flipped.verdicts:
+            twin = twins[verdict.name]
+            assert (verdict.blocked_wins, verdict.blocked_losses) == (
+                twin.blocked_losses, twin.blocked_wins
+            )
+
     def test_a_gate_blocking_losers_is_left_alone(self):
         from poa.backtesting.gatecheck import GateVerdict
 

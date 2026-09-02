@@ -29,17 +29,35 @@ from ..risk import SessionStats
 from .viewmodel import OverlayViewModel, ScanState, direction_color, tab_label
 
 
-def _shown_side(argued: str, inverted: bool) -> str:
-    """The side the panel would show for a read arguing ``argued``.
+def _filing_for(signal: Any) -> tuple[str, str]:
+    """The side a trade taken on this signal was taken on, and the policy
+    that side is named under — one answer for the WIN/LOSS buttons, the
+    open chart's call memory and the watchlist's.
+
+    Read off the signal in hand, never off a flag. When the verdict is a
+    call, ``signal.direction`` IS the side the panel showed, and it is
+    'reversed' exactly when the engine flipped it away from the side the
+    score argued; a config flag read at the moment of the button press
+    can disagree with the evaluation the panel is still showing. A
+    demoted or WAIT verdict shows the read's lean — the headline says
+    ``CALL SETUP — OVERHEATED`` and the MARKET line points the read's way
+    — so a trade taken on it is a READ-side trade. Flipping it regardless
+    (as every filing path did for one release) recorded each such trade
+    backwards, into the record that holds a veto.
 
     A function on purpose: the record-at-start feature shipped dead once
     because its wiring was only ever tested in pieces, and this is the
-    piece hand-trade matching rides on. The flip rule itself lives on
-    ``Direction.opposite`` — one place, not three.
+    piece every hand trade rides on.
     """
-    if inverted and argued in ("CALL", "PUT"):
-        return Direction(argued).opposite.value
-    return argued
+    if signal is None:
+        return "", "read"
+    read = getattr(getattr(signal, "score", None), "direction", None)
+    read_side = getattr(read, "value", None) or ""
+    verdict = getattr(signal, "direction", None)
+    if verdict in (Direction.CALL, Direction.PUT):
+        flipped = read_side in ("CALL", "PUT") and read_side != verdict.value
+        return verdict.value, "reversed" if flipped else "read"
+    return read_side, "read"
 
 log = get_logger(__name__)
 
@@ -418,15 +436,11 @@ class OverlayApp:
 
         # Note what this chart is calling, so a trade the platform settles
         # later can be matched to the call it was taken on rather than to
-        # whatever happens to be on screen by then. The SHOWN side, not the
-        # read's: since the promotion the user trades the reverse of the
-        # read, and the watchlist path learned this while this one —
-        # the primary trading surface — did not, until review caught it.
-        score = getattr(signal, "score", None) if signal is not None else None
-        named = _shown_side(
-            getattr(getattr(score, "direction", None), "value", None) or "",
-            self._inverting,
-        )
+        # whatever happens to be on screen by then. The side the user SAW:
+        # a reversed call when the verdict is one, the read's lean when it
+        # is WAIT — and the policy that side is named under travels with
+        # it, so the settled trade is filed under the right label.
+        named, policy = _filing_for(signal)
         if named in ("CALL", "PUT"):
             regime = ""
             mtf = getattr(signal, "mtf", None)
@@ -439,6 +453,7 @@ class OverlayApp:
                 float(getattr(signal, "direction_confidence", 0.0) or 0.0),
                 float(getattr(signal, "duration_confidence", 0.0) or 0.0),
                 regime,
+                policy=policy,
             )
 
         self._follow_recommended_expiry(signal)
@@ -941,18 +956,6 @@ class OverlayApp:
                 seen.add((asset, target))
         return out
 
-    @property
-    def _inverting(self) -> bool:
-        """Whether the promoted reversal is on — the panel shows the
-        reverse of the read, so everything that matches a side to what the
-        user saw has to flip with it."""
-        try:
-            return bool(
-                getattr(self.engine.gate_settings(), "invert_calls", False)
-            )
-        except Exception:  # pragma: no cover - defensive
-            return False
-
     def _watch_worker(self, charts: Any, measured: Any = None) -> None:
         """Off the UI thread. Evaluates only; records and alerts nothing.
 
@@ -982,10 +985,6 @@ class OverlayApp:
                 self._read_at.clear()
                 self._read_was.clear()
                 self._read_ctx = context
-
-            # Once per sweep, not once per chart: reading it rebuilds the
-            # whole GateSettings from config, and it cannot change mid-loop.
-            inverting = self._inverting
 
             for asset, timeframe, series in self._with_other_timeframes(charts):
                 key = (asset, timeframe)
@@ -1031,25 +1030,20 @@ class OverlayApp:
                         )
 
                 # The side a trade on this chart would be matched against
-                # later. The verdict is usually WAIT, and WAIT is not a side
-                # — so the score's argued side stands in. Since the
-                # 2026-08-25 promotion the panel SHOWS the reverse of the
-                # read, and the user trades what the panel shows, so the
-                # matching side flips with it.
-                argued = _shown_side(
-                    getattr(
-                        getattr(getattr(signal, "score", None), "direction", None),
-                        "value",
-                        "",
-                    ),
-                    inverting,
-                )
+                # later, and the policy that side is named under. The
+                # verdict is usually WAIT, and WAIT is not a side — so the
+                # score's argued side stands in. Since the 2026-08-25
+                # promotion a CALL/PUT verdict is the reverse of the read
+                # and the user trades what the panel shows; a WAIT verdict
+                # still shows the read's lean, so that side stands as read.
+                argued, policy = _filing_for(signal)
                 row = {
                     "asset": asset,
                     "timeframe": timeframe,
                     "expiry": expiry,
                     "direction": signal.direction.value,
                     "argued": str(argued or ""),
+                    "policy": policy,
                     "score": round(signal.direction_confidence, 0),
                     "duration_score": round(signal.duration_confidence, 0),
                     "actionable": bool(signal.actionable),
@@ -1125,6 +1119,7 @@ class OverlayApp:
                 str(row.get("argued") or ""),
                 float(row.get("score") or 0.0),
                 float(row.get("duration_score") or 0.0),
+                policy=str(row.get("policy") or "read"),
             )
         self._settle_watched(rows)
         self._announce_watchlist(rows)
@@ -1838,6 +1833,7 @@ class OverlayApp:
         direction_confidence: float,
         duration_confidence: float,
         regime: str = "",
+        policy: str = "read",
     ) -> None:
         """Note what this chart was saying, so a trade on it can be matched.
 
@@ -1846,6 +1842,9 @@ class OverlayApp:
         what each chart was calling and when, there was nothing to attribute
         such a trade to except the panel's current state — which is a different
         instrument as often as not.
+
+        ``policy`` travels with the side, so the settled trade is filed under
+        the label that says what its direction means (see ``_filing_for``).
         """
         if direction not in ("CALL", "PUT") or not asset:
             return
@@ -1858,6 +1857,7 @@ class OverlayApp:
                 "direction_confidence": float(direction_confidence),
                 "duration_confidence": float(duration_confidence),
                 "regime": regime,
+                "policy": policy,
             }
         )
 
@@ -2048,7 +2048,15 @@ class OverlayApp:
                     # Persisted so a restart still refuses this deal if the
                     # platform mentions it again.
                     deal_id=deal_id,
-                    policy=self.engine.policy,
+                    # The label the matched call's side was named under. An
+                    # unattributed deal (score zero, which the calibration
+                    # declines to learn from) keeps the era stamp so it still
+                    # counts in the current era's tallies.
+                    policy=(
+                        str(call.get("policy") or self.engine.policy)
+                        if call
+                        else self.engine.policy
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - defensive
                 log.warning("could not file a settled trade: %s", exc)
@@ -2078,16 +2086,15 @@ class OverlayApp:
         pressed, so it is a visible assumption rather than a hidden one — and
         a trade taken against it is a trade this cannot learn from correctly.
 
-        The SHOWN side since the promotion: the panel instructs the reverse
-        of the read, the user trades what the panel shows, and a row filed
-        under the read's label would record the direction they never took.
+        The SHOWN side since the promotion — when a reversed call was shown.
+        A CALL/PUT verdict instructs the reverse of the read and the user
+        trades what the panel shows, so the row is filed under that side and
+        stamped 'reversed'. A WAIT or demoted verdict shows the read's lean,
+        so a trade on it is filed under the read's side and stamped 'read';
+        ``_filing_for`` is the one place that rule lives.
         """
         signal = self.vm.signal
-        score = getattr(signal, "score", None) if signal is not None else None
-        direction = getattr(score, "direction", None)
-        name = _shown_side(
-            getattr(direction, "value", None) or "", self._inverting
-        )
+        name, policy = _filing_for(signal)
         if name not in ("CALL", "PUT"):
             # Nothing scored — during a scan, or before the first read. The
             # tally still moves; there is simply nothing to attribute.
@@ -2111,7 +2118,7 @@ class OverlayApp:
                 market_regime=regime,
                 source=getattr(self.engine.source, "name", None),
                 price=getattr(signal, "price", None),
-                policy=self.engine.policy,
+                policy=policy,
             )
         except Exception as exc:  # pragma: no cover - defensive
             log.warning("could not file the manual outcome: %s", exc)
