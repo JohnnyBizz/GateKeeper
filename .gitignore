@@ -25,3 +25,4 @@ htmlcov/
 
 # Stills rendered by tools/preview_panel.py
 tools/preview-*.png
+tools/preview-*.gif
