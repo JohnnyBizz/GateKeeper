@@ -9,7 +9,7 @@ So everything with a shape to it is rendered here as an image and handed to the
 panel to blit. Pillow is already in the bundle (pytesseract depends on it), so
 this costs nothing at install time.
 
-Two things make the results look drawn rather than plotted:
+Three things make the results look drawn rather than plotted:
 
 *Supersampling.* Every shape is drawn at :data:`SCALE` times its final size and
 reduced with a Lanczos filter, which is what turns a stepped diagonal into a
@@ -17,7 +17,15 @@ clean edge. Pillow has no anti-aliased primitives; this is the standard way
 around that, and at these sizes the cost is microseconds.
 
 *One palette, with depth.* Surfaces are separated by luminance rather than by
-outline, so the panel reads as layers instead of as boxes inside boxes.
+outline, so the panel reads as layers instead of as boxes inside boxes. Since
+the 2026-09 redraw every surface also carries the two cues a flat render
+cannot: a drop shadow beneath it and a hairline of light along its top edge,
+which is what makes a card sit *on* the backdrop rather than be printed on it.
+
+*Light.* Colour that bleeds past its shape — the halo under a live card, the
+glow under the gauge's arc, the lit tip of a ring — is what reads as alive.
+Every halo is a blurred copy of the shape it belongs to, so it survives being
+animated and never has to be drawn twice.
 
 This module imports no GUI toolkit and returns plain images, so every shape in
 the overlay can be rendered and inspected in a test with no display attached.
@@ -29,12 +37,19 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 # How much larger everything is drawn before being reduced. Four is the point
 # where a diagonal stops looking stepped; eight costs four times the pixels to
 # fix something nobody can see.
 SCALE = 4
+
+# How far a halo bleeds past the shape that casts it, and how far a drop
+# shadow does. Exported so the panel can offset a padded image by exactly the
+# amount the renderer padded it — one number, not two guesses.
+GLOW_PAD = 12
+SHADOW_PAD = 10
+DOT_PAD = 8
 
 
 def _hex(color: str, alpha: int = 255) -> tuple[int, int, int, int]:
@@ -56,6 +71,16 @@ def mix(first: str, second: str, amount: float) -> str:
     )
 
 
+def lighten(color: str, amount: float) -> str:
+    """``color`` moved toward white."""
+    return mix(color, "#ffffff", amount)
+
+
+def darken(color: str, amount: float) -> str:
+    """``color`` moved toward black."""
+    return mix(color, "#000000", amount)
+
+
 def _canvas(width: int, height: int) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     image = Image.new("RGBA", (width * SCALE, height * SCALE), (0, 0, 0, 0))
     return image, ImageDraw.Draw(image)
@@ -63,6 +88,15 @@ def _canvas(width: int, height: int) -> tuple[Image.Image, ImageDraw.ImageDraw]:
 
 def _reduce(image: Image.Image, width: int, height: int) -> Image.Image:
     return image.resize((width, height), Image.LANCZOS)
+
+
+def _blurred(layer: Image.Image, radius: float, alpha: float = 1.0) -> Image.Image:
+    """A soft copy of a layer — the one primitive behind every halo and shadow."""
+    soft = layer.filter(ImageFilter.GaussianBlur(radius))
+    if alpha < 1.0:
+        scale = max(0.0, alpha)
+        soft.putalpha(soft.getchannel("A").point(lambda v: int(v * scale)))
+    return soft
 
 
 def _vertical_gradient(
@@ -89,6 +123,19 @@ def _vertical_gradient(
 # surfaces
 
 
+def card_padding(glow: str | None, shadow: float = 0.0) -> int:
+    """How far a card's image extends past the card itself, on every side.
+
+    A halo and a shadow both need room outside the shape, so the image is
+    larger than the card and the panel places it offset by this much. Kept
+    here so the renderer and the panel can never disagree about it.
+    """
+    pad = GLOW_PAD if glow else 0
+    if shadow > 0:
+        pad = max(pad, SHADOW_PAD)
+    return pad
+
+
 def card(
     width: int,
     height: int,
@@ -100,32 +147,46 @@ def card(
     border_width: int = 1,
     glow: str | None = None,
     glow_strength: float = 1.0,
+    shadow: float = 0.0,
+    highlight: bool = False,
 ) -> Image.Image:
-    """A rounded panel surface, optionally lit from within.
+    """A rounded panel surface, optionally lit from within — and, since the
+    redraw, optionally resting on the backdrop rather than printed on it.
 
     The glow is what a flat border cannot do and what makes a live setup read
     as *live*: colour bleeding past the edge of the card rather than stopping
     at it. Drawn as a blurred copy of the same rounded shape underneath, which
     is cheap and, unlike a hard outline, survives being animated.
+
+    ``shadow`` is the blur radius of a drop shadow beneath the card; zero
+    draws none, and the image stays exactly the card's size. ``highlight``
+    adds a hairline of light along the top edge and a hairline of dark along
+    the bottom — the glass rim that separates a raised surface from a flat
+    one at a glance.
     """
-    pad = 12 if glow else 0
+    pad = card_padding(glow, shadow)
     full_w, full_h = width + pad * 2, height + pad * 2
     base = Image.new("RGBA", (full_w, full_h), (0, 0, 0, 0))
 
+    # The shadow and the halo are blurred, so they are drawn at final size:
+    # supersampling a shape that is about to lose its edges is four times
+    # the pixels for nothing, and this card is drawn nine times per breath.
+    if shadow > 0:
+        drop = Image.new("RGBA", (full_w, full_h), (0, 0, 0, 0))
+        ImageDraw.Draw(drop).rounded_rectangle(
+            [pad + 1, pad + 3, pad + width - 1, pad + height + 2],
+            radius=radius, fill=(0, 0, 0, 165),
+        )
+        base.alpha_composite(_blurred(drop, shadow))
+
     if glow and glow_strength > 0:
-        halo, draw = _canvas(full_w, full_h)
-        draw.rounded_rectangle(
-            [
-                (pad + 2) * SCALE,
-                (pad + 2) * SCALE,
-                (pad + width - 2) * SCALE,
-                (pad + height - 2) * SCALE,
-            ],
-            radius=radius * SCALE,
+        halo = Image.new("RGBA", (full_w, full_h), (0, 0, 0, 0))
+        ImageDraw.Draw(halo).rounded_rectangle(
+            [pad + 2, pad + 2, pad + width - 2, pad + height - 2],
+            radius=radius,
             fill=_hex(glow, int(150 * max(0.0, min(1.0, glow_strength)))),
         )
-        halo = _reduce(halo, full_w, full_h).filter(ImageFilter.GaussianBlur(pad / 2.2))
-        base.alpha_composite(halo)
+        base.alpha_composite(halo.filter(ImageFilter.GaussianBlur(GLOW_PAD / 2.2)))
 
     shape, draw = _canvas(width, height)
     draw.rounded_rectangle(
@@ -153,11 +214,197 @@ def card(
         )
         base.alpha_composite(_reduce(edge, width, height), (pad, pad))
 
+    if highlight and width > radius * 2 + 2 and height > 4:
+        rim = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(rim)
+        draw.line(
+            [(radius, 1), (width - radius - 1, 1)], fill=(255, 255, 255, 34), width=1
+        )
+        draw.line(
+            [(radius, height - 2), (width - radius - 1, height - 2)],
+            fill=(0, 0, 0, 80), width=1,
+        )
+        # Clipped to the card's own shape, so the rim never pokes past a
+        # rounded corner.
+        rim_mask = mask.point(lambda v: 255 if v > 128 else 0)
+        rim.putalpha(ImageChops.multiply(rim.getchannel("A"), rim_mask))
+        base.alpha_composite(rim, (pad, pad))
+
     return base
+
+
+def backdrop(
+    width: int,
+    height: int,
+    *,
+    tint: str = "#6aa8ff",
+    accent: str = "#6aa8ff",
+    top: str = "#0b1120",
+    bottom: str = "#06090f",
+) -> Image.Image:
+    """The panel's ground: a deep vertical ramp with two soft pools of light.
+
+    A flat background makes every card a box on a wall. A ground with a
+    little weather in it — one pool of the verdict's own colour high on the
+    right, one of the accent low on the left, both blurred wide — makes the
+    same cards read as objects lit from somewhere. The dot grid underneath
+    is almost invisible on purpose: it gives the eye a scale to judge
+    distance by, which is what makes the shadows work.
+
+    Cheap to draw once and expensive to draw often, so the panel keeps one
+    per height and tint and never redraws it per frame.
+    """
+    base = _vertical_gradient(width, height, top, bottom)
+
+    pools = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(pools)
+    r = int(width * 0.62)
+    draw.ellipse(
+        [width - int(r * 0.85), -int(r * 0.75), width + int(r * 0.45), int(r * 0.55)],
+        fill=_hex(tint, 78),
+    )
+    r2 = int(width * 0.55)
+    draw.ellipse(
+        [-int(r2 * 0.55), int(height * 0.62), int(r2 * 0.75), int(height * 0.62) + int(r2 * 1.1)],
+        fill=_hex(accent, 44),
+    )
+    base.alpha_composite(pools.filter(ImageFilter.GaussianBlur(max(8.0, width * 0.26))))
+
+    grid = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(grid)
+    step = 22
+    for y in range(11, height, step):
+        for x in range(11, width, step):
+            draw.point((x, y), fill=(255, 255, 255, 13))
+    base.alpha_composite(grid)
+    return base
+
+
+def button(
+    width: int,
+    height: int,
+    *,
+    color: str,
+    color_to: str | None = None,
+    radius: int = 11,
+    hover: bool = False,
+    glow: str | None = None,
+    glow_strength: float = 0.0,
+    border: str | None = None,
+    shadow: float = 5.0,
+) -> Image.Image:
+    """A pressable surface: a gradient card with a rim, a shadow, and a
+    brighter face while the pointer is over it.
+
+    Placed with :func:`card_padding` like any padded card.
+    """
+    bottom = color_to or darken(color, 0.18)
+    if hover:
+        color, bottom = lighten(color, 0.10), lighten(bottom, 0.10)
+    return card(
+        width, height, radius=radius, fill=color, fill_to=bottom,
+        border=border or lighten(color, 0.22), glow=glow,
+        glow_strength=glow_strength, shadow=shadow, highlight=True,
+    )
+
+
+def tab(
+    width: int,
+    height: int,
+    *,
+    color: str,
+    active: bool,
+    radius: int = 9,
+    glow_strength: float = 0.0,
+    hover: bool = False,
+) -> Image.Image:
+    """A watchlist tile: a small card with a stripe of its colour down the
+    left edge, lit from within while it is worth a look.
+
+    Placed with :func:`card_padding` — the stripe is inside the card.
+    """
+    fill, fill_to = ("#1a2740", "#131c30") if active else ("#121a2a", "#0e1521")
+    if hover:
+        fill, fill_to = lighten(fill, 0.07), lighten(fill_to, 0.07)
+    glow = color if glow_strength > 0 else None
+    base = card(
+        width, height, radius=radius, fill=fill, fill_to=fill_to,
+        border=color if active else "#243044", glow=glow,
+        glow_strength=glow_strength, highlight=True,
+    )
+    pad = card_padding(glow)
+    stripe, draw = _canvas(width, height)
+    draw.rounded_rectangle(
+        [3 * SCALE, 6 * SCALE, 6 * SCALE, (height - 6) * SCALE],
+        radius=int(1.5 * SCALE),
+        fill=_hex(color, 235 if active else 120),
+    )
+    base.alpha_composite(_reduce(stripe, width, height), (pad, pad))
+    return base
+
+
+def shield(size: int, *, color: str = "#6aa8ff", color_to: str = "#2fd06e") -> Image.Image:
+    """The mark: a shield with a gate through it, in a gradient of the two
+    colours the panel is made of."""
+    image, draw = _canvas(size, size)
+    s = size * SCALE
+    outline = [
+        (s * 0.50, s * 0.05), (s * 0.90, s * 0.20), (s * 0.86, s * 0.56),
+        (s * 0.50, s * 0.95), (s * 0.14, s * 0.56), (s * 0.10, s * 0.20),
+    ]
+    draw.polygon(outline, fill=(255, 255, 255, 255))
+    mask = image.getchannel("A")
+    body = _vertical_gradient(s, s, color, color_to)
+    body.putalpha(mask)
+    cut = ImageDraw.Draw(body)
+    ink = (8, 11, 18, 255)
+    cut.rounded_rectangle(
+        [s * 0.30, s * 0.46, s * 0.70, s * 0.58], radius=int(s * 0.05), fill=ink
+    )
+    cut.ellipse([s * 0.42, s * 0.27, s * 0.58, s * 0.43], fill=ink)
+    return _reduce(body, size, size)
+
+
+def glow_dot(size: int, color: str, *, strength: float = 1.0) -> Image.Image:
+    """A status dot with a soft halo. The image is ``size + 2 * DOT_PAD``
+    square, so the panel offsets it by :data:`DOT_PAD`."""
+    full = size + DOT_PAD * 2
+    image = Image.new("RGBA", (full, full), (0, 0, 0, 0))
+    halo, draw = _canvas(full, full)
+    reach = 3
+    draw.ellipse(
+        [
+            (DOT_PAD - reach) * SCALE, (DOT_PAD - reach) * SCALE,
+            (DOT_PAD + size + reach) * SCALE, (DOT_PAD + size + reach) * SCALE,
+        ],
+        fill=_hex(color, int(170 * max(0.0, min(1.0, strength)))),
+    )
+    image.alpha_composite(_blurred(_reduce(halo, full, full), 3.5))
+    core, draw = _canvas(full, full)
+    draw.ellipse(
+        [DOT_PAD * SCALE, DOT_PAD * SCALE, (DOT_PAD + size) * SCALE, (DOT_PAD + size) * SCALE],
+        fill=_hex(color),
+    )
+    draw.ellipse(
+        [
+            (DOT_PAD + size * 0.25) * SCALE, (DOT_PAD + size * 0.2) * SCALE,
+            (DOT_PAD + size * 0.55) * SCALE, (DOT_PAD + size * 0.5) * SCALE,
+        ],
+        fill=(255, 255, 255, 110),
+    )
+    image.alpha_composite(_reduce(core, full, full))
+    return image
 
 
 # ---------------------------------------------------------------------------
 # the score gauge
+
+
+def _arc_point(size: int, inset: int, angle: float) -> tuple[float, float]:
+    centre = size * SCALE / 2.0
+    radius = centre - inset
+    rad = math.radians(angle)
+    return centre + radius * math.cos(rad), centre + radius * math.sin(rad)
 
 
 def arc_gauge(
@@ -168,6 +415,8 @@ def arc_gauge(
     track: str = "#1e293b",
     thickness: int = 7,
     span: float = 260.0,
+    glow: bool = True,
+    ticks: bool = True,
 ) -> Image.Image:
     """A dial for the score, open at the bottom.
 
@@ -175,6 +424,10 @@ def arc_gauge(
     question actually being asked of a number out of a hundred. Open at the
     bottom so the gap reads as the scale's start and end rather than as a
     missing piece.
+
+    The arc is a gradient — dim where the scale starts, the full colour along
+    its length, lit at the tip — with a halo beneath it and a bright dot at
+    its end, so the eye finds the reading before it finds the number.
     """
     image, draw = _canvas(size, size)
     inset = thickness * SCALE
@@ -182,17 +435,52 @@ def arc_gauge(
     start = 90.0 + (360.0 - span) / 2.0
 
     draw.arc(box, start, start + span, fill=_hex(track), width=thickness * SCALE)
-    if value is not None:
-        share = max(0.0, min(1.0, float(value) / 100.0))
-        if share > 0.005:
-            draw.arc(
-                box,
-                start,
-                start + span * share,
-                fill=_hex(color),
-                width=thickness * SCALE,
-            )
-    return _reduce(image, size, size)
+    if ticks:
+        # Drawn in the track's colour: they are part of the scale, not of
+        # the reading, and a transparent track takes its ticks with it.
+        for share in (0.0, 0.25, 0.5, 0.75, 1.0):
+            angle = start + span * share
+            outer = _arc_point(size, int(inset * 0.35), angle)
+            inner = _arc_point(size, int(inset * 0.62), angle)
+            draw.line([inner, outer], fill=_hex(track), width=max(1, SCALE))
+
+    base = _reduce(image, size, size)
+    if value is None:
+        return base
+
+    share = max(0.0, min(1.0, float(value) / 100.0))
+    if share <= 0.005:
+        return base
+
+    end = start + span * share
+    arc, sweep = _canvas(size, size)
+    segments = max(6, int(span * share / 5.0))
+    dim, lit = darken(color, 0.42), lighten(color, 0.30)
+    for index in range(segments):
+        t0, t1 = index / segments, (index + 1) / segments
+        t = t1
+        tone = mix(dim, color, min(1.0, t * 1.6)) if t < 0.62 else mix(color, lit, (t - 0.62) / 0.38)
+        sweep.arc(
+            box,
+            start + span * share * t0,
+            min(end, start + span * share * t1 + 1.2),
+            fill=_hex(tone),
+            width=thickness * SCALE,
+        )
+    reduced = _reduce(arc, size, size)
+    if glow:
+        base.alpha_composite(_blurred(reduced, thickness * 0.9, 0.62))
+    base.alpha_composite(reduced)
+
+    tip, draw = _canvas(size, size)
+    x, y = _arc_point(size, inset, end)
+    r = thickness * SCALE * 0.62
+    draw.ellipse([x - r, y - r, x + r, y + r], fill=_hex(lighten(color, 0.55)))
+    tip_reduced = _reduce(tip, size, size)
+    if glow:
+        base.alpha_composite(_blurred(tip_reduced, 2.5, 0.9))
+    base.alpha_composite(tip_reduced)
+    return base
 
 
 def countdown_ring(
@@ -202,13 +490,14 @@ def countdown_ring(
     color: str = "#60a5fa",
     track: str = "#1e293b",
     thickness: int = 4,
+    tip: bool = False,
 ) -> Image.Image:
     """A full circle that drains clockwise from the top as a candle runs out.
 
     ``remaining`` is the share of the bar still to go, so a full ring is a bar
     that has just opened. Reading the time left off a shrinking arc takes no
     reading at all, which is the point when the number it replaces is changing
-    every second.
+    every second. ``tip`` lights the leading end.
     """
     image, draw = _canvas(size, size)
     inset = thickness * SCALE
@@ -220,6 +509,38 @@ def countdown_ring(
             box, -90.0, -90.0 + 360.0 * share, fill=_hex(color),
             width=thickness * SCALE,
         )
+        if tip:
+            x, y = _arc_point(size, inset, -90.0 + 360.0 * share)
+            r = thickness * SCALE * 0.55
+            draw.ellipse([x - r, y - r, x + r, y + r], fill=_hex(lighten(color, 0.5)))
+    return _reduce(image, size, size)
+
+
+def spinner(
+    size: int,
+    phase: float,
+    *,
+    color: str = "#6aa8ff",
+    track: str = "#1e293b",
+    thickness: int = 5,
+) -> Image.Image:
+    """A sweeping arc for the scanning state — a tail that fades behind a
+    lit head, turning with ``phase`` (0..1 is one revolution)."""
+    image, draw = _canvas(size, size)
+    inset = thickness * SCALE
+    box = [inset, inset, size * SCALE - inset, size * SCALE - inset]
+    draw.ellipse(box, outline=_hex(track), width=thickness * SCALE)
+    head = (phase % 1.0) * 360.0 - 90.0
+    sweep = 240.0
+    pieces = 16
+    for index in range(pieces):
+        t = index / (pieces - 1)
+        a0 = head - sweep + sweep * index / pieces
+        a1 = head - sweep + sweep * (index + 1) / pieces + 1.5
+        draw.arc(box, a0, a1, fill=_hex(color, int(20 + 235 * t)), width=thickness * SCALE)
+    x, y = _arc_point(size, inset, head)
+    r = thickness * SCALE * 0.6
+    draw.ellipse([x - r, y - r, x + r, y + r], fill=_hex(lighten(color, 0.5)))
     return _reduce(image, size, size)
 
 
@@ -255,16 +576,16 @@ def sparkline(
     color: str = "#22c55e",
     fill: bool = True,
 ) -> Image.Image:
-    """The recent closes as a filled line.
+    """The recent closes as a lit line over a fading fill.
 
     The panel scored a market it never showed. A number saying 78 and an arrow
     saying up are a claim; the shape of the last hour is the thing a trader
     reads in one glance to decide whether the claim is plausible.
     """
-    image, draw = _canvas(width, height)
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     points = [float(c) for c in closes if c == c]
     if len(points) < 2:
-        return _reduce(image, width, height)
+        return image
 
     low, high = _bounds(points)
     step = (width * SCALE) / (len(points) - 1)
@@ -276,16 +597,32 @@ def sparkline(
     line = [place(i, value) for i, value in enumerate(points)]
 
     if fill:
-        under = line + [(width * SCALE, height * SCALE), (0, height * SCALE)]
-        draw.polygon(under, fill=_hex(color, 46))
+        under, draw = _canvas(width, height)
+        draw.polygon(
+            line + [(width * SCALE, height * SCALE), (0, height * SCALE)],
+            fill=(255, 255, 255, 255),
+        )
+        under_mask = _reduce(under, width, height).getchannel("A")
+        fade = _vertical_gradient(width, height, color + "6e", color + "00")
+        fade.putalpha(ImageChops.multiply(fade.getchannel("A"), under_mask))
+        image.alpha_composite(fade)
 
+    stroke, draw = _canvas(width, height)
     draw.line(line, fill=_hex(color), width=2 * SCALE, joint="curve")
+    stroke_reduced = _reduce(stroke, width, height)
+    image.alpha_composite(_blurred(stroke_reduced, 2.2, 0.7))
+    image.alpha_composite(stroke_reduced)
+
     # The live end, marked. Which end is "now" is not obvious on a line that
     # has no axis.
+    dot, draw = _canvas(width, height)
     x, y = line[-1]
     r = 3 * SCALE
-    draw.ellipse([x - r, y - r, x + r, y + r], fill=_hex(color))
-    return _reduce(image, width, height)
+    draw.ellipse([x - r, y - r, x + r, y + r], fill=_hex(lighten(color, 0.35)))
+    dot_reduced = _reduce(dot, width, height)
+    image.alpha_composite(_blurred(dot_reduced, 3.0, 0.9))
+    image.alpha_composite(dot_reduced)
+    return image
 
 
 def candles(
@@ -297,7 +634,7 @@ def candles(
     down: str = "#f43f5e",
     max_bars: int = 34,
 ) -> Image.Image:
-    """Real candles, wicks and all.
+    """Real candles, wicks and all, over a faint ruled ground.
 
     A sparkline says where price went; candles say how it got there, which is
     what every pattern the engine names is actually about. Showing the shapes
@@ -308,6 +645,10 @@ def candles(
     window = list(bars)[-max_bars:]
     if not window:
         return _reduce(image, width, height)
+
+    for share in (0.25, 0.5, 0.75):
+        y = height * SCALE * share
+        draw.line([(0, y), (width * SCALE, y)], fill=(255, 255, 255, 22), width=SCALE)
 
     low, high = _bounds([v for bar in window for v in (bar.high, bar.low)])
     slot = (width * SCALE) / len(window)
@@ -379,14 +720,21 @@ def bar_meter(
         end = max(height * SCALE, width * SCALE * share)
         draw.rounded_rectangle([0, 0, end, height * SCALE - 1], radius=radius,
                                fill=_hex(color))
+        draw.rounded_rectangle(
+            [max(0, end - height * SCALE * 1.5), 0, end, height * SCALE - 1],
+            radius=radius, fill=_hex(lighten(color, 0.3)),
+        )
     return _reduce(image, width, height)
 
 
-def direction_glyph(size: int, direction: str, color: str) -> Image.Image:
+def direction_glyph(
+    size: int, direction: str, color: str, *, glow: bool = False
+) -> Image.Image:
     """The verdict's arrow, drawn rather than typed.
 
     A font's ``▲`` is whatever the font decides, differs between machines, and
     cannot be given a weight or a soft corner. This one is the same everywhere.
+    With ``glow`` it casts a little of its colour around itself.
     """
     image, draw = _canvas(size, size)
     s = size * SCALE
@@ -405,7 +753,13 @@ def direction_glyph(size: int, direction: str, color: str) -> Image.Image:
         # A disc for "no side taken". A flat bar reads as a stray hyphen next
         # to a word the size of the verdict.
         draw.ellipse([s * 0.32, s * 0.32, s * 0.68, s * 0.68], fill=_hex(color))
-    return _reduce(image, size, size)
+    shape = _reduce(image, size, size)
+    if not glow:
+        return shape
+    lit = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    lit.alpha_composite(_blurred(shape, 2.6, 0.75))
+    lit.alpha_composite(shape)
+    return lit
 
 
 def shimmer(width: int, height: int, phase: float, *, color: str = "#60a5fa") -> Image.Image:

@@ -121,6 +121,8 @@ overlay:
   y: 80
   opacity: 0.96            # 1.0 = fully opaque
   scan_seconds: 0.6        # how long the Scan animation holds before revealing
+  animations: true         # the panel's motion; false settles every animated
+                           # thing at its resting frame
 
 # Bumped when a stored setting has to change on installs that already exist.
 config_version: 3

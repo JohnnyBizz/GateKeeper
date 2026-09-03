@@ -2427,6 +2427,10 @@ class OverlayApp:
                 int(self.config.get("overlay.y", 80)),
             ),
             opacity=float(self.config.get("overlay.opacity", 0.96)),
+            # Motion is a courtesy, not a requirement: off, every animated
+            # thing settles at its resting frame and the panel still says
+            # everything it says.
+            animate=bool(self.config.get("overlay.animations", True)),
         )
 
         # Tk swallows callback exceptions by printing them to stderr, which a

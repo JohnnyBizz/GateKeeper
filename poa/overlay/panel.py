@@ -11,6 +11,15 @@ A canvas will happily show an image, and :mod:`graphics` can draw anything, so
 every surface here is a rendered image with text placed over it. It also
 retires a whole class of bug: there is no packing order to get wrong.
 
+Since the 2026-09 redraw the panel is a lit scene rather than a stack of
+boxes: a backdrop with a pool of the verdict's own colour in it, cards that
+cast shadows onto it and carry a rim of light along their top edge, a gauge
+whose arc glows, and motion that means something — a verdict that *arrives*
+when it changes, a banner that slides in, a price that flashes when it ticks,
+a tally that pops when it moves, a sweep while the chart is being searched.
+Every frame of every animation is still one cached image: motion here is a
+handful of appearances shown in sequence, never a fresh render per tick.
+
 Only the fields that must accept typing are still real widgets, dropped onto
 the canvas where they are needed.
 
@@ -21,12 +30,16 @@ display.
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from tkinter import font as tkfont
 from typing import Any, Callable
 
+from ..logging_setup import get_logger
 from . import graphics as gfx
 from .viewmodel import COLORS, OverlayViewModel
+
+log = get_logger(__name__)
 
 PANEL_WIDTH = 340
 PAD = 10           # the margin everything lines up against
@@ -44,6 +57,26 @@ RING_STEPS = 24
 # Where the draggable header ends. Everything below it is content, and a press
 # there is a press rather than the start of a drag.
 HEADER_BOTTOM = PAD + 38
+
+# How many repaints the short animations take. At the overlay's repaint rate
+# eight frames is well under a second — seen, not waited for.
+ARRIVE_FRAMES = 8   # a changed verdict sliding into place
+SLIDE_FRAMES = 8    # the switch banner sliding in
+FLASH_FRAMES = 5    # a price tick lighting the price
+POP_FRAMES = 3      # a tally number growing for a moment
+# The scanning sweep turns in this many distinct frames, each a cached image.
+SPINNER_STEPS = 12
+# The backdrop is drawn once per height step and tint. Quantising the height
+# means a two-line change in the evidence block does not redraw a 340px blur.
+BACKDROP_STEP = 48
+
+# Surface tones. The palette in ``viewmodel.COLORS`` names the meanings; these
+# are the materials the cards are made of, deep enough that the backdrop's
+# light shows through the gaps between them.
+SURFACE = "#121a2b"
+SURFACE_DEEP = "#0d1421"
+SURFACE_HIGH = "#182339"
+SURFACE_TRACK = "#1a2538"
 
 
 class OverlayPanel:
@@ -67,6 +100,7 @@ class OverlayPanel:
         on_record: Callable[[], None] | None = None,
         position: tuple[int, int] = (40, 80),
         opacity: float = 0.96,
+        animate: bool = True,
     ) -> None:
         self.vm = view_model
         self.on_scan = on_scan or (lambda: None)
@@ -81,6 +115,7 @@ class OverlayPanel:
         self.on_toggle_details = on_toggle_details or (lambda: None)
         self.on_payout = on_payout or (lambda p: None)
         self.on_record = on_record or (lambda: None)
+        self.animate = bool(animate)
 
         self.root = tk.Tk()
         self.root.title("GateKeeper")
@@ -120,6 +155,22 @@ class OverlayPanel:
         # travelled toward their targets.
         self._pulse = 0
         self._score_shown: float | None = None
+        # Which tagged things the pointer is over. Read while drawing, so a
+        # hovered button is drawn brighter on the next repaint.
+        self._hover: set[str] = set()
+        # The short animations: what each last showed, and how many frames
+        # of its motion are left.
+        self._verdict_key: tuple[Any, ...] | None = None
+        self._arrive = 0
+        self._notice_key: str | None = None
+        self._slide = 0
+        self._price_seen: str | None = None
+        self._flash = 0
+        self._tally_seen: dict[str, str] = {}
+        self._pop: dict[str, int] = {}
+        # Sections that have failed to draw, so a broken one is written to
+        # the log once rather than twelve times a second.
+        self._failed: set[str] = set()
 
         self._build_fonts()
         self._build()
@@ -137,8 +188,9 @@ class OverlayPanel:
                     return tkfont.Font(family=name, size=size, weight=weight)
             return tkfont.Font(size=size, weight=weight)
 
-        sans = ["Inter", "Segoe UI Variable", "Segoe UI", "SF Pro Text",
-                "Helvetica Neue", "DejaVu Sans", "Arial"]
+        sans = ["Inter", "Segoe UI Variable Display", "Segoe UI Variable",
+                "Segoe UI", "SF Pro Text", "Helvetica Neue", "DejaVu Sans",
+                "Arial"]
         mono = ["JetBrains Mono", "Cascadia Mono", "Consolas", "SF Mono",
                 "Menlo", "DejaVu Sans Mono", "Courier"]
 
@@ -152,11 +204,12 @@ class OverlayPanel:
         self.f_body = pick(sans, 10)
         self.f_pair = pick(sans, 14, "bold")
         self.f_verdict = pick(sans, 27, "bold")
-        self.f_score = pick(sans, 20, "bold")
+        self.f_score = pick(sans, 22, "bold")
         self.f_button = pick(sans, 11, "bold")
         self.f_mono = pick(mono, 10)
         self.f_price = pick(mono, 15, "bold")
         self.f_stat = pick(mono, 13, "bold")
+        self.f_stat_pop = pick(mono, 16, "bold")
 
     # -- construction -------------------------------------------------------
 
@@ -185,7 +238,7 @@ class OverlayPanel:
         """A themed Entry that commits on Enter or when focus leaves it."""
         entry = tk.Entry(
             self.c, font=font, width=width, justify="left",
-            bg=COLORS["raised"], fg=COLORS["text"],
+            bg=SURFACE_HIGH, fg=COLORS["text"],
             insertbackground=COLORS["accent"], relief="flat",
             highlightthickness=1, highlightbackground=COLORS["line"],
             highlightcolor=COLORS["accent"],
@@ -283,22 +336,45 @@ class OverlayPanel:
 
     def _card(
         self, x: int, y: int, w: int, h: int, *, radius: int = 12,
-        fill: str = COLORS["panel"], fill_to: str | None = None,
+        fill: str = SURFACE, fill_to: str | None = None,
         border: str | None = None, glow: str | None = None,
-        glow_strength: float = 0.0, tags: str = "",
+        glow_strength: float = 0.0, shadow: float = 0.0,
+        highlight: bool = True, tags: str = "",
     ) -> None:
-        """A rounded surface. Glowing ones are offset by their own halo."""
+        """A rounded surface. Padded ones are offset by their own halo."""
         key = ("card", w, h, radius, fill, fill_to, border, glow,
-               round(glow_strength, 2))
-        pad = 12 if glow else 0
+               round(glow_strength, 2), shadow, highlight)
+        pad = gfx.card_padding(glow, shadow)
         self._image(
             x - pad, y - pad, key,
             lambda: gfx.card(
                 w, h, radius=radius, fill=fill, fill_to=fill_to, border=border,
-                glow=glow, glow_strength=glow_strength,
+                glow=glow, glow_strength=glow_strength, shadow=shadow,
+                highlight=highlight,
             ),
             tags=tags,
         )
+
+    def _button(
+        self, x: int, y: int, w: int, h: int, *, color: str,
+        color_to: str | None = None, radius: int = 11, tag: str,
+        glow: str | None = None, glow_strength: float = 0.0,
+        border: str | None = None,
+    ) -> None:
+        """A pressable surface, brighter while the pointer is over it."""
+        hot = self._hot(tag)
+        key = ("button", w, h, radius, color, color_to, hot, glow,
+               round(glow_strength, 2), border)
+        pad = gfx.card_padding(glow, 5.0)
+        self._image(
+            x - pad, y - pad, key,
+            lambda: gfx.button(
+                w, h, color=color, color_to=color_to, radius=radius, hover=hot,
+                glow=glow, glow_strength=glow_strength, border=border,
+            ),
+            tags=f"frame {tag}",
+        )
+        self._hoverable(tag)
 
     def _text(
         self, x: int, y: int, text: str, font: Any, fill: str,
@@ -311,6 +387,14 @@ class OverlayPanel:
 
     def _clickable(self, tag: str, command: Callable[[], None]) -> None:
         self.c.tag_bind(tag, "<Button-1>", lambda _e: command())
+
+    def _hoverable(self, tag: str) -> None:
+        """Track the pointer over a tag; the next repaint draws it lit."""
+        self.c.tag_bind(tag, "<Enter>", lambda _e, t=tag: self._hover.add(t))
+        self.c.tag_bind(tag, "<Leave>", lambda _e, t=tag: self._hover.discard(t))
+
+    def _hot(self, tag: str) -> bool:
+        return tag in self._hover
 
     def _fitted(self, text: str, width: int, *fonts: Any) -> Any:
         """The largest of ``fonts`` this text fits inside ``width``.
@@ -353,56 +437,110 @@ class OverlayPanel:
         data = self.vm.render()
 
         self.c.delete("frame")
-        y = self._draw_header(data)
+        self._draw_backdrop(data)
+        y = self._section(self._draw_header, data, PAD)
         if self._collapsed:
             # Parked out of the way. Everything below the header is drawn into
             # a window 56 pixels tall, which is work nobody can see.
             for key in self._entry_items:
                 self._hide_entry(key)
             return
-        y = self._draw_notice(data, y)
-        y = self._draw_market(data, y)
-        y = self._draw_watchlist(data, y)
-        y = self._draw_signal(data, y)
-        y = self._draw_trend(data, y)
-        y = self._draw_chart(data, y)
-        y = self._draw_actions(data, y)
-        y = self._draw_record(data, y)
-        y = self._draw_session(data, y)
-        y = self._draw_details(data, y)
-        y = self._draw_risk(data, y)
-        y = self._draw_footer(data, y)
+        for draw in (
+            self._draw_notice, self._draw_market, self._draw_watchlist,
+            self._draw_signal, self._draw_trend, self._draw_chart,
+            self._draw_actions, self._draw_record, self._draw_session,
+            self._draw_details, self._draw_risk, self._draw_footer,
+        ):
+            y = self._section(draw, data, y)
         self._fit(y + PAD)
+
+    def _section(self, draw: Callable[..., int], data: dict[str, Any], y: int) -> int:
+        """Draw one section, and never let one of them take the frame down.
+
+        The first paint happens before the window's event loop starts, where
+        an exception is not a logged callback failure but the end of the
+        process. A section that cannot draw is skipped and written to the
+        log; the sections below it still get drawn.
+        """
+        name = getattr(draw, "__name__", "section").lstrip("_")
+        try:
+            return int(draw(data, y))
+        except Exception:
+            if name not in self._failed:
+                self._failed.add(name)
+                log.exception("could not draw the %s section", name)
+            return y
+
+    # -- motion -------------------------------------------------------------
+
+    @staticmethod
+    def _ease(t: float) -> float:
+        """Cubic ease-out: fast to leave, gentle to land."""
+        t = max(0.0, min(1.0, t))
+        return 1.0 - (1.0 - t) ** 3
+
+    def _progress(self, left: int, total: int) -> float:
+        """How far a short animation has come, 0..1, eased."""
+        if not self.animate or total <= 0:
+            return 1.0
+        return self._ease(1.0 - left / total)
+
+    def _quantised(self, strength: float) -> float:
+        """A glow strength snapped to the pulse's own steps, so an animated
+        halo costs no more cached images than a breathing one."""
+        return round(max(0.0, min(1.0, strength)) * self.PULSE_STEPS) / self.PULSE_STEPS
 
     # -- sections -----------------------------------------------------------
 
-    def _draw_header(self, data: dict[str, Any]) -> int:
-        header = data["header"]
-        self._card(PAD, PAD, INNER, 38, radius=11, fill="#18233a",
-                   fill_to="#131c2e", border=COLORS["line"])
-        colour = header["status_color"]
-        self._image(PAD + 12, PAD + 14, ("dot", colour),
-                    lambda: gfx.pill(9, 9, color=colour, opacity=255))
-        self._text(PAD + 28, PAD + 19, "GATEKEEPER", self.f_brand,
-                   COLORS["text"], "w")
+    def _draw_backdrop(self, data: dict[str, Any]) -> None:
+        """The ground everything sits on, lit by what the panel is saying."""
+        verdict = data.get("verdict") or {}
+        if data.get("risk", {}).get("paused"):
+            tint = COLORS["no_trade"]
+        elif verdict.get("actionable"):
+            tint = str(verdict.get("color") or COLORS["accent"])
+        else:
+            tint = COLORS["accent"]
+        height = int(math.ceil(max(self._height, 320) / BACKDROP_STEP)) * BACKDROP_STEP
+        try:
+            self._image_slot(
+                0, 0, "backdrop", (height, tint),
+                lambda: gfx.backdrop(
+                    PANEL_WIDTH, height, tint=tint, accent=COLORS["accent"]
+                ),
+            )
+        except Exception:  # pragma: no cover - the ground is never fatal
+            log.exception("could not draw the backdrop")
 
+    def _draw_header(self, data: dict[str, Any], y: int) -> int:
+        header = data["header"]
+        self._card(PAD, y, INNER, 38, radius=12, fill=SURFACE_HIGH,
+                   fill_to=SURFACE, border=COLORS["line"], shadow=6.0)
+        self._image(PAD + 10, y + 8, ("shield", 22),
+                    lambda: gfx.shield(22, color=COLORS["accent"], color_to=COLORS["call"]))
+        self._text(PAD + 38, y + 19, "GATEKEEPER", self.f_brand, COLORS["text"], "w")
+
+        colour = header["status_color"]
         label = header["status"]
-        width = max(52, len(label) * 6 + 16)
-        self._image(PANEL_WIDTH - PAD - 62 - width, PAD + 11,
-                    ("pill", width, colour),
+        width = max(52, len(label) * 6 + 24)
+        left = PANEL_WIDTH - PAD - 62 - width
+        self._image(left, y + 11, ("pill", width, colour),
                     lambda: gfx.pill(width, 16, color=colour))
-        self._text(PANEL_WIDTH - PAD - 62 - width // 2, PAD + 19, label,
-                   self.f_caption, colour, "center")
+        self._image(left + 8 - gfx.DOT_PAD, y + 15 - gfx.DOT_PAD, ("dot", 7, colour),
+                    lambda: gfx.glow_dot(7, colour))
+        self._text(left + 14, y + 19, label, self.f_caption, colour, "w")
 
         for index, (glyph, command, tag) in enumerate(
             (("⚙", self.on_settings, "gear"),
              ("–", self.toggle_collapse, "fold"),
              ("✕", self._close, "shut"))
         ):
-            self._text(PANEL_WIDTH - PAD - 46 + index * 16, PAD + 19, glyph,
-                       self.f_body, COLORS["faint"], "center", tags=f"frame {tag}")
+            tone = COLORS["text"] if self._hot(tag) else COLORS["faint"]
+            self._text(PANEL_WIDTH - PAD - 46 + index * 16, y + 19, glyph,
+                       self.f_body, tone, "center", tags=f"frame {tag}")
             self._clickable(tag, command)
-        return PAD + 38 + 8
+            self._hoverable(tag)
+        return y + 38 + 10
 
     def _draw_notice(self, data: dict[str, Any], y: int) -> int:
         """The switch banner: a chart the user is not on just became tradeable.
@@ -410,10 +548,11 @@ class OverlayPanel:
         First thing under the header, above even the pair strip, because it is
         the one message on the panel with a deadline — a setup stands for a
         bar or two, and by the row of watchlist tabs it is one coloured tile
-        among nine. It breathes like an actionable verdict, names the chart
-        and the side, and the line under it says the move: switch this pair's
-        timeframe, or open that pair, and what expiry to set. Clicking it does
-        the panel's half of the switch, same as clicking the chart's tab.
+        among nine. It slides in when it appears, breathes like an actionable
+        verdict, names the chart and the side, and the line under it says the
+        move: switch this pair's timeframe, or open that pair, and what expiry
+        to set. Clicking it does the panel's half of the switch, same as
+        clicking the chart's tab.
 
         The view model decides whether it shows at all — expiry, the setup
         dying, the brake — so a banner on screen is always a banner still
@@ -421,7 +560,17 @@ class OverlayPanel:
         """
         notice = data.get("notice") or {}
         if not notice.get("show"):
+            self._notice_key = None
             return y
+        title = str(notice.get("title", ""))[:42]
+        if title != self._notice_key:
+            self._notice_key = title
+            self._slide = SLIDE_FRAMES
+        elif self._slide > 0:
+            self._slide -= 1
+        t = self._progress(self._slide, SLIDE_FRAMES)
+        offset = int(round((1.0 - t) * 22))
+
         colour = notice.get("color") or COLORS["accent"]
         detail = str(notice.get("detail") or "")
         # The card holds the headline only, and the instruction flows beneath
@@ -433,12 +582,13 @@ class OverlayPanel:
         # twice; measuring is the fix, and the panel's flowing-prose idiom
         # already cannot overlap.
         self._card(
-            PAD, y, INNER, 32, radius=12, fill="#1d2942", fill_to="#151d30",
-            border=colour, glow=colour,
-            glow_strength=0.95 * self._pulse_phase(), tags="frame notice",
+            PAD + offset, y, INNER - offset, 32, radius=12, fill="#1d2942",
+            fill_to="#151d30", border=colour, glow=colour,
+            glow_strength=self._quantised(0.95 * self._pulse_phase() * t),
+            shadow=5.0, tags="frame notice",
         )
-        self._text(PAD + 14, y + 17, str(notice.get("title", ""))[:42],
-                   self.f_button, colour, "w", tags="frame notice")
+        self._text(PAD + offset + 14, y + 17, title, self.f_button, colour, "w",
+                   tags="frame notice")
         bottom = y + 32
         if detail:
             item = self.c.create_text(
@@ -462,14 +612,15 @@ class OverlayPanel:
             self._clickable(
                 "notice", lambda name=asset, tf=timeframe: self.on_asset(name, tf)
             )
+            self._hoverable("notice")
         return bottom + 8
 
     def _draw_market(self, data: dict[str, Any], y: int) -> int:
         """The pair, the price, and the shape of the session so far."""
         tiles, chart = data["tiles"], data["chart"]
         height = 104 if chart["ready"] else 60
-        self._card(PAD, y, INNER, height, radius=14, fill=COLORS["raised"],
-                   fill_to=COLORS["panel"], border=COLORS["line"])
+        self._card(PAD, y, INNER, height, radius=14, fill=SURFACE_HIGH,
+                   fill_to=SURFACE_DEEP, border=COLORS["line"], shadow=7.0)
 
         self._place_entry("pair", PAD + 12, y + 18)
         self._set_entry(self._entries["pair"], tiles["pair"])
@@ -481,8 +632,23 @@ class OverlayPanel:
         colour = (
             COLORS["call"] if chart.get("rising") else COLORS["put"]
         ) if chart["ready"] else COLORS["text"]
-        self._text(PANEL_WIDTH - PAD - 12, y + 18, data["price"],
-                   self.f_price, colour, "e")
+
+        # A tick lights the price for a few frames — the one cue that says
+        # the feed is alive without a word of text.
+        price = str(data["price"])
+        if self._price_seen is not None and price != self._price_seen:
+            self._flash = FLASH_FRAMES
+        elif self._flash > 0:
+            self._flash -= 1
+        self._price_seen = price
+        if self._flash > 0 and self.animate:
+            strength = self._flash / FLASH_FRAMES
+            width = max(60, len(price) * 10 + 16)
+            self._image(PANEL_WIDTH - PAD - 12 - width + 8, y + 8,
+                        ("flash", width, colour, round(strength, 1)),
+                        lambda: gfx.pill(width, 22, color=colour,
+                                         opacity=int(70 * strength)))
+        self._text(PANEL_WIDTH - PAD - 12, y + 18, price, self.f_price, colour, "e")
         if chart["ready"]:
             self._text(PANEL_WIDTH - PAD - 12, y + 40, chart["change_label"],
                        self.f_label, colour, "e")
@@ -493,7 +659,7 @@ class OverlayPanel:
                 PAD + 12, y + 52, "spark", key,
                 lambda: gfx.sparkline(INNER - 24, 44, closes, color=colour),
             )
-        return y + height + 8
+        return y + height + 10
 
     def _draw_watchlist(self, data: dict[str, Any], y: int) -> int:
         rows = data["watchlist"]
@@ -505,10 +671,23 @@ class OverlayPanel:
             top = y + (index // 2) * 30
             tag = f"watch{index}"
             active, colour = row["active"], row["color"]
-            self._card(x, top, width, 26, radius=8,
-                       fill="#1d2a40" if active else "#141d2b",
-                       border=colour if active else COLORS["line"], tags=f"frame {tag}")
-            self._text(x + 9, top + 13, row["label"], self.f_caption,
+            # A tab worth a look breathes with the verdict card; the rest sit
+            # still. Quantised so a breathing tab is nine images, not ninety.
+            strength = (
+                self._quantised(0.85 * self._pulse_phase())
+                if row.get("actionable") else 0.0
+            )
+            hot = self._hot(tag)
+            pad = gfx.card_padding(colour if strength > 0 else None)
+            self._image(
+                x - pad, top - pad,
+                ("tab", width, colour, active, strength, hot),
+                lambda w=width, c=colour, a=active, s=strength, h=hot: gfx.tab(
+                    w, 26, color=c, active=a, glow_strength=s, hover=h
+                ),
+                tags=f"frame {tag}",
+            )
+            self._text(x + 12, top + 13, row["label"], self.f_caption,
                        COLORS["text"] if active else COLORS["dim"], "w",
                        tags=f"frame {tag}")
             score = row["score"]
@@ -529,6 +708,7 @@ class OverlayPanel:
                     name, tf
                 ),
             )
+            self._hoverable(tag)
         return y + ((len(rows) + 1) // 2) * 30 + 8
 
     def _draw_signal(self, data: dict[str, Any], y: int) -> int:
@@ -536,18 +716,40 @@ class OverlayPanel:
         validity = data.get("validity") or {}
         scanning = data["scan"]["scanning"]
         colour = verdict["color"]
-        # The freshness strip only exists while a call is live, so the card
-        # does not spend the height on charts that are waiting.
-        height = 214 + (34 if validity.get("show") else 0)
+        # The entry inset grows to hold its own explanation, measured rather
+        # than assumed: the brake's five-line "your limit, set in RISK" used
+        # to run out of a fixed inset and over the card beneath it. The
+        # freshness strip only exists while a call is live, so the card does
+        # not spend the height on charts that are waiting.
+        text_x = PAD + 64
+        detail = str(entry.get("detail") or "")
+        inset_h = max(54, self._measured_height(detail, PANEL_WIDTH - PAD - 24 - text_x) + 36)
+        height = 140 + inset_h + 20 + (34 if validity.get("show") else 0)
+
+        # A changed verdict arrives: the arrow and the word slide into place
+        # and the card's halo flares and settles. Seen once per change, so
+        # the movement means "this is new" rather than "the app is running".
+        key = (verdict["direction_label"], colour, scanning)
+        if self._verdict_key is None:
+            self._verdict_key = key
+        elif key != self._verdict_key:
+            self._verdict_key = key
+            self._arrive = ARRIVE_FRAMES
+        elif self._arrive > 0:
+            self._arrive -= 1
+        t = self._progress(self._arrive, ARRIVE_FRAMES)
+        offset = int(round((1.0 - t) * 16))
 
         # The border breathes only while there is something to act on, so the
         # movement means "this one" rather than "the app is running".
-        strength = 0.95 * self._pulse_phase() if verdict["actionable"] else 0.0
+        strength = 0.0
+        if verdict["actionable"]:
+            strength = self._quantised(0.95 * self._pulse_phase() + (1.0 - t) * 0.6)
         self._card(
             PAD, y, INNER, height, radius=18, fill="#122033", fill_to="#0c1524",
             border=colour if verdict["actionable"] else COLORS["line"],
             glow=colour if verdict["actionable"] else None,
-            glow_strength=strength,
+            glow_strength=strength, shadow=8.0,
         )
 
         self._text(PAD + 16, y + 15, "SIGNAL", self.f_caption, COLORS["faint"], "w")
@@ -562,12 +764,24 @@ class OverlayPanel:
         # beside it, so neither has to share the middle.
         score = verdict["score"]
         shown = self._ease_score(score)
-        self._image(PAD + 16, y + 34, ("gauge", int(shown if shown is not None else -1), colour),
-                    lambda: gfx.arc_gauge(88, shown, color=colour,
-                                          track="#1c2739", thickness=7))
-        self._text(PAD + 60, y + 72, "--" if score is None else f"{score:.0f}",
+        dial_x, dial_y, dial = PAD + 14, y + 32, 96
+        if scanning:
+            step = (self._pulse % SPINNER_STEPS) if self.animate else 0
+            self._image(dial_x, dial_y, ("spin", dial, step),
+                        lambda: gfx.spinner(dial, step / SPINNER_STEPS,
+                                            color=COLORS["accent"],
+                                            track=SURFACE_TRACK))
+        else:
+            self._image(
+                dial_x, dial_y,
+                ("gauge", dial, int(shown if shown is not None else -1), colour),
+                lambda: gfx.arc_gauge(dial, shown, color=colour,
+                                      track=SURFACE_TRACK, thickness=8),
+            )
+        centre = dial_x + dial // 2
+        self._text(centre, dial_y + 46, "--" if score is None else f"{score:.0f}",
                    self.f_score, COLORS["text"], "center")
-        self._text(PAD + 60, y + 92, "/100", self.f_label, COLORS["faint"], "center")
+        self._text(centre, dial_y + 88, "/100", self.f_label, COLORS["faint"], "center")
 
         if scanning:
             # A narrower face than the verdict's: "SCANNING" is eight
@@ -575,38 +789,40 @@ class OverlayPanel:
             # ran off the edge of the panel.
             self._text(PAD + 118, y + 58, "SCANNING", self.f_score,
                        COLORS["dim"], "w")
-            phase = (self._pulse % 40) / 40.0
+            phase = (self._pulse % 40) / 40.0 if self.animate else 0.5
             self._image(PAD + 118, y + 86, ("shimmer", round(phase, 2)),
                         lambda: gfx.shimmer(INNER - 140, 5, phase,
                                             color=COLORS["accent"]))
         else:
-            self._image(PAD + 118, y + 42,
+            self._image(PAD + 118 + offset, y + 42,
                         ("glyph", verdict["direction"], colour),
-                        lambda: gfx.direction_glyph(26, verdict["direction"], colour))
+                        lambda: gfx.direction_glyph(28, verdict["direction"],
+                                                    colour, glow=True))
             label = verdict["direction_label"]
-            self._text(PAD + 152, y + 58, label,
-                       self._fitted(label, PANEL_WIDTH - PAD - (PAD + 152),
-                                    self.f_verdict, self.f_score, self.f_button),
+            room = PANEL_WIDTH - PAD - (PAD + 152)
+            self._text(PAD + 152 + offset, y + 58, label,
+                       self._fitted(label, room - offset, self.f_verdict,
+                                    self.f_score, self.f_button),
                        colour, "w")
 
             badge, badge_colour = verdict["badge"], verdict["badge_color"]
             if badge and badge != "--":
                 width = max(96, len(badge) * 7 + 26)
-                self._image(PAD + 118, y + 82, ("badge", width, badge_colour),
+                self._image(PAD + 118, y + 84, ("badge", width, badge_colour),
                             lambda: gfx.pill(width, 18, color=badge_colour))
-                self._text(PAD + 118 + width // 2, y + 91, badge,
+                self._text(PAD + 118 + width // 2, y + 93, badge,
                            self.f_caption, badge_colour, "center")
 
             pattern = verdict["pattern"] or ""
             if pattern and pattern != "--":
-                self._text(PAD + 118, y + 110, pattern[:34], self.f_label,
+                self._text(PAD + 118, y + 112, pattern[:34], self.f_label,
                            COLORS["dim"], "w")
 
         # When to get in, in its own inset. The ring is the countdown and
         # carries no number: a clock face inside a 32px ring is a number
         # fighting the shape drawn to replace it, and the ring loses.
-        self._card(PAD + 12, y + 140, INNER - 24, 54, radius=11,
-                   fill="#17223a", border=COLORS["line"])
+        self._card(PAD + 12, y + 140, INNER - 24, inset_h, radius=11,
+                   fill=SURFACE_HIGH, fill_to=SURFACE, border=COLORS["line"])
         ready, urgent = entry["ready"], entry["urgent"]
         tone = (
             self._pulse_toward(colour) if ready and urgent
@@ -616,8 +832,8 @@ class OverlayPanel:
         left = round(left * RING_STEPS) / RING_STEPS
         self._image(PAD + 24, y + 152, ("ring", left, tone),
                     lambda: gfx.countdown_ring(30, left, color=tone,
-                                               track="#1c2739", thickness=4))
-        text_x = PAD + 64
+                                               track=SURFACE_TRACK, thickness=4,
+                                               tip=bool(ready)))
         self._text(text_x, y + 158, entry["text"], self.f_button, tone, "w")
         if entry["clock"]:
             self._text(PANEL_WIDTH - PAD - 24, y + 158, entry["clock"],
@@ -637,7 +853,7 @@ class OverlayPanel:
         # trade duration, because that is the window the call described, and
         # past it the ring sits empty rather than pretending otherwise.
         if validity.get("show"):
-            vy = y + 200
+            vy = y + 140 + inset_h + 6
             stale = validity.get("stale", False)
             v_tone = COLORS["wait"] if stale or validity.get("drift_against") else colour
             self._image(
@@ -645,7 +861,7 @@ class OverlayPanel:
                 ("fresh", round(validity["fraction"] * RING_STEPS) / RING_STEPS, v_tone),
                 lambda: gfx.countdown_ring(
                     22, validity["fraction"], color=v_tone,
-                    track="#1c2739", thickness=3,
+                    track=SURFACE_TRACK, thickness=3,
                 ),
             )
             age_line = validity["age_text"] + ("  —  the window it called is over" if stale else "")
@@ -657,14 +873,14 @@ class OverlayPanel:
                     COLORS["wait"] if validity.get("drift_against") else COLORS["dim"],
                     "w",
                 )
-        return y + height + 8
+        return y + height + 10
 
     def _draw_trend(self, data: dict[str, Any], y: int) -> int:
         trend = data["trend"]
         if trend["blanked"]:
             return y
-        self._card(PAD, y, INNER, 34, radius=10, fill=COLORS["panel"],
-                   border=COLORS["line"])
+        self._card(PAD, y, INNER, 34, radius=10, fill=SURFACE,
+                   fill_to=SURFACE_DEEP, border=COLORS["line"], shadow=4.0)
         self._text(PAD + 14, y + 17, "MARKET", self.f_caption,
                    COLORS["faint"], "w")
         self._text(PAD + 72, y + 17, f"{trend['arrow']}  {trend['label']}",
@@ -682,8 +898,8 @@ class OverlayPanel:
         bars = chart["bars"][-34:]
         if len(bars) < 4:
             return y
-        self._card(PAD, y, INNER, 88, radius=14, fill=COLORS["panel"],
-                   border=COLORS["line"])
+        self._card(PAD, y, INNER, 88, radius=14, fill=SURFACE,
+                   fill_to=SURFACE_DEEP, border=COLORS["line"], shadow=5.0)
         self._text(PAD + 14, y + 13, f"LAST {len(bars)} CANDLES", self.f_label,
                    COLORS["faint"], "w")
         key = (len(bars), round(bars[0][0], 6), round(bars[-1][3], 6))
@@ -700,22 +916,24 @@ class OverlayPanel:
     def _draw_actions(self, data: dict[str, Any], y: int) -> int:
         scanning = data["scan"]["scanning"]
         wide = INNER - 118
-        self._card(PAD, y, wide, 38, radius=11,
-                   fill="#243449" if scanning else "#1c8f4a",
-                   fill_to="#1b2739" if scanning else "#15803d",
-                   border=COLORS["line"] if scanning else "#2fbb66",
-                   tags="frame scan")
+        if scanning:
+            self._button(PAD, y, wide, 38, color="#243449", color_to="#1b2739",
+                         border=COLORS["line"], tag="scan")
+        else:
+            self._button(PAD, y, wide, 38, color="#1f9a50", color_to="#157a3c",
+                         border="#3fd47a", tag="scan")
         self._text(PAD + wide // 2, y + 19, "SCANNING…" if scanning else "SCAN",
                    self.f_button, COLORS["dim"] if scanning else "#eafff2",
                    "center", tags="frame scan")
         self._clickable("scan", self._scan_clicked)
 
-        self._card(PAD + wide + 8, y, 110, 38, radius=11, fill=COLORS["raised"],
-                   border=COLORS["line"], tags="frame reset")
+        self._button(PAD + wide + 8, y, 110, 38, color=SURFACE_HIGH,
+                     color_to=SURFACE, border=COLORS["line"], tag="reset")
         self._text(PAD + wide + 63, y + 19, "RESET", self.f_button,
-                   COLORS["dim"], "center", tags="frame reset")
+                   COLORS["text"] if self._hot("reset") else COLORS["dim"],
+                   "center", tags="frame reset")
         self._clickable("reset", self.on_reset)
-        return y + 38 + 8
+        return y + 38 + 10
 
     def _draw_record(self, data: dict[str, Any], y: int) -> int:
         """Capture the live feed to a file, without a second download.
@@ -727,7 +945,7 @@ class OverlayPanel:
         """
         rec = data["recording"]
         colour = rec["color"]
-        self._card(PAD, y, INNER, 26, radius=9, fill=COLORS["panel"],
+        self._card(PAD, y, INNER, 26, radius=9, fill=SURFACE,
                    border=COLORS["line"], tags="frame record")
 
         if rec["active"]:
@@ -738,17 +956,18 @@ class OverlayPanel:
                 PAD + 2, y + 20, "recbar", ("recbar", rec["progress"]),
                 lambda: gfx.bar_meter(INNER - 4, 3, rec["progress"], color=colour),
             )
-            self._image(PAD + 10, y + 9, ("dot", colour),
-                        lambda: gfx.pill(7, 7, color=colour, opacity=255),
-                        tags="frame record")
+            self._image(PAD + 10 - gfx.DOT_PAD, y + 9 - gfx.DOT_PAD, ("dot", 7, colour),
+                        lambda: gfx.glow_dot(7, colour), tags="frame record")
             self._text(PAD + 24, y + 12, rec["label"], self.f_caption, colour, "w",
                        tags="frame record")
             self._text(PANEL_WIDTH - PAD - 8, y + 12, f"{rec['frames']:,}",
                        self.f_label, COLORS["faint"], "e", tags="frame record")
         else:
             self._text(PANEL_WIDTH // 2, y + 13, rec["label"], self.f_caption,
-                       colour, "center", tags="frame record")
+                       COLORS["text"] if self._hot("record") else colour,
+                       "center", tags="frame record")
         self._clickable("record", self.on_record)
+        self._hoverable("record")
         y += 26 + 4
 
         if rec["message"]:
@@ -766,22 +985,36 @@ class OverlayPanel:
         )
         for index, (label, value, colour, delta, tag) in enumerate(cells):
             x = PAD + index * (width + 6)
-            self._card(x, y, width, 52, radius=10, fill=COLORS["panel"],
-                       border=COLORS["line"])
+            self._card(x, y, width, 52, radius=10, fill=SURFACE,
+                       fill_to=SURFACE_DEEP, border=COLORS["line"], shadow=4.0)
             self._text(x + width // 2, y + 12, label, self.f_label,
                        COLORS["faint"], "center")
-            self._text(x + width // 2, y + 30, value, self.f_stat, colour, "center")
+            # A number that just changed grows for a moment, so a win landing
+            # is seen without being looked for.
+            if self._tally_seen.get(label) not in (None, value):
+                self._pop[label] = POP_FRAMES
+            elif self._pop.get(label, 0) > 0:
+                self._pop[label] -= 1
+            self._tally_seen[label] = value
+            popping = self.animate and self._pop.get(label, 0) > 0
+            self._text(x + width // 2, y + 30, value,
+                       self.f_stat_pop if popping else self.f_stat, colour, "center")
+            self._image(x + 14, y + 49, ("underline", width - 28, colour),
+                        lambda w=width - 28, c=colour: gfx.pill(w, 3, color=c, opacity=150))
             if delta is None:
                 continue
             wins, losses = delta
             for sign, symbol, offset in ((1, "+", -14), (-1, "−", 14)):
                 mark = f"{tag}{'up' if sign > 0 else 'dn'}"
-                self._text(x + width // 2 + offset, y + 44, symbol,
-                           self.f_caption, colour, "center", tags=f"frame {mark}")
+                self._text(x + width // 2 + offset, y + 40, symbol,
+                           self.f_caption,
+                           COLORS["text"] if self._hot(mark) else colour,
+                           "center", tags=f"frame {mark}")
                 self._clickable(
                     mark,
                     lambda w=wins * sign, l=losses * sign: self.on_adjust(w, l),
                 )
+                self._hoverable(mark)
         y += 52 + 6
 
         if session["total"]:
@@ -799,11 +1032,13 @@ class OverlayPanel:
     def _draw_details(self, data: dict[str, Any], y: int) -> int:
         details = data["details"]
         collapsed = details["collapsed"]
+        tone = COLORS["text"] if self._hot("evidence") else COLORS["faint"]
         self._text(PAD + 2, y + 8, ("▸ " if collapsed else "▾ ") + "EVIDENCE",
-                   self.f_caption, COLORS["faint"], "w", tags="frame evidence")
+                   self.f_caption, tone, "w", tags="frame evidence")
         self._text(PANEL_WIDTH - PAD - 2, y + 8, details["summary"],
                    self.f_label, COLORS["faint"], "e", tags="frame evidence")
         self._clickable("evidence", self.on_toggle_details)
+        self._hoverable("evidence")
         y += 22
         if collapsed:
             return y
@@ -831,8 +1066,9 @@ class OverlayPanel:
     def _draw_risk(self, data: dict[str, Any], y: int) -> int:
         risk = data["risk"]
         collapsed = risk.get("collapsed")
+        tone = COLORS["text"] if self._hot("riskhead") else COLORS["faint"]
         self._text(PAD + 2, y + 8, ("▸ " if collapsed else "▾ ") + "RISK",
-                   self.f_caption, COLORS["faint"], "w", tags="frame riskhead")
+                   self.f_caption, tone, "w", tags="frame riskhead")
         percent = risk["risk_percent"]
         self._text(PANEL_WIDTH - PAD - 2, y + 8,
                    f"{percent:.1f}% of balance", self.f_label,
@@ -840,6 +1076,7 @@ class OverlayPanel:
                    else COLORS["wait"] if percent > 5 else COLORS["faint"], "e",
                    tags="frame riskhead")
         self._clickable("riskhead", self.on_toggle_risk)
+        self._hoverable("riskhead")
         y += 22
         if collapsed:
             for key in ("balance", "stake", "payout"):
@@ -892,6 +1129,30 @@ class OverlayPanel:
                    self.f_label, COLORS["faint"], "center")
         return y + 22
 
+    def _measured_height(self, text: str, width: int) -> int:
+        """How tall a wrapped block will render, asked of the canvas itself.
+
+        A probe item is drawn, measured and removed — never estimated from
+        the string's width. Tk breaks at word boundaries, and estimating is
+        how the verdict face got clipped twice and the brake's explanation
+        ran over the market strip.
+        """
+        if not text:
+            return 0
+        probe = self.c.create_text(
+            0, 0, text=text, font=self.f_label, anchor="nw", width=width,
+            tags="frame probe",
+        )
+        height = 13
+        try:
+            bounds = self.c.bbox(probe)
+            if bounds:
+                height = int(bounds[3] - bounds[1])
+        except tk.TclError:  # pragma: no cover - window closing
+            pass
+        self.c.delete("probe")
+        return max(13, height)
+
     def _wrapped(self, x: int, y: int, text: str, colour: str) -> int:
         """One block of wrapped prose, returning where the next thing starts."""
         if not text:
@@ -918,6 +1179,10 @@ class OverlayPanel:
 
     def _pulse_step(self) -> int:
         """Which frame of the pulse this repaint is on."""
+        if not self.animate:
+            # Resting at a little over half: lit enough to read as live,
+            # still enough to read as still.
+            return int(round(self.PULSE_STEPS * 0.6))
         half = self.PULSE_FRAMES / 2
         raw = abs(half - (self._pulse % self.PULSE_FRAMES)) / half
         return int(round(raw * self.PULSE_STEPS))
@@ -940,7 +1205,11 @@ class OverlayPanel:
             self._score_shown = None
             return None
         target = max(0.0, min(100.0, float(score)))
-        if self._score_shown is None or abs(target - self._score_shown) < 0.5:
+        if (
+            not self.animate
+            or self._score_shown is None
+            or abs(target - self._score_shown) < 0.5
+        ):
             self._score_shown = target
         else:
             self._score_shown += (target - self._score_shown) * 0.25

@@ -22,3 +22,6 @@ htmlcov/
 .vscode/
 .idea/
 .DS_Store
+
+# Stills rendered by tools/preview_panel.py
+tools/preview-*.png

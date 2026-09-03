@@ -193,3 +193,77 @@ class TestSmallOrnaments:
 
     def test_the_shimmer_stays_inside_its_box(self):
         assert g.shimmer(80, 6, 0.5).size == (80, 6)
+
+
+class TestTheLitScene:
+    """The 2026-09 redraw: depth and light, still as plain images."""
+
+    def test_a_backdrop_is_the_size_of_the_panel(self):
+        assert g.backdrop(340, 720, tint="#22c55e").size == (340, 720)
+
+    def test_a_backdrop_carries_its_tint(self):
+        green = g.backdrop(120, 200, tint="#00ff00", accent="#000000")
+        red = g.backdrop(120, 200, tint="#ff0000", accent="#000000")
+        assert _pixels(green) != _pixels(red)
+
+    def test_a_shadowed_card_reserves_room_beneath_it(self):
+        assert g.card(120, 40, shadow=6.0).size == (
+            120 + 2 * g.SHADOW_PAD, 40 + 2 * g.SHADOW_PAD
+        )
+        assert g.card_padding(None, 6.0) == g.SHADOW_PAD
+        assert g.card_padding("#22c55e", 6.0) == g.GLOW_PAD
+        assert g.card_padding(None, 0.0) == 0
+
+    def test_the_shadow_falls_below_the_card(self):
+        card = g.card(120, 40, shadow=6.0, fill="#ffffff")
+        pad = g.SHADOW_PAD
+        assert _alpha(card, 60, pad + 40 + 4) > _alpha(card, 60, pad - 4)
+
+    def test_the_rim_of_light_sits_on_the_top_edge(self):
+        lit = g.card(120, 40, highlight=True, fill="#202020", radius=8)
+        flat = g.card(120, 40, highlight=False, fill="#202020", radius=8)
+        assert lit.getpixel((60, 1))[0] > flat.getpixel((60, 1))[0]
+        # And never past a rounded corner.
+        assert _alpha(lit, 0, 1) < 40
+
+    def test_the_gauge_glows_and_lights_its_tip(self):
+        plain = _lit(g.arc_gauge(60, 70, track="#00000000", glow=False))
+        glowing = _lit(g.arc_gauge(60, 70, track="#00000000", glow=True))
+        assert glowing > plain
+
+    def test_the_spinner_turns_and_stays_square(self):
+        assert g.spinner(48, 0.0).size == (48, 48)
+        assert _pixels(g.spinner(48, 0.0)) != _pixels(g.spinner(48, 0.5))
+
+    def test_the_shield_has_transparent_corners_and_a_solid_body(self):
+        mark = g.shield(24)
+        assert mark.size == (24, 24)
+        assert _alpha(mark, 0, 0) < 30
+        assert _alpha(mark, 12, 17) > 200
+
+    def test_a_glow_dot_is_padded_for_its_halo(self):
+        assert g.glow_dot(9, "#22c55e").size == (9 + 2 * g.DOT_PAD,) * 2
+
+    def test_a_lit_tab_is_padded_and_a_quiet_one_is_not(self):
+        assert g.tab(150, 26, color="#22c55e", active=True).size == (150, 26)
+        lit = g.tab(150, 26, color="#22c55e", active=True, glow_strength=0.8)
+        assert lit.size == (150 + 2 * g.GLOW_PAD, 26 + 2 * g.GLOW_PAD)
+
+    def test_a_hovered_button_is_brighter(self):
+        rest = g.button(100, 30, color="#1f9a50")
+        hot = g.button(100, 30, color="#1f9a50", hover=True)
+        pad = g.card_padding(None, 5.0)
+        assert rest.size == (100 + 2 * pad, 30 + 2 * pad)
+        assert sum(hot.getpixel((pad + 50, pad + 15))[:3]) > sum(
+            rest.getpixel((pad + 50, pad + 15))[:3]
+        )
+
+    def test_a_lit_ring_tip_adds_ink(self):
+        assert _lit(g.countdown_ring(40, 0.5, track="#00000000", tip=True)) > _lit(
+            g.countdown_ring(40, 0.5, track="#00000000", tip=False)
+        )
+
+    def test_the_glyphs_glow_on_request(self):
+        assert _lit(g.direction_glyph(24, "CALL", "#22c55e", glow=True)) > _lit(
+            g.direction_glyph(24, "CALL", "#22c55e", glow=False)
+        )
