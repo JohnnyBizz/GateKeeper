@@ -1194,3 +1194,30 @@ caught by reading what the fixes *fed*.
   runs. The demotion criteria and fade-overheat's promotion bar are
   unchanged.
 * The 2026-08-29 crash, pending the log.
+
+## 2026-09-02 — the redraw
+
+Not a measurement — a surface. The panel is now a lit scene: a backdrop
+with a pool of the verdict's own colour in it, cards that cast shadows
+onto it and carry a rim of light along their top edge, a gauge whose arc
+glows to a lit tip, a sweep while the chart is being searched, and
+motion that marks a change — a verdict *arrives*, a banner slides in, a
+price tick flashes, a moved tally pops, buttons and tabs answer the
+pointer. Two rules kept it honest. Nothing the panel *says* changed:
+every click target, tag and test contract held, and the view model was
+not touched. And every frame of every animation is one cached image —
+glow strengths are snapped to the pulse's eight steps — so the redraw
+costs a cold first frame (about a third of a second) and then about a
+millisecond per repaint. ``overlay.animations: false`` settles
+everything at its resting frame.
+
+Found while looking at it, with a renderer that draws the panel's frames
+to PNG without a display (``tools/preview_panel.py``): the STAND DOWN
+explanation had overflowed its inset since the brake shipped — five
+lines in a fifty-four-pixel box, spilling onto the market strip below.
+The inset now measures its text with a probe item on the canvas (never
+an estimate; estimating text height is how the verdict face got clipped
+twice) and the card grows with it. And a section that fails to draw is
+now skipped and logged once rather than ending the process: the first
+paint happens before the event loop exists, where an exception is not a
+logged callback failure but the end of the app.

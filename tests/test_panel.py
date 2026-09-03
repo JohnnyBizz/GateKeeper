@@ -655,7 +655,9 @@ class TestTheImageCacheDoesNotThrash:
                 60, "EUR/USD OTC",
             )
             panel.refresh()
-        assert set(panel._slots) <= {"spark", "candles"}
+        # The backdrop follows the window's height and the verdict's colour,
+        # so it lives in a slot too — one image, replaced, never accumulated.
+        assert set(panel._slots) <= {"spark", "candles", "backdrop", "recbar"}
         assert not [key for key in panel._images if key[0] in ("spark", "candles")]
 
 
@@ -1023,3 +1025,161 @@ class TestTheCallFreshnessStrip:
         panel = _panel(panel_module, vm=vm)
         panel.refresh()
         assert not _find(panel, "opened ")
+
+
+class TestTheSceneIsLit:
+    """The 2026-09 redraw: a ground under everything, lit by what the panel
+    is saying, and every card resting on it rather than printed on it."""
+
+    def test_the_backdrop_is_the_first_thing_drawn(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        first = _drawn(panel)[0]
+        assert first["kind"] == "image" and (first["x"], first["y"]) == (0, 0)
+        assert "backdrop" in panel._slots
+
+    def test_the_ground_takes_the_verdicts_colour_while_a_call_is_live(self, panel_module):
+        from poa.overlay.viewmodel import COLORS
+
+        panel = _panel(panel_module, TestATrippedBrakeOwnsThePanel()._vm(losses=0))
+        panel.refresh()
+        assert panel._slots["backdrop"][0][1] == COLORS["call"]
+
+    def test_a_tripped_brake_turns_the_ground_red(self, panel_module):
+        from poa.overlay.viewmodel import COLORS
+
+        panel = _panel(panel_module, TestATrippedBrakeOwnsThePanel()._vm(losses=4))
+        panel.refresh()
+        assert panel._slots["backdrop"][0][1] == COLORS["no_trade"]
+
+    def test_the_ground_is_not_redrawn_for_a_few_pixels_of_height(self, panel_module):
+        """A 340px blur per two-line change in the evidence block would be
+        the most expensive thing on the panel, for nothing anyone can see."""
+        panel = _panel(panel_module)
+        panel.refresh()
+        key = panel._slots["backdrop"][0]
+        assert key[0] % panel_module.BACKDROP_STEP == 0  # drawn to a step
+        panel._height = key[0] - 10  # a few pixels inside the same step
+        panel.refresh()
+        assert panel._slots["backdrop"][0] == key
+
+    def test_a_section_that_breaks_does_not_take_the_frame_down(self, panel_module):
+        """The first paint happens before the event loop starts, where an
+        exception is the end of the process rather than a logged callback."""
+        panel = _panel(panel_module)
+
+        def boom(data, y):
+            raise RuntimeError("a section exploded")
+
+        panel._draw_trend = boom
+        panel.refresh()
+        assert _find(panel, "not a trading recommendation")
+
+
+class TestThingsAnswerThePointer:
+    def test_the_buttons_and_tabs_track_the_pointer(self, panel_module):
+        panel = _panel(panel_module, TestTheWatchlistTabs()._vm())
+        panel.refresh()
+        binds = panel.c.recorder.binds
+        for tag in ("scan", "reset", "watch0", "gear", "shut", "evidence",
+                    "riskhead", "record", "winup"):
+            assert f"{tag}<Enter>" in binds and f"{tag}<Leave>" in binds, tag
+
+    def test_a_hovered_button_is_drawn_lit(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        resting = {key for key in panel._images if key[0] == "button"}
+        panel.c.recorder.binds["scan<Enter>"](None)
+        panel.refresh()
+        assert {key for key in panel._images if key[0] == "button"} - resting
+        panel.c.recorder.binds["scan<Leave>"](None)
+        assert "scan" not in panel._hover
+
+
+class TestMotionMeansSomething:
+    """Every animation marks a change: a verdict arriving, a banner sliding
+    in, a price ticking, a tally moving. None of them runs while nothing is
+    happening, and every one of them settles."""
+
+    def _live(self, panel_module, **kw):
+        return _panel(panel_module, TestATrippedBrakeOwnsThePanel()._vm(losses=0), **kw)
+
+    def test_the_first_verdict_does_not_slide_in(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        assert panel._arrive == 0
+
+    def test_a_changed_verdict_arrives_and_settles(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        panel.vm.scan.begin()  # WAITING FOR DATA -> SCANNING: a change
+        panel.refresh()
+        assert panel._arrive == panel_module.ARRIVE_FRAMES
+        for _ in range(panel_module.ARRIVE_FRAMES + 1):
+            panel.refresh()
+        assert panel._arrive == 0
+
+    def test_the_arrival_moves_the_word_into_place(self, panel_module):
+        panel = self._live(panel_module)
+        panel.refresh()
+        resting = _find(panel, "BUY")[0]["x"]
+        panel.vm.scan.begin()
+        panel.refresh()
+        panel.vm.scan.reset()
+        panel.refresh()  # BUY again, freshly arrived
+        assert _find(panel, "BUY")[0]["x"] > resting
+        for _ in range(panel_module.ARRIVE_FRAMES + 1):
+            panel.refresh()
+        assert _find(panel, "BUY")[0]["x"] == resting
+
+    def test_a_banner_slides_in_once(self, panel_module):
+        panel = _panel(panel_module, TestTheSwitchBanner()._vm())
+        panel.refresh()
+        assert panel._slide == panel_module.SLIDE_FRAMES
+        for _ in range(panel_module.SLIDE_FRAMES + 1):
+            panel.refresh()
+        assert panel._slide == 0
+
+    def test_a_price_tick_flashes_then_fades(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        assert panel._flash == 0
+        panel._price_seen = "1.10000"  # the next frame's price differs
+        panel.refresh()
+        assert panel._flash == panel_module.FLASH_FRAMES
+        assert [key for key in panel._images if key[0] == "flash"]
+        for _ in range(panel_module.FLASH_FRAMES + 1):
+            panel.refresh()
+        assert panel._flash == 0
+
+    def test_a_moved_tally_pops_for_a_moment(self, panel_module):
+        panel = _panel(panel_module)
+        panel.refresh()
+        panel.vm.session.adjust(1, 0)
+        panel.vm.session.record(won=True)
+        panel.refresh()
+        wins = [i for i in _drawn(panel) if i["kind"] == "text" and i["text"] == "1"]
+        assert wins and wins[0]["font"] is panel.f_stat_pop
+        for _ in range(panel_module.POP_FRAMES + 1):
+            panel.refresh()
+        wins = [i for i in _drawn(panel) if i["kind"] == "text" and i["text"] == "1"]
+        assert wins and wins[0]["font"] is panel.f_stat
+
+    def test_with_motion_off_everything_rests(self, panel_module):
+        panel = self._live(panel_module, animate=False)
+        phases = set()
+        for _ in range(30):
+            panel.refresh()
+            phases.add(panel._pulse_phase())
+        assert len(phases) == 1
+        panel._ease_score(20.0)
+        panel._ease_score(90.0)
+        assert panel._score_shown == 90.0
+        panel.vm.scan.begin()
+        panel.refresh()
+        assert panel._progress(panel._arrive, panel_module.ARRIVE_FRAMES) == 1.0
+
+    def test_a_quantised_glow_never_costs_more_than_the_pulse(self, panel_module):
+        panel = _panel(panel_module)
+        seen = {panel._quantised(v / 100.0) for v in range(101)}
+        assert len(seen) == panel.PULSE_STEPS + 1

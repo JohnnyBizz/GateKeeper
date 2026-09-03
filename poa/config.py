@@ -240,6 +240,11 @@ DEFAULTS: dict[str, Any] = {
         # so without this the session's own scorecard is somewhere most
         # people would never look. Set false once you know the path.
         "reveal_report": True,
+        # The panel's motion — the breathing glow on a live call, the dial
+        # easing to a new score, the arrival slide when the verdict changes,
+        # the sweep while scanning. Off, everything settles at its resting
+        # frame; nothing the panel says depends on it.
+        "animations": True,
     },
     "signals": {
         # Under test. Measured across a rising and a falling recording, the
