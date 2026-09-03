@@ -119,6 +119,21 @@ def _vertical_gradient(
     return ramp.resize((width, height), Image.BILINEAR)
 
 
+def _horizontal_gradient(
+    width: int, height: int, left: str, right: str
+) -> Image.Image:
+    """The same ramp, run across the box instead of down it."""
+    ramp = Image.new("RGBA", (max(2, width), 1))
+    start, end = _hex(left), _hex(right)
+    for x in range(ramp.width):
+        t = x / (ramp.width - 1)
+        ramp.putpixel(
+            (x, 0),
+            tuple(int(round(start[i] + (end[i] - start[i]) * t)) for i in range(4)),
+        )
+    return ramp.resize((width, height), Image.BILINEAR)
+
+
 # ---------------------------------------------------------------------------
 # surfaces
 
@@ -149,6 +164,7 @@ def card(
     glow_strength: float = 1.0,
     shadow: float = 0.0,
     highlight: bool = False,
+    across: bool = False,
 ) -> Image.Image:
     """A rounded panel surface, optionally lit from within — and, since the
     redraw, optionally resting on the backdrop rather than printed on it.
@@ -196,12 +212,16 @@ def card(
     )
     mask = _reduce(shape, width, height).getchannel("A")
 
-    body = (
-        _vertical_gradient(width, height, fill, fill_to)
-        if fill_to
-        else Image.new("RGBA", (width, height), _hex(fill))
-    )
-    body.putalpha(mask)
+    if fill_to and across:
+        body = _horizontal_gradient(width, height, fill, fill_to)
+    elif fill_to:
+        body = _vertical_gradient(width, height, fill, fill_to)
+    else:
+        body = Image.new("RGBA", (width, height), _hex(fill))
+    # The fill keeps its own alpha inside the rounded mask — a translucent
+    # colour makes a glass surface, and what lies under the card (the
+    # backdrop's pools of light) shows through it.
+    body.putalpha(ImageChops.multiply(body.getchannel("A"), mask))
     base.alpha_composite(body, (pad, pad))
 
     if border:
@@ -239,8 +259,10 @@ def backdrop(
     *,
     tint: str = "#6aa8ff",
     accent: str = "#6aa8ff",
-    top: str = "#0b1120",
-    bottom: str = "#06090f",
+    top: str = "#0c1328",
+    bottom: str = "#05070e",
+    phase: float = 0.0,
+    violet: str = "#8b5cf6",
 ) -> Image.Image:
     """The panel's ground: a deep vertical ramp with two soft pools of light.
 
@@ -256,19 +278,31 @@ def backdrop(
     """
     base = _vertical_gradient(width, height, top, bottom)
 
+    # Three pools of light, drifting with ``phase`` (0..1 is one slow
+    # orbit) so the ground is never quite still.
+    turn = phase * 2.0 * math.pi
     pools = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(pools)
+
     r = int(width * 0.62)
-    draw.ellipse(
-        [width - int(r * 0.85), -int(r * 0.75), width + int(r * 0.45), int(r * 0.55)],
-        fill=_hex(tint, 78),
-    )
+    cx = width * 0.86 + width * 0.10 * math.sin(turn)
+    cy = -r * 0.15 + r * 0.10 * math.cos(turn)
+    draw.ellipse([cx - r * 0.65, cy - r * 0.65, cx + r * 0.65, cy + r * 0.65],
+                 fill=_hex(tint, 110))
+
     r2 = int(width * 0.55)
-    draw.ellipse(
-        [-int(r2 * 0.55), int(height * 0.62), int(r2 * 0.75), int(height * 0.62) + int(r2 * 1.1)],
-        fill=_hex(accent, 44),
-    )
-    base.alpha_composite(pools.filter(ImageFilter.GaussianBlur(max(8.0, width * 0.26))))
+    cx = width * 0.08 - width * 0.08 * math.sin(turn * 0.7)
+    cy = height * 0.66 + r2 * 0.12 * math.cos(turn * 0.7 + 1.0)
+    draw.ellipse([cx - r2 * 0.65, cy - r2 * 0.65, cx + r2 * 0.65, cy + r2 * 0.65],
+                 fill=_hex(accent, 66))
+
+    r3 = int(width * 0.42)
+    cx = width * 0.55 + width * 0.12 * math.cos(turn * 0.5)
+    cy = height * 0.36 + r3 * 0.16 * math.sin(turn * 0.5)
+    draw.ellipse([cx - r3 * 0.6, cy - r3 * 0.6, cx + r3 * 0.6, cy + r3 * 0.6],
+                 fill=_hex(violet, 46))
+
+    base.alpha_composite(pools.filter(ImageFilter.GaussianBlur(max(8.0, width * 0.24))))
 
     grid = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(grid)
@@ -292,19 +326,22 @@ def button(
     glow_strength: float = 0.0,
     border: str | None = None,
     shadow: float = 5.0,
+    across: bool = False,
 ) -> Image.Image:
     """A pressable surface: a gradient card with a rim, a shadow, and a
-    brighter face while the pointer is over it.
+    brighter face while the pointer is over it. ``across`` runs the
+    gradient left to right — the brand's blue-to-violet sweep.
 
     Placed with :func:`card_padding` like any padded card.
     """
-    bottom = color_to or darken(color, 0.18)
+    other = color_to or darken(color, 0.18)
     if hover:
-        color, bottom = lighten(color, 0.10), lighten(bottom, 0.10)
+        color, other = lighten(color, 0.10), lighten(other, 0.10)
     return card(
-        width, height, radius=radius, fill=color, fill_to=bottom,
+        width, height, radius=radius, fill=color, fill_to=other,
         border=border or lighten(color, 0.22), glow=glow,
         glow_strength=glow_strength, shadow=shadow, highlight=True,
+        across=across,
     )
 
 
@@ -323,13 +360,15 @@ def tab(
 
     Placed with :func:`card_padding` — the stripe is inside the card.
     """
-    fill, fill_to = ("#1a2740", "#131c30") if active else ("#121a2a", "#0e1521")
+    fill, fill_to = ("#22304cbe", "#151f36a8") if active else ("#151d30a0", "#0f172890")
     if hover:
-        fill, fill_to = lighten(fill, 0.07), lighten(fill_to, 0.07)
+        # Lighter, but still glass: the alpha rides along.
+        fill = lighten(fill[:7], 0.08) + fill[7:]
+        fill_to = lighten(fill_to[:7], 0.08) + fill_to[7:]
     glow = color if glow_strength > 0 else None
     base = card(
         width, height, radius=radius, fill=fill, fill_to=fill_to,
-        border=color if active else "#243044", glow=glow,
+        border=color if active else "#ffffff24", glow=glow,
         glow_strength=glow_strength, highlight=True,
     )
     pad = card_padding(glow)

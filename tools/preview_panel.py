@@ -200,6 +200,29 @@ def render(name: str, vm, frames: int = 30, **kw) -> Path:
     return path
 
 
+def animate(name: str, frames: int = 40, crop: int = 620) -> Path:
+    """The live state as a short loop: the scan sweep, then the verdict
+    arriving, the halo breathing and the aurora drifting behind it."""
+    vm = _live_vm()
+    vm.scan.begin()
+    panel = panel_module.OverlayPanel(vm)
+    for entry in panel._entries.values():
+        entry._text = ""
+    panel._entries["pair"]._text = vm.asset
+    stills = []
+    for index in range(frames):
+        if index == 8:
+            vm.scan.reset()
+        panel.refresh()
+        for key, text in (("payout", f"{vm.payout*100:.0f}%"), ("balance", f"{vm.risk.balance:.2f}"), ("stake", f"{vm.risk.stake:.2f}")):
+            panel._entries[key]._text = text
+        frame = composite(panel).crop((0, 0, panel_module.PANEL_WIDTH, crop)).convert("RGB")
+        stills.append(frame)
+    path = Path(__file__).with_name(f"preview-{name}.gif")
+    stills[0].save(path, save_all=True, append_images=stills[1:], duration=80, loop=0)
+    return path
+
+
 if __name__ == "__main__":
     out = []
     out.append(render("idle", OverlayViewModel(), frames=8))
@@ -216,4 +239,4 @@ if __name__ == "__main__":
         x += im.width + 16
     sheet_path = Path(__file__).with_name("preview-sheet.png")
     sheet.save(sheet_path)
-    print("\n".join(str(p) for p in out + [sheet_path]))
+    print("\n".join(str(p) for p in out + [sheet_path, animate("live")]))

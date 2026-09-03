@@ -201,6 +201,21 @@ def _find(panel, needle):
     ]
 
 
+def _backdrops(panel):
+    """The cached aurora frames: ("backdrop", height, tint, step)."""
+    return [key for key in panel._images if key[0] == "backdrop"]
+
+
+def _settled_backdrops(panel):
+    """The aurora frames drawn at the height the window settled to — the
+    first paint happens at the starting height and is discarded with it."""
+    import math
+
+    step = panel.__class__.__module__ and __import__("poa.overlay.panel", fromlist=["BACKDROP_STEP"]).BACKDROP_STEP
+    settled = int(math.ceil(max(panel._height, 320) / step)) * step
+    return [key for key in _backdrops(panel) if key[1] == settled]
+
+
 def _click(panel, tag):
     handler = panel.c.recorder.binds.get(f"{tag}<Button-1>")
     assert handler is not None, f"nothing is bound to {tag}"
@@ -786,9 +801,9 @@ class TestTheVerdictFitsThePanel:
 
     def test_every_verdict_the_tool_can_show_fits(self, panel_module):
         """The four are BUY, SELL, WAIT and NO TRADE. All of them, measured."""
-        from poa.overlay.panel import PAD, PANEL_WIDTH
+        from poa.overlay.panel import PAD, PANEL_WIDTH, VERDICT_X
 
-        room = PANEL_WIDTH - PAD - (PAD + 152)
+        room = PANEL_WIDTH - PAD - VERDICT_X
         panel = _panel(panel_module)
         for label in ("BUY", "SELL", "WAIT", "NO TRADE"):
             font = panel._fitted(label, room, panel.f_verdict, panel.f_score,
@@ -1029,39 +1044,58 @@ class TestTheCallFreshnessStrip:
 
 class TestTheSceneIsLit:
     """The 2026-09 redraw: a ground under everything, lit by what the panel
-    is saying, and every card resting on it rather than printed on it."""
+    is saying and never quite still, with every card resting on it as glass
+    rather than printed on it."""
 
     def test_the_backdrop_is_the_first_thing_drawn(self, panel_module):
         panel = _panel(panel_module)
         panel.refresh()
         first = _drawn(panel)[0]
         assert first["kind"] == "image" and (first["x"], first["y"]) == (0, 0)
-        assert "backdrop" in panel._slots
+        assert _backdrops(panel)
 
     def test_the_ground_takes_the_verdicts_colour_while_a_call_is_live(self, panel_module):
         from poa.overlay.viewmodel import COLORS
 
         panel = _panel(panel_module, TestATrippedBrakeOwnsThePanel()._vm(losses=0))
         panel.refresh()
-        assert panel._slots["backdrop"][0][1] == COLORS["call"]
+        assert _backdrops(panel)[0][2] == COLORS["call"]
 
     def test_a_tripped_brake_turns_the_ground_red(self, panel_module):
         from poa.overlay.viewmodel import COLORS
 
         panel = _panel(panel_module, TestATrippedBrakeOwnsThePanel()._vm(losses=4))
         panel.refresh()
-        assert panel._slots["backdrop"][0][1] == COLORS["no_trade"]
+        assert _backdrops(panel)[0][2] == COLORS["no_trade"]
 
     def test_the_ground_is_not_redrawn_for_a_few_pixels_of_height(self, panel_module):
         """A 340px blur per two-line change in the evidence block would be
         the most expensive thing on the panel, for nothing anyone can see."""
+        panel = _panel(panel_module, animate=False)
+        panel.refresh()
+        (key,) = _backdrops(panel)
+        assert key[1] % panel_module.BACKDROP_STEP == 0  # drawn to a step
+        panel._height = key[1] - 10  # a few pixels inside the same step
+        panel.refresh()
+        assert _backdrops(panel) == [key]
+
+    def test_the_aurora_drifts_through_a_few_cached_frames(self, panel_module):
+        """Never still, never expensive: the pools of light step through a
+        handful of frames, each rendered once and then reused."""
         panel = _panel(panel_module)
+        panel.refresh()  # the first paint settles the window's height
+        for _ in range(panel_module.AURORA_EVERY * panel_module.AURORA_FRAMES * 2):
+            panel.refresh()
+        frames = _settled_backdrops(panel)
+        assert len(frames) == panel_module.AURORA_FRAMES
+        assert {key[3] for key in frames} == set(range(panel_module.AURORA_FRAMES))
+
+    def test_with_motion_off_the_ground_holds_still(self, panel_module):
+        panel = _panel(panel_module, animate=False)
         panel.refresh()
-        key = panel._slots["backdrop"][0]
-        assert key[0] % panel_module.BACKDROP_STEP == 0  # drawn to a step
-        panel._height = key[0] - 10  # a few pixels inside the same step
-        panel.refresh()
-        assert panel._slots["backdrop"][0] == key
+        for _ in range(60):
+            panel.refresh()
+        assert len(_settled_backdrops(panel)) == 1
 
     def test_a_section_that_breaks_does_not_take_the_frame_down(self, panel_module):
         """The first paint happens before the event loop starts, where an

@@ -1221,3 +1221,13 @@ twice) and the card grows with it. And a section that fails to draw is
 now skipped and logged once rather than ending the process: the first
 paint happens before the event loop exists, where an exception is not a
 logged callback failure but the end of the app.
+
+The first cut of this was the old layout with better shadows, and it was
+called out as such — fairly. The second cut is the one that shipped:
+every surface is glass (its own alpha, so the ground shows through it),
+the ground is an aurora of three pools that drift through eight cached
+frames, the score sits inside a 116-pixel ring, the verdict word is
+thirty points, the SCAN button is the brand's blue-to-violet sweep, and
+the watchlist tiles carry their score as a length. Judged on an animated
+preview this time, because a still cannot show motion — and the still
+had undersold even the first cut.
