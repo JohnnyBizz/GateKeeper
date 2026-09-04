@@ -77,7 +77,21 @@ def _experiment_rows(journal):
 class TestTheRoster:
     def test_absent_means_the_shipped_roster(self):
         assert roster_from_config({}) == DEFAULT_ROSTER
-        assert len(DEFAULT_ROSTER) == 7
+        assert len(DEFAULT_ROSTER) == 9
+
+    def test_the_reverse_points_at_two_more_rulebooks(self):
+        # Every raw row sits below a coin flip and the stricter ones sit
+        # lowest, so the strict reads at the long expiry, and the next
+        # point on the horizon axis, are raced — raw, like every shadow,
+        # with their reverses printed beside them.
+        stacked = next(e for e in DEFAULT_ROSTER if e.label == "three-minute-85")
+        settings = stacked.settings(GateSettings())
+        assert stacked.trade_duration == 180 and stacked.invert is False
+        assert settings.min_shown_confidence == 85.0
+        assert settings.min_duration_compatibility == 0.0
+        five = next(e for e in DEFAULT_ROSTER if e.label == "five-minute")
+        assert five.trade_duration == 300 and five.invert is False
+        assert five.settings(GateSettings()).min_duration_compatibility == 0.0
 
     def test_the_mirror_is_the_raw_rulebook_reversed(self):
         # 423 pooled calls put the live strategy's Wilson upper bound below

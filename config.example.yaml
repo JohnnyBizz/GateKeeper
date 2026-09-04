@@ -196,7 +196,8 @@ signals:
   # rulebook reversed, which since the 2026-08-25 promotion is the live
   # panel's own control; pre-flip — the un-reversed rulebook the panel
   # used before, kept racing so the flip stays falsifiable; plus
-  # fade-overheat, three-minute, thirty-second, strict-85, loose-70);
+  # fade-overheat, three-minute, thirty-second, strict-85, loose-70,
+  # three-minute-85, five-minute — every raw row also prints its reverse);
   # set an empty list [] to turn racing off; or list your own:
   #   experiments:
   #     - label: my-idea

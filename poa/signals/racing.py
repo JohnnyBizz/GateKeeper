@@ -113,6 +113,27 @@ DEFAULT_ROSTER: tuple[Experiment, ...] = (
             ("overheat_ceiling", 85.0),
         ),
     ),
+    # 2026-09-04: every raw row on the board sits below a coin flip, and
+    # the stricter the rulebook — a higher threshold, a longer expiry — the
+    # further below, so the better its reverse. Reversed strict-85 posted
+    # 74.8% [66.6, 81.5] over 127 and reversed three-minute 83.1% [73.2,
+    # 89.9] over 77 (each is its raw row's losses over settled). These two
+    # race the combinations that pattern points at: the strict reads at
+    # the three-minute expiry, and the next point on the horizon axis.
+    # Both raw, like every shadow; their reverses print beside them.
+    Experiment(
+        "three-minute-85",
+        overrides=(
+            ("min_shown_confidence", 85.0),
+            ("min_duration_compatibility", 0.0),
+        ),
+        trade_duration=180,
+    ),
+    Experiment(
+        "five-minute",
+        overrides=(("min_duration_compatibility", 0.0),),
+        trade_duration=300,
+    ),
 )
 
 _VALID_FIELDS = {f.name for f in fields(GateSettings)}

@@ -1231,3 +1231,69 @@ thirty points, the SCAN button is the brand's blue-to-violet sweep, and
 the watchlist tiles carry their score as a length. Judged on an animated
 preview this time, because a still cannot show motion — and the still
 had undersold even the first cut.
+
+## 2026-09-04 — the other side of every row
+
+Asked how to spot better trades. The answer was already on the board,
+unread. A settled call is a win or a loss, so every raw rulebook in the
+race has been measuring its own reverse at the very same moments — its
+losses over its settled — and every one of them has sat below a coin
+flip since the race began. Read the reverse of each, from the standings
+at the 2026-08-25 promotion:
+
+| rulebook (raw) | settled | raw | **reversed** | Wilson 95% |
+|---|---|---|---|---|
+| live / pre-flip | 638 | 44.0% | 56.0% | [52.1, 59.8] |
+| thirty-second | 314 | 40.8% | 59.2% | [53.7, 64.5] |
+| loose-70 | 143 | 33.6% | 66.4% | [58.4, 73.7] |
+| strict-85 | 127 | 25.2% | **74.8%** | [66.6, 81.5] |
+| three-minute | 77 | 16.9% | **83.1%** | [73.2, 89.9] |
+| mirror (reversed by construction) | 109 | — | 71.6% | [62.5, 79.2] |
+| fade-overheat (reversed by construction) | 40 | — | 82.5% | [68.0, 91.3] |
+
+The pattern is monotone: the stricter the raw rulebook — a higher
+threshold, a longer expiry — the worse it does raw, and so the better
+its reverse. Reversed strict-85 has a stronger record than the mirror
+had on promotion day (lower bound 66.6 against 62.5, over more calls).
+Reversed three-minute is the best number on the board, over the fewest
+calls. This is the 90+ finding — the strongest reads are the worst
+moments to follow — generalised to every axis the race measures.
+
+Caveats, stated before anyone gets excited: these pool the same handful
+of sittings, the three-minute row is 77 calls, and pooled rates sample
+different moments — the mirror's own pool-versus-pairs gap (71.6 against
+55.9) is the standing warning. That is why the same-read pairing below
+exists.
+
+Shipped, so the next session measures this rather than anyone eyeballing
+it:
+
+* Every race row prints its **reverse** with an interval — losses over
+  settled, exact, at the same moments.
+* Two new shadows on the axes the pattern points at: **three-minute-85**
+  (the 85+ reads at the 3 MIN expiry, fit waived) and **five-minute**
+  (the next point on the horizon axis, fit waived). Nine rulebooks per
+  sweep; each still costs about fifteen milliseconds per chart.
+* **SAME READS**: pre-registered same-moment pairings against the mirror
+  — reversed three-minute, reversed strict-85, reversed three-minute-85,
+  reversed five-minute, fade-overheat — paired on the same chart within a
+  sweep, whichever expiry each settled at. The number a change of expiry
+  or threshold has to win before it is recommended.
+
+Pre-registered, in advance:
+
+* **Expiry.** If reversed three-minute holds at 60%+ over 60+ *new*
+  settled calls and wins its SAME READS pairing against the mirror over
+  40+ pairs, the recommended expiry becomes 3 MIN
+  (``market.trade_duration: 180``, the platform set to match).
+* **Threshold.** If reversed strict-85 does the same,
+  ``signals.min_shown_confidence`` rises to 85 on the flipped panel —
+  fewer calls, better ones.
+* **Both.** Reversed three-minute-85 at the same bar promotes both at
+  once.
+* fade-overheat's bar and the demotion criteria are unchanged.
+
+The cheapest lever available today, no code: run the next session at a
+3 MIN expiry on pairs paying 90%+. It is a setting, it is reversible, and
+the report grades it in its own row — the flipped 3 MIN live, measured
+directly, is worth more than any number in the table above.
