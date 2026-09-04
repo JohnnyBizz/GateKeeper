@@ -1047,3 +1047,101 @@ class TestTheLedgerEdges:
         assert "THE RECORD SO FAR" in text
         assert "28 settled calls, every session" in text
         assert "BY EXPIRY" in text and "BY HOUR (UTC)" in text
+
+
+class TestTheOtherSideOfEveryRow:
+    """A settled call is a win or a loss, so every raw rulebook in the race
+    has been measuring its own reverse at the very same moments — losses
+    over settled. Printed beside each row, and paired against the mirror
+    at the same reads, because pooled rates sample different moments."""
+
+    def _row(self, minute, second=0, *, experiment, outcome, duration=30,
+             asset="EUR/USD OTC"):
+        return {
+            "timestamp": (START + timedelta(minutes=minute, seconds=second)).isoformat(),
+            "asset": asset, "trade_duration": duration, "direction": "CALL",
+            "outcome": outcome, "experiment": experiment,
+        }
+
+    def test_a_race_row_prints_its_reverse_with_an_interval(self):
+        from poa.reporting.ledger import LedgerRow, ledger_lines
+
+        live = LedgerRow("live strategy")
+        live.wins, live.losses = 234, 293
+        three = LedgerRow("three-minute")
+        three.wins, three.losses = 13, 64
+        thin = LedgerRow("five-minute")
+        thin.wins, thin.losses = 2, 5
+        text = "\n".join(ledger_lines(
+            {"overall": [live], "race": [live, three, thin], "duel": {}, "paired": []}
+        ))
+        line = next(l for l in text.splitlines() if "three-minute" in l)
+        assert "reversed 83.1%" in line and "[73.2, 89.9]" in line
+        # Under the bar: no rate, no interval, no reverse.
+        assert "reversed" not in next(l for l in text.splitlines() if "five-minute" in l)
+
+    def test_same_reads_pair_across_expiries_and_score_the_reverse(self):
+        from poa.reporting.ledger import same_moment_duels
+
+        shadows = [
+            self._row(0, 0, experiment="mirror", outcome="loss"),
+            self._row(0, 3, experiment="three-minute", outcome="loss", duration=180),
+            self._row(1, 0, experiment="mirror", outcome="win"),
+            self._row(1, 2, experiment="three-minute", outcome="win", duration=180),
+            self._row(5, 0, experiment="three-minute", outcome="loss", duration=180),
+        ]
+        (duel,) = [
+            d for d in same_moment_duels(shadows) if d["label"] == "reversed three-minute"
+        ]
+        # Reversed: the three-minute loss at minute 0 is a win for the
+        # reverse; its win at minute 1 is a loss. The lone row at minute 5
+        # has no mirror read to pair with.
+        assert duel == {
+            "label": "reversed three-minute", "against": "mirror",
+            "pairs": 2, "wins": 1, "other_wins": 1,
+        }
+
+    def test_a_read_more_than_a_sweep_apart_is_not_the_same_read(self):
+        from poa.reporting.ledger import same_moment_duels
+
+        shadows = [
+            self._row(0, 0, experiment="mirror", outcome="win"),
+            self._row(0, 40, experiment="three-minute", outcome="loss", duration=180),
+        ]
+        assert same_moment_duels(shadows) == []
+
+    def test_an_unreversed_challenger_is_scored_on_its_own_side(self):
+        from poa.reporting.ledger import same_moment_duels
+
+        shadows = [
+            self._row(0, 0, experiment="mirror", outcome="loss"),
+            self._row(0, 1, experiment="fade-overheat", outcome="win"),
+        ]
+        (duel,) = [d for d in same_moment_duels(shadows) if d["label"] == "fade-overheat"]
+        assert (duel["pairs"], duel["wins"], duel["other_wins"]) == (1, 1, 0)
+
+    def test_the_report_prints_same_reads_past_a_handful_of_pairs(self):
+        from poa.reporting.ledger import LedgerRow, ledger_lines
+
+        live = LedgerRow("live strategy")
+        live.wins, live.losses = 234, 293
+        mirror = LedgerRow("mirror")
+        mirror.wins, mirror.losses = 29, 15
+        ledger = {
+            "overall": [live], "race": [live, mirror], "duel": {},
+            "paired": [{"label": "reversed three-minute", "against": "mirror",
+                        "pairs": 31, "wins": 24, "other_wins": 19}],
+        }
+        text = "\n".join(ledger_lines(ledger))
+        assert "SAME READS" in text
+        assert "reversed three-minute" in text and "won 24 (77.4%)" in text
+
+        ledger["paired"][0]["pairs"] = 3
+        assert "SAME READS" not in "\n".join(ledger_lines(ledger))
+
+    def test_the_mirror_duel_is_unchanged_by_the_generalisation(self):
+        from poa.reporting.ledger import mirror_duel
+
+        live = [self._row(0, 0, experiment=None, outcome="loss")]
+        shadows = [self._row(0, 20, experiment="mirror", outcome="win")]
+        assert mirror_duel(live, shadows)["pairs"] == 1

@@ -169,7 +169,81 @@ def collect_ledger(
         "race": [overall]
         + sorted(by_experiment.values(), key=lambda r: -r.settled),
         "duel": mirror_duel(live, shadows),
+        "paired": same_moment_duels(shadows),
     }
+
+
+def _pair_rows(
+    left: list[dict[str, Any]],
+    right: list[dict[str, Any]],
+    *,
+    window_seconds: float,
+    same_expiry: bool,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Pair rows from two record sets at the same moments on the same chart.
+
+    Maximum-cardinality matching, not a greedy walk. Any greedy order —
+    first-come or tightest-gap-first alike — can let one row take the only
+    partner another row could pair with while its own alternative goes
+    unused, undercounting the exact number a promotion decision reads.
+    Augmenting paths (Kuhn's algorithm) find every pair that can exist;
+    candidates are tried tightest gap first so, among maximum matchings,
+    near ones are preferred. Rows whose timestamps fail to parse stay out.
+    """
+    from datetime import datetime
+
+    def _when(row: dict[str, Any]) -> Any:
+        try:
+            return datetime.fromisoformat(str(row.get("timestamp")))
+        except (TypeError, ValueError):
+            return None
+
+    def _key(row: dict[str, Any]) -> tuple[Any, ...]:
+        if same_expiry:
+            return (str(row.get("asset")), int(row.get("trade_duration") or 0))
+        return (str(row.get("asset")),)
+
+    pool: dict[tuple[Any, ...], list[tuple[Any, dict[str, Any]]]] = {}
+    for row in right:
+        when = _when(row)
+        if when is not None:
+            pool.setdefault(_key(row), []).append((when, row))
+
+    lefts = [(when, row) for row in left if (when := _when(row)) is not None]
+    adjacency: list[list[tuple[tuple[Any, ...], int]]] = []
+    for when, row in lefts:
+        key = _key(row)
+        options = []
+        for index, (other_when, _other) in enumerate(pool.get(key) or []):
+            gap = abs((other_when - when).total_seconds())
+            if gap <= window_seconds:
+                options.append((gap, key, index))
+        options.sort(key=lambda option: option[0])
+        adjacency.append([(key, index) for _gap, key, index in options])
+
+    taken: dict[tuple[tuple[Any, ...], int], int] = {}
+
+    def _assign(l_index: int, visited: set) -> bool:
+        # Path length is bounded by the matching size — dozens, not
+        # thousands — so recursion is comfortably within limits.
+        for node in adjacency[l_index]:
+            if node in visited:
+                continue
+            visited.add(node)
+            holder = taken.get(node)
+            if holder is None or _assign(holder, visited):
+                taken[node] = l_index
+                return True
+        return False
+
+    for l_index in range(len(lefts)):
+        if adjacency[l_index]:
+            _assign(l_index, set())
+
+    return [
+        (lefts[l_index][1], pool[key][index][1])
+        for (key, index), l_index in taken.items()
+    ]
 
 
 def mirror_duel(
@@ -192,86 +266,20 @@ def mirror_duel(
       Only the read era: a mirror call is the reverse of the raw read, so a
       live row from the reversed era is the mirror's own side, and pairing
       the two would print a policy duelling itself.
-
-    Timestamps are ISO strings in one timezone (the journal's own), so
-    they compare as datetimes; rows that fail to parse simply stay out.
     """
-    from datetime import datetime
-
-    def _when(row: dict[str, Any]) -> Any:
-        try:
-            return datetime.fromisoformat(str(row.get("timestamp")))
-        except (TypeError, ValueError):
-            return None
-
-    mirrors = [
-        (when, row)
-        for row in shadows
-        if str(row.get("experiment")) == "mirror"
-        and (when := _when(row)) is not None
-    ]
-    pre_flip = [
-        row for row in shadows if str(row.get("experiment")) == "pre-flip"
-    ]
+    mirrors = [r for r in shadows if str(r.get("experiment")) == "mirror"]
+    pre_flip = [r for r in shadows if str(r.get("experiment")) == "pre-flip"]
     read_live = [r for r in live if _in_era(r, "read")]
     challenger_rows = pre_flip if pre_flip else read_live
     challenger = "pre-flip" if pre_flip else "live"
-
-    pool: dict[tuple[str, int], list[tuple[Any, dict[str, Any]]]] = {}
-    for row in challenger_rows:
-        when = _when(row)
-        if when is None:
-            continue
-        key = (str(row.get("asset")), int(row.get("trade_duration") or 0))
-        pool.setdefault(key, []).append((when, row))
-
-    # Maximum-cardinality matching, not a greedy walk. Any greedy order —
-    # first-come or tightest-gap-first alike — can let one mirror take the
-    # only live row another mirror could pair with while its own alternative
-    # goes unused, undercounting the exact number the promotion decision
-    # reads. Augmenting paths (Kuhn's algorithm) find every pair that can
-    # exist; candidates are tried tightest gap first so, among maximum
-    # matchings, near ones are preferred.
-    adjacency: list[list[tuple[tuple[str, int], int]]] = []
-    for when, mirror_row in mirrors:
-        key = (
-            str(mirror_row.get("asset")),
-            int(mirror_row.get("trade_duration") or 0),
-        )
-        options: list[tuple[float, tuple[str, int], int]] = []
-        for l_index, (live_when, _live_row) in enumerate(pool.get(key) or []):
-            gap = abs((live_when - when).total_seconds())
-            if gap <= window_seconds:
-                options.append((gap, key, l_index))
-        options.sort(key=lambda option: option[0])
-        adjacency.append([(key, l_index) for _gap, key, l_index in options])
-
-    live_match: dict[tuple[tuple[str, int], int], int] = {}
-
-    def _assign(m_index: int, visited: set) -> bool:
-        # Path length is bounded by the matching size — dozens, not
-        # thousands — so recursion is comfortably within limits.
-        for node in adjacency[m_index]:
-            if node in visited:
-                continue
-            visited.add(node)
-            holder = live_match.get(node)
-            if holder is None or _assign(holder, visited):
-                live_match[node] = m_index
-                return True
-        return False
-
-    for m_index in range(len(mirrors)):
-        if adjacency[m_index]:
-            _assign(m_index, set())
 
     duel: dict[str, Any] = {
         "pairs": 0, "opposite": 0, "mirror_wins": 0, "live_wins": 0,
         "challenger": challenger,
     }
-    for (key, l_index), m_index in live_match.items():
-        mirror_row = mirrors[m_index][1]
-        live_row = pool[key][l_index][1]
+    for mirror_row, live_row in _pair_rows(
+        mirrors, challenger_rows, window_seconds=window_seconds, same_expiry=True
+    ):
         duel["pairs"] += 1
         if str(live_row.get("direction")) != str(mirror_row.get("direction")):
             duel["opposite"] += 1
@@ -280,6 +288,56 @@ def mirror_duel(
         if live_row.get("outcome") == "win":
             duel["live_wins"] += 1
     return duel
+
+
+#: The pre-registered same-moment comparisons, each a challenger against
+#: the incumbent — the mirror, the promoted panel's own control. A
+#: challenger marked reversed is scored on the OTHER side of its rows: a
+#: settled call is a win or a loss, so a rulebook that loses has measured
+#: exactly how its opposite would have done at the same moments.
+#: (label, challenger experiment, challenger reversed, incumbent experiment)
+SAME_MOMENT_DUELS: tuple[tuple[str, str, bool, str], ...] = (
+    ("reversed three-minute", "three-minute", True, "mirror"),
+    ("reversed strict-85", "strict-85", True, "mirror"),
+    ("reversed three-minute-85", "three-minute-85", True, "mirror"),
+    ("reversed five-minute", "five-minute", True, "mirror"),
+    ("fade-overheat", "fade-overheat", False, "mirror"),
+)
+
+
+def same_moment_duels(
+    shadows: list[dict[str, Any]], window_seconds: float = 20.0
+) -> list[dict[str, Any]]:
+    """Each pre-registered challenger against the mirror at the same reads.
+
+    Every shadow is evaluated in the same sweep of the same chart, so two
+    rulebooks' rows on one chart stamped within seconds of each other are
+    the same read answered two ways — whatever expiry each settled at.
+    That is the pairing a change of expiry or threshold has to win before
+    it is recommended: pooled rates sample different moments and can lie.
+    """
+    by_label: dict[str, list[dict[str, Any]]] = {}
+    for row in shadows:
+        by_label.setdefault(str(row.get("experiment") or ""), []).append(row)
+
+    results: list[dict[str, Any]] = []
+    for label, challenger, reversed_, incumbent in SAME_MOMENT_DUELS:
+        pairs = _pair_rows(
+            by_label.get(challenger, []), by_label.get(incumbent, []),
+            window_seconds=window_seconds, same_expiry=False,
+        )
+        if not pairs:
+            continue
+        wins = sum(
+            1 for mine, _theirs in pairs
+            if (mine.get("outcome") == "win") != reversed_
+        )
+        theirs = sum(1 for _mine, other in pairs if other.get("outcome") == "win")
+        results.append({
+            "label": label, "against": incumbent, "pairs": len(pairs),
+            "wins": wins, "other_wins": theirs,
+        })
+    return results
 
 
 #: How the record's cells are introduced when pulled out of their tables —
@@ -398,7 +456,42 @@ def _race_line(row: LedgerRow) -> str:
         interval = wilson_interval(row.wins, row.settled)
         if interval is not None:
             line += f"  [{interval[0]:.1f}, {interval[1]:.1f}]"
+        # The other side of the same rows. A settled call is a win or a
+        # loss, so a rulebook's exact reverse is measured by the rulebook
+        # itself — losses over settled — at the very same moments. Every
+        # raw row on this board has sat below a coin flip since the race
+        # began, which is the whole reason the mirror exists; and the
+        # stricter the rulebook, the further below, which nobody had read
+        # until the reverse was printed beside it.
+        other = wilson_interval(row.losses, row.settled)
+        if other is not None:
+            line += (
+                f"   reversed {100.0 - (row.rate or 0.0):.1f}% "
+                f"[{other[0]:.1f}, {other[1]:.1f}]"
+            )
     return line
+
+
+def _paired_lines(paired: list[dict[str, Any]]) -> list[str]:
+    """The pre-registered challengers against the mirror at the same reads."""
+    shown = [duel for duel in paired if int(duel.get("pairs", 0)) >= 5]
+    if not shown:
+        return []
+    lines = [
+        "",
+        "   SAME READS — each challenger against the mirror at the same",
+        "   moment on the same chart, whichever expiry each settled at.",
+        "   A challenger marked reversed is scored on the other side of",
+        "   its own rows. The number a change of expiry or threshold has",
+        "   to win before it is recommended:",
+    ]
+    for duel in shown:
+        rate = duel["wins"] / duel["pairs"] * 100.0
+        lines.append(
+            f"   {duel['label']:<26}{duel['pairs']:>4} pairs   won "
+            f"{duel['wins']} ({rate:.1f}%)   the mirror won {duel['other_wins']}"
+        )
+    return lines
 
 
 def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
@@ -435,6 +528,9 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
             "different rulebooks, on paper, alongside the live one. A",
             "winner here is a named configuration, not a vibe — and it",
             "still has to hold up out of sample before it flies the panel.",
+            "Each row also shows its REVERSE: the same calls, the other",
+            "side. A settled call is a win or a loss, so a rulebook that",
+            "loses has measured exactly how its opposite would have done.",
             "",
         ]
         lines.extend(_race_line(row) for row in race)
@@ -458,6 +554,7 @@ def ledger_lines(ledger: dict[str, list[LedgerRow]]) -> list[str]:
                 f"{duel['opposite']}; the mirror won {duel['mirror_wins']} "
                 f"({rate:.1f}%), the other side {duel['live_wins']}.",
             ]
+        lines += _paired_lines(ledger.get("paired") or [])
     else:
         # The closing summary line — only when the race table did not just
         # print the same row. With shadows in the journal the live strategy
