@@ -1297,3 +1297,33 @@ The cheapest lever available today, no code: run the next session at a
 3 MIN expiry on pairs paying 90%+. It is a setting, it is reversible, and
 the report grades it in its own row — the flipped 3 MIN live, measured
 directly, is worth more than any number in the table above.
+
+## 2026-09-06 — the redraw handed Tk a colour with an alpha channel
+
+The second cut of the redraw crashed on launch, on a machine that is not
+this one. The error dialog read ``_tkinter.TclError: invalid color name
+"#22304ab4"`` from ``panel.py``, ``_text_field``, and behind it sat a
+second dialog — "GateKeeper is already running" — which was the crashed
+copy still alive under its own error box, refusing the relaunch.
+
+The cause is one line. Every surface in the redraw is a Pillow image,
+and Pillow takes ``#rrggbbaa``; the glass tones are eight digits so the
+aurora shows through. The one surface that is a real Tk widget rather
+than a drawn image is the typing field, and its background was set to
+the glass tone. Tk takes no alpha in a colour, so the first paint ended
+at that ``Entry`` with the panel never shown.
+
+Why the suite let it through: the test harness stubs Tk and, until now,
+accepted any string as a colour. It now refuses what Tk refuses — a
+``#`` colour whose length is not 4, 7 or 13 digits raises the same
+``invalid color name`` — on every widget option, text item and
+``configure`` call. With the fix reverted the three new tests fail with
+the exact message from the screenshot; with it they pass. The field is
+now ``FIELD_BG``, the glass tone flattened to six digits, and every
+other colour the panel hands to a Tk option is already opaque.
+
+The 2026-08-29 crash ("ran a few seconds and closed") predates the
+redraw and is still unexplained; the ``poa.log`` from that day would
+settle whether it was this kind of fault or something else. A crash
+that takes the panel down before the first paint records nothing in the
+journal, so the flipped era still stands at zero settled calls.

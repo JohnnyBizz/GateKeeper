@@ -80,6 +80,11 @@ SURFACE_HIGH = "#22304ab4"
 SURFACE_TRACK = "#1c2740"
 #: The rim of a glass edge — white, mostly transparent.
 GLASS_LINE = "#ffffff24"
+#: The one surface that is a real Tk widget rather than a drawn image: the
+#: typing fields. Tk takes no alpha channel in a colour — "#22304ab4" is
+#: "invalid color name" and the end of the first paint — so this is the
+#: glass tone, opaque. Every colour handed to a Tk option must be six digits.
+FIELD_BG = "#1b2740"
 #: The brand's sweep, blue into violet: the mark, the SCAN button, the sweep.
 BRAND = "#6aa8ff"
 BRAND_TO = "#8b5cf6"
@@ -257,7 +262,7 @@ class OverlayPanel:
         """A themed Entry that commits on Enter or when focus leaves it."""
         entry = tk.Entry(
             self.c, font=font, width=width, justify="left",
-            bg=SURFACE_HIGH, fg=COLORS["text"],
+            bg=FIELD_BG, fg=COLORS["text"],
             insertbackground=COLORS["accent"], relief="flat",
             highlightthickness=1, highlightbackground=COLORS["line"],
             highlightcolor=COLORS["accent"],
