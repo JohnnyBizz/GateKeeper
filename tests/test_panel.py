@@ -24,6 +24,29 @@ import types
 import pytest
 
 
+class _TclError(Exception):
+    """What Tk raises — here, for the one thing the stub does check."""
+
+
+# Tk takes no alpha channel in a colour: "#22304ab4" is "invalid color name"
+# and, on the first paint, the end of the app. The 2026-09 redraw shipped
+# exactly that to the pair field because this stub accepted any string, so
+# the stub now refuses what Tk refuses, for every option that names a colour.
+_COLOUR_OPTIONS = {
+    "bg", "background", "fg", "foreground", "fill", "outline", "activefill",
+    "highlightbackground", "highlightcolor", "insertbackground",
+    "activebackground", "activeforeground", "selectbackground",
+    "selectforeground", "disabledforeground",
+}
+
+
+def _check_colours(kw):
+    for key, value in kw.items():
+        if key in _COLOUR_OPTIONS and isinstance(value, str) and value.startswith("#"):
+            if len(value) not in (4, 7, 10, 13):
+                raise _TclError(f'invalid color name "{value}"')
+
+
 class _Recorder:
     """Records what was drawn, in the order it was drawn."""
 
@@ -37,6 +60,7 @@ class _Widget:
     """Enough of a Tk widget for the panel to build and paint itself."""
 
     def __init__(self, parent=None, **kw):
+        _check_colours(kw)
         self.parent = parent
         self.kw = dict(kw)
         self.recorder = getattr(parent, "recorder", None) or _Recorder()
@@ -57,6 +81,7 @@ class _Widget:
                             image=kw.get("image"))
 
     def create_text(self, x, y, **kw):
+        _check_colours(kw)
         return self._record("text", x=x, y=y, text=str(kw.get("text", "")),
                             fill=kw.get("fill"), font=kw.get("font"),
                             anchor=kw.get("anchor"), tags=str(kw.get("tags", "")))
@@ -95,6 +120,7 @@ class _Widget:
     # -- everything else ---------------------------------------------------
 
     def configure(self, **kw):
+        _check_colours(kw)
         self.kw.update(kw)
 
     config = configure
@@ -159,7 +185,7 @@ def panel_module(monkeypatch):
         setattr(tk, name, type(name, (_Widget,), {}))
     # Entry needs a delete that clears text rather than canvas items.
     tk.Entry.delete = lambda self, *a: None
-    tk.TclError = type("TclError", (Exception,), {})
+    tk.TclError = _TclError
 
     tkfont = types.ModuleType("tkinter.font")
     tkfont.Font = lambda **kw: kw
@@ -1040,6 +1066,38 @@ class TestTheCallFreshnessStrip:
         panel = _panel(panel_module, vm=vm)
         panel.refresh()
         assert not _find(panel, "opened ")
+
+
+class TestEveryColourHandedToTkIsOpaque:
+    """Tk takes no alpha channel. The glass surfaces are images and may carry
+    one; the typing fields are real widgets and may not — "#22304ab4" on the
+    pair field ended the 2026-09-04 build on its first paint."""
+
+    def test_the_typing_fields_get_six_digit_colours(self, panel_module):
+        panel = _panel(panel_module)
+        for entry in panel._entries.values():
+            for key in ("bg", "fg", "insertbackground", "highlightbackground",
+                        "highlightcolor"):
+                value = entry.cget(key)
+                assert isinstance(value, str) and len(value) == 7, (key, value)
+
+    def test_every_state_paints_without_a_colour_tk_would_refuse(self, panel_module):
+        """The stub now refuses alpha colours the way Tk does, so a full
+        paint of each state is the test."""
+        for vm in (
+            None,
+            TestATrippedBrakeOwnsThePanel()._vm(losses=0),
+            TestATrippedBrakeOwnsThePanel()._vm(losses=4),
+            TestTheSwitchBanner()._vm(),
+        ):
+            panel = _panel(panel_module, vm)
+            panel.refresh()
+            panel.vm.scan.begin()
+            panel.refresh()
+
+    def test_the_stub_refuses_what_tk_refuses(self, panel_module):
+        with pytest.raises(panel_module.tk.TclError):
+            panel_module.tk.Entry(None, bg="#22304ab4")
 
 
 class TestTheSceneIsLit:
