@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import replace
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -101,6 +102,26 @@ def now() -> datetime:
 @pytest.fixture
 def limits():
     return parse_limits(LIMITS_RAW)
+
+
+def write_risk_config(directory) -> "Path":
+    """Write LIMITS_RAW to a file and return the path.
+
+    Any test that needs `Settings.risk_config_path` to point somewhere
+    real uses this. The bootstrap wiring tests originally pointed at the
+    repository's own config/risk.yaml, on the reasoning that real limits
+    make a more honest end-to-end test. Two things were wrong with that.
+    It broke CI, where the file did not exist, while passing locally,
+    where it did — a test that depends on a developer's untracked file is
+    not testing anything repeatable. And it coupled the assertions to the
+    owner's private risk decisions, so tightening a limit would move the
+    numbers under tests that say nothing about limits.
+    """
+    import yaml
+
+    path = Path(directory) / "risk.yaml"
+    path.write_text(yaml.safe_dump(LIMITS_RAW, sort_keys=False))
+    return path
 
 
 # -- instruments ----------------------------------------------------------
@@ -228,6 +249,7 @@ def settings(tmp_path) -> Settings:
         secure_cookies=False,
         log_format="text",
         log_level="WARNING",
+        risk_config_path=write_risk_config(tmp_path),
     )
     set_settings(created)
     yield created
@@ -261,6 +283,7 @@ def live_settings(tmp_path) -> Settings:
         secure_cookies=False,
         log_format="text",
         log_level="WARNING",
+        risk_config_path=write_risk_config(tmp_path),
     )
     set_settings(created)
     yield created

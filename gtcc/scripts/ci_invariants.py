@@ -10,6 +10,7 @@ Grepping the source catches that; a mock does not.
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
@@ -124,6 +125,42 @@ for forbidden in ("arm_live", "reset_breaker", "gtcc.risk", "place_order"):
 
 config_source = (SRC / "gtcc" / "config.py").read_text(encoding="utf-8")
 check("frozen=True" in config_source, "settings are declared frozen")
+
+# The suite must stand alone. A test that reads the deployment's own risk
+# file passes on the machine where that file exists and fails everywhere
+# else, and couples its assertions to numbers the owner is free to change.
+# This was a real failure: seven tests went red in CI and green locally,
+# and the local pass was the misleading one.
+#
+# Checked on the parsed source rather than by grepping, so that writing
+# about the rule in a docstring does not break it. Comments never reach
+# the AST; docstrings are skipped explicitly.
+
+
+def _path_literals(source: str) -> list[str]:
+    docstrings = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = node.body[0] if node.body else None
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                if isinstance(first.value.value, str):
+                    docstrings.add(id(first.value))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+
+
+for path in sorted((SRC.parent / "tests").glob("*.py")):
+    literals = _path_literals(path.read_text(encoding="utf-8"))
+    check(
+        not any("config/risk" in literal for literal in literals),
+        f"{path.name} does not read the deployment's risk configuration",
+    )
 
 print()
 if failures:

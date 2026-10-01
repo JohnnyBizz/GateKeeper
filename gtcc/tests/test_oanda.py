@@ -57,6 +57,8 @@ from gtcc.domain.enums import (
 from gtcc.domain.money import D
 from gtcc.domain.orders import OrderRequest
 
+from tests.conftest import write_risk_config
+
 TOKEN = "oanda-TEST-TOKEN-NEVER-LOGGED"
 ACCOUNT = "101-004-1234567-001"
 
@@ -921,7 +923,7 @@ class TestTheBootstrapWiring:
             oanda_token=TOKEN,
             oanda_account_id=ACCOUNT,
             oanda_environment="practice",
-            risk_config_path=Path_to_risk_config(),
+            risk_config_path=write_risk_config(tmp_path),
             log_level="WARNING",
         )
         set_settings(created)
@@ -1092,8 +1094,3 @@ class TestTheBootstrapWiring:
         assert result.placed is False
         assert not any(r.method == "POST" for r in transport.requests)
 
-def Path_to_risk_config():
-    """The repository's own risk file, so the test uses real limits."""
-    from pathlib import Path
-
-    return Path(__file__).resolve().parents[1] / "config" / "risk.yaml"
