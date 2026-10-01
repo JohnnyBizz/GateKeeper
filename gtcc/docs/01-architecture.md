@@ -199,9 +199,17 @@ report leaves `{"_not_supplied": true}`, not `{}`. An empty dict reads as
 "the structure engine looked and found nothing", which is a claim about
 the market rather than about the caller.
 
-**Unknown vs zero.** Fees on a setup that never reached a venue are NULL,
-not 0.00 — a zero would average into every later cost statistic as a free
-trade. Realised P&L stays NULL until something closes the position.
+**Unknown vs zero.** Realised P&L, R multiple, the exit price and the exit
+reason stay NULL until something closes the position and measures it. A
+zero there would average into every later statistic as a flat trade, which
+is a claim about a result rather than an absence of one.
+
+Fees are the exception, and deliberately so: the column is NOT NULL with a
+default of 0, because a setup that never reached a venue was charged
+nothing, and zero is the true answer rather than a stand-in for one. (An
+earlier version of this document said fees were NULL. They are not, and
+the distinction is worth stating correctly: "unknown" and "genuinely zero"
+are different, and only the first one deserves a NULL.)
 
 ### A failed journal write is handled asymmetrically
 

@@ -120,9 +120,6 @@ class ClosedTrade:
     regime: str | None = None
     rationale: str = ""
 
-    @property
-    def won(self) -> bool:
-        return self.pnl > ZERO
 
 
 @dataclass(frozen=True, slots=True)

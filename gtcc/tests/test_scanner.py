@@ -447,5 +447,13 @@ class TestTheApiEndpoint:
         ).json()
 
         row = payload["rows"][0] if payload["rows"] else payload["not_analysed"][0]
+        # 200 bars against a 20-period window, so these ARE computed; the
+        # point is the JSON type. An earlier version of this asserted
+        # "is None or != 0", which is true of every value there is.
         for column in ("relative_volume", "atr", "change_pct"):
-            assert row[column] is None or Decimal(str(row[column])) != 0
+            assert column in row
+        # And a column the scan could not compute serialises as null, not 0.
+        unread = payload["not_analysed"]
+        if unread:
+            for column in ("relative_volume", "atr", "change_pct", "price"):
+                assert unread[0][column] is None

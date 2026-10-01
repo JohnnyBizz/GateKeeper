@@ -266,3 +266,58 @@ class TestTheRegimeIsFromTheDecision:
         report = by_regime(result.trades)
         assert [bucket.key for bucket in report.buckets] == ["TRENDING_UP"]
         assert report.unattributed == 0
+
+
+class TestTheRemainingDimensions:
+    """by_weekday and the warning ordering had no direct test. Both are
+    reachable only through a render path, which means a regression in
+    either would have shown up as a cosmetic difference nobody checked."""
+
+    def test_weekday_buckets_use_day_names(self):
+        from gtcc.backtest.attribution import by_weekday
+
+        # START is a Monday.
+        trades = [_trade("10", days=offset) for offset in range(3)]
+
+        result = by_weekday(trades)
+
+        assert {bucket.key for bucket in result.buckets} == {"MON", "TUE", "WED"}
+
+    def test_the_sample_warning_comes_before_the_statistics(self):
+        """A reader who meets a profit factor first has already formed an
+        impression by the time the caveat arrives."""
+        from gtcc.backtest.engine import BacktestResult, BarCosts
+        from gtcc.backtest.metrics import measure
+        from gtcc.domain.enums import Timeframe as _TF
+
+        result = BacktestResult(
+            symbol="TEST", timeframe=_TF.M15, strategy="s",
+            bars_seen=100, bars_traded=50, first_bar_at=START, last_bar_at=START,
+            starting_equity=D("1000"), ending_equity=D("1100"),
+            costs=BarCosts(), trades=(_trade("100"),),
+            equity_curve=(D("1000"), D("1100")),
+        )
+        lines = measure(result).describe_with_warning()
+
+        assert "ONLY 1 CLOSED TRADES" in lines[0]
+        warning_at = next(i for i, line in enumerate(lines) if "ONLY" in line)
+        stats_at = next(i for i, line in enumerate(lines) if "closed trade(s):" in line)
+        assert warning_at < stats_at
+
+    def test_a_trustworthy_sample_has_no_warning_prefix(self):
+        from gtcc.backtest.engine import BacktestResult, BarCosts
+        from gtcc.backtest.metrics import measure
+        from gtcc.domain.enums import Timeframe as _TF
+
+        trades = tuple(_trade("10", days=index) for index in range(40))
+        result = BacktestResult(
+            symbol="TEST", timeframe=_TF.M15, strategy="s",
+            bars_seen=100, bars_traded=50, first_bar_at=START, last_bar_at=START,
+            starting_equity=D("1000"), ending_equity=D("1400"),
+            costs=BarCosts(), trades=trades,
+            equity_curve=(D("1000"), D("1400")),
+        )
+        lines = measure(result).describe_with_warning()
+
+        assert "ONLY" not in "\n".join(lines)
+        assert lines == measure(result).describe()

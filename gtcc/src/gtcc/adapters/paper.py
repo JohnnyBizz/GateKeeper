@@ -197,7 +197,9 @@ class PaperBroker(BrokerAdapter):
         outcome = self.fill_engine.execute(order, spec, quote, book=book, now=now)
 
         if outcome.status is OrderStatus.REJECTED:
-            order = _replace_status(order, OrderStatus.REJECTED, outcome.reason)
+            order = _replace_status(
+                order, OrderStatus.REJECTED, outcome.reason, now=self.clock()
+            )
         for fill in outcome.fills:
             order = order.with_fill(fill)
             self._fills.append(fill)
@@ -212,7 +214,9 @@ class PaperBroker(BrokerAdapter):
             raise OrderRejected(
                 self.name, f"order is already {order.status}", order_id
             )
-        order = _replace_status(order, OrderStatus.CANCELED, "canceled by request")
+        order = _replace_status(
+            order, OrderStatus.CANCELED, "canceled by request", now=self.clock()
+        )
         self._orders[order_id] = order
         return order
 
@@ -446,10 +450,21 @@ class PaperBroker(BrokerAdapter):
         return order
 
 
-def _replace_status(order: Order, status: OrderStatus, reason: str) -> Order:
+def _replace_status(
+    order: Order, status: OrderStatus, reason: str, *, now: datetime | None = None
+) -> Order:
+    """Stamp a status change with the caller's clock.
+
+    Reaching for utcnow() here is the same bug that made journal matching
+    fail: a broker whose clock was injected produced order timestamps from
+    the real wall clock, disagreeing with everything else in the runtime.
+    """
     from dataclasses import replace
 
-    return replace(order, status=status, reject_reason=reason, updated_at=utcnow())
+    return replace(
+        order, status=status, reject_reason=reason,
+        updated_at=now if now is not None else utcnow(),
+    )
 
 
 def _with_mark(position: Position, mark: Decimal) -> Position:

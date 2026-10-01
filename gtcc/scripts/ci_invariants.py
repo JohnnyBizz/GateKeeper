@@ -199,6 +199,25 @@ check(
     + (f"(shadowed: {sorted(_shadowed)})" if _shadowed else ""),
 )
 
+# A test that cannot fail is worse than no test: it occupies the name of a
+# check nobody is performing. Two shapes of this shipped during development
+# — `assert x is None or isinstance(x, str)` and a bare `assert True` — so
+# the patterns are checked rather than trusted.
+for path in sorted((SRC.parent / "tests").glob("*.py")):
+    source = path.read_text(encoding="utf-8")
+    offenders = []
+    for number, line in enumerate(source.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("assert "):
+            continue
+        if " is None or " in stripped or stripped in ("assert True", "assert True;"):
+            offenders.append(number)
+    check(
+        not offenders,
+        f"{path.name} has no assertion that cannot fail"
+        + (f" (lines {offenders})" if offenders else ""),
+    )
+
 # A clean robustness report must never read as an endorsement. The phrases
 # a reader would take as "this works" are the ones to keep out of it.
 robustness_source = (

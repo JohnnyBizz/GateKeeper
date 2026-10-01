@@ -200,9 +200,11 @@ def entry_for(
         actual_entry=order.average_fill_price if order is not None else None,
         actual_size=order.filled_quantity if order is not None else None,
         # Fees charged SO FAR on a placed order, which for an unfilled one
-        # is a true zero. On a setup that never reached the venue it is
-        # None: there is no trade to have charged anything, and a zero
-        # would average into every later cost statistic as a free trade.
+        # is a true zero. None on a setup that never reached the venue —
+        # though the column is NOT NULL with a default of 0, and 0 is the
+        # right value there: nothing was charged because nothing traded.
+        # The unknown-versus-zero distinction belongs to realised_pnl and
+        # the other outcome columns, which are nullable for that reason.
         fees=order.fees_paid if (order is not None and placed) else None,
         regime=annotations.regime,
         session=annotations.session,
