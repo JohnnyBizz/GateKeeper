@@ -16,6 +16,9 @@ jobs:
     defaults:
       run:
         working-directory: gtcc
+    env:
+      PYTHONPATH: src
+      GTCC_SECRET_KEY: ci-secret-key-with-at-least-thirty-two-characters
     steps:
       - uses: actions/checkout@v4
 
@@ -35,31 +38,8 @@ jobs:
         env:
           GTCC_DATABASE_URL: sqlite:///./ci.db
         run: |
-          PYTHONPATH=src python -m alembic upgrade head
-          PYTHONPATH=src python -m alembic check
+          python -m alembic upgrade head
+          python -m alembic check
 
-      - name: The example risk file is refused
-        run: |
-          PYTHONPATH=src python - <<'PY'
-          from pathlib import Path
-          from gtcc.risk.limits import RiskConfigError, load_limits
-          try:
-              load_limits(Path("config/risk.example.yaml"))
-          except RiskConfigError:
-              print("the shipped example is refused, as intended")
-          else:
-              raise SystemExit("the example risk file was accepted; it must not be")
-          PY
-
-      - name: Live trading is off by default
-        env:
-          GTCC_SECRET_KEY: ${{ 'ci-secret-key-at-least-thirty-two-characters' }}
-        run: |
-          PYTHONPATH=src python - <<'PY'
-          from gtcc.config import Settings
-          settings = Settings()
-          assert str(settings.mode) == "PAPER", settings.mode
-          assert settings.live_trading is False
-          assert settings.automatic_execution is False
-          print("defaults are PAPER, live off, automatic off")
-          PY
+      - name: Safety invariants hold
+        run: python scripts/ci_invariants.py
