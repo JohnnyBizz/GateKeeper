@@ -212,6 +212,79 @@ class TestTheHappyPath:
         assert verdict.sizing.projected_risk > budget * D("0.9")
 
 
+class TestWhatTheTradeActuallyRisks:
+    """`sizing.projected_risk` is what the risk budget ASKED for. Once a
+    face-value, leverage or exposure ceiling shrinks the position, the
+    money at risk shrinks with it, and only `approved_risk` is true.
+
+    The distinction was briefly lost: the API and the risk explainer both
+    reported the budget figure, which overstated the loss on every capped
+    trade. Anything that tells a human "if the stop is hit you lose this
+    much" must read `approved_risk`.
+    """
+
+    def test_approved_risk_is_the_loss_at_the_approved_quantity(self, engine, context):
+        verdict = engine.evaluate(_request(), context)
+
+        assert verdict.approved_risk == (
+            verdict.approved_quantity * verdict.sizing.risk_per_unit
+        )
+
+    def test_a_capped_trade_risks_less_than_the_budget_asked_for(self, engine, context):
+        """The default request is capped: 247 shares at 200 is half the
+        account, and the position cap is a quarter of it."""
+        verdict = engine.evaluate(_request(), context)
+
+        assert verdict.binding_limits, "this request should hit the position cap"
+        assert verdict.approved_risk < verdict.sizing.projected_risk
+        assert verdict.approved_risk < context.account.equity * D("0.005")
+
+    def test_binding_limits_name_the_ceilings_tightest_last(self, engine, context):
+        verdict = engine.evaluate(_request(), context)
+
+        assert all(check.reduced_to is not None for check in verdict.binding_limits)
+        quantities = [check.reduced_to for check in verdict.binding_limits]
+        assert quantities == sorted(quantities, reverse=True)
+        assert verdict.approved_quantity <= quantities[-1]
+
+    def test_an_uncapped_trade_risks_the_whole_budget(self, engine, context):
+        """A stop wide enough that the budget, not the cap, sizes it."""
+        verdict = engine.evaluate(
+            _request(protective_stop=D("192.00"), targets=(D("225.00"),)), context
+        )
+
+        assert verdict.action is RiskAction.ALLOW
+        assert verdict.binding_limits == ()
+        assert verdict.approved_risk == verdict.sizing.projected_risk
+        assert verdict.approved_risk > context.account.equity * D("0.004")
+
+    def test_a_refusal_that_was_sized_puts_nothing_at_risk(self, engine, context):
+        """Refused on reward:risk, so sizing happened and the answer is a
+        real zero."""
+        verdict = engine.evaluate(_request(targets=(D("200.80"),)), context)
+
+        assert verdict.action is RiskAction.REJECT
+        assert Check.REWARD_RISK in verdict.failure_codes
+        assert verdict.approved_quantity == D("0")
+        assert verdict.approved_risk == D("0")
+
+    def test_a_refusal_before_sizing_reports_no_figure_rather_than_zero(
+        self, engine, context
+    ):
+        """An unknown is not a zero.
+
+        The stop is inside the minimum distance, so the engine never
+        sized the trade. Reporting 0.00 would imply a position that
+        risks nothing; None says there is no number, which is the
+        truth.
+        """
+        verdict = engine.evaluate(_request(protective_stop=D("200.015")), context)
+
+        assert verdict.action is RiskAction.REJECT
+        assert verdict.sizing is None
+        assert verdict.approved_risk is None
+
+
 class TestRewardRisk:
     def test_a_target_too_close_to_pay_for_the_costs_is_refused(self, engine, context):
         verdict = engine.evaluate(_request(targets=(D("200.60"),)), context)

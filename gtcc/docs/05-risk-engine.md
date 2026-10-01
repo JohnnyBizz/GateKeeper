@@ -67,6 +67,56 @@ per-asset exposure limits. Raising notional without raising concentration
 would be incoherent rather than conservative, so a market that overrides
 one and not the other gets the larger of the two.
 
+## Four ceilings cap face value, and only the smallest is real
+
+`POSITION_NOTIONAL`, `ASSET_EXPOSURE`, `LEVERAGE` and `MARKET_EXPOSURE`
+all limit the same quantity — the face value of one position — from
+different directions. A configuration that raises one and leaves another
+tight has not raised anything. Writing `max_position_notional_pct: 300`
+for FOREX under a `max_market_exposure_pct: {FOREX: 40}` gives a 40%
+ceiling and a file that claims 300.
+
+`gtcc risk` reports the binding ceiling per market, by name, in money.
+It is derived from `binding_face_value_cap()`, which takes the minimum of
+the four, so the report cannot disagree with the engine about which one
+applies.
+
+## A cap and a risk budget are different ceilings
+
+The per-trade risk limit answers "how much may I lose"; a face-value cap
+answers "how much may I hold". The tighter one sizes the trade, and which
+one that is depends on the stop distance: a tight stop needs a large
+position to lose the full budget, so below some stop distance the cap
+always wins and the trade risks **less** than `max_risk_pct`.
+
+That crossover is `budget / face_cap` as a fraction of price. On a 0.5%
+budget against a 25% cap it is 2% of the entry price: any stop tighter
+than that is sized by the cap. `gtcc risk` prints it per market, because
+an owner who does not know it will wonder why their losses are a fraction
+of the number they signed off on.
+
+## `approved_risk`, not `projected_risk`
+
+`SizingResult.projected_risk` is the loss at the quantity the risk budget
+asked for, before any ceiling applied. It is the correct input to the
+`RISK_PER_TRADE` check and the wrong number to show a human: once a cap
+shrinks the position, the loss shrinks with it.
+
+`RiskVerdict.approved_risk` is the loss at the quantity actually
+approved. Everything user-facing reads that — the API returns it as
+`risk_at_stop`, and `gtcc risk` prints it. The API and the risk explainer
+both reported the pre-cap figure at first, which overstated the loss on
+every capped trade by however much the cap bit; there are tests at both
+levels now.
+
+A refusal that never reached sizing has `approved_risk is None`, not
+zero. An unknown is not a zero.
+
+Each ceiling that reduced the size records `reduced_to` on its
+`CheckResult`, and `RiskVerdict.binding_limits` returns those in order,
+tightest last. Callers name the binding limit from that field rather than
+parsing the detail string.
+
 ## Reward to risk
 
 Costs are charged against reward **and** added to risk:

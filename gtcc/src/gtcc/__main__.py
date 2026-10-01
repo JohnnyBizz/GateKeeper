@@ -27,6 +27,17 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init-db", help="create tables directly (development only)")
     sub.add_parser("check", help="report configuration and adapter health")
+    risk = sub.add_parser(
+        "risk", help="show what the configured risk limits mean in money"
+    )
+    risk.add_argument(
+        "--equity", default="100000", help="account size to illustrate (default 100000)"
+    )
+    risk.add_argument("--currency", default="USD")
+    risk.add_argument(
+        "--example", action="store_true",
+        help="read config/risk.example.yaml instead, to see it before adopting it",
+    )
     oanda = sub.add_parser(
         "oanda-check",
         help="verify the OANDA connection and response shapes (read-only)",
@@ -67,6 +78,30 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         print(f"created {args.email} with role {args.role}")
+        return 0
+
+    if args.command == "risk":
+        from pathlib import Path as _Path
+
+        from gtcc.domain.money import D as _D
+        from gtcc.risk.explain import explain, worked_example
+        from gtcc.risk.limits import RiskConfigError, load_limits
+
+        path = (
+            _Path("config/risk.example.yaml") if args.example else settings.risk_config_path
+        )
+        try:
+            limits = load_limits(path, allow_example=args.example)
+        except RiskConfigError as exc:
+            print(exc)
+            return 2
+
+        print(f"Risk limits from {path}\n")
+        for line in explain(limits, equity=_D(args.equity), currency=args.currency):
+            print(line)
+        print()
+        for line in worked_example(limits, equity=_D(args.equity), currency=args.currency):
+            print(line)
         return 0
 
     if args.command == "oanda-check":

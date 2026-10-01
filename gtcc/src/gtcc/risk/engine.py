@@ -107,10 +107,19 @@ class CheckResult:
     detail: str
     limit: str | None = None
     observed: str | None = None
+    #: Set when this ceiling was the reason the size came down, to the
+    #: quantity that fits under it. Structured rather than left in the
+    #: detail string so a caller can report which limit bound without
+    #: parsing English.
+    reduced_to: Decimal | None = None
 
     @property
     def failed(self) -> bool:
         return self.outcome is Outcome.FAIL
+
+    @property
+    def reduced(self) -> bool:
+        return self.reduced_to is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +215,14 @@ class RiskVerdict:
     sizing: SizingResult | None = None
     reward_risk: RewardRisk | None = None
     requested_quantity: Decimal | None = None
+    #: Money at risk between entry and the protective stop AT THE APPROVED
+    #: QUANTITY. ``sizing.projected_risk`` is the pre-cap number the risk
+    #: budget asked for, which is the right input to the per-trade risk
+    #: check and the wrong thing to show a human: once a face-value,
+    #: leverage or exposure ceiling shrinks the position, the budget figure
+    #: overstates the loss by however much the cap bit. Anything reporting
+    #: "if the stop is hit you lose this much" must use this field.
+    approved_risk: Decimal | None = None
 
     @classmethod
     def refused(cls, code: "Check", detail: str) -> "RiskVerdict":
@@ -229,6 +246,12 @@ class RiskVerdict:
     @property
     def failures(self) -> tuple[CheckResult, ...]:
         return tuple(check for check in self.checks if check.failed)
+
+    @property
+    def binding_limits(self) -> tuple[CheckResult, ...]:
+        """The ceilings that reduced the size, tightest last."""
+        reduced = [check for check in self.checks if check.reduced]
+        return tuple(sorted(reduced, key=lambda check: check.reduced_to or ZERO, reverse=True))
 
     @property
     def failure_codes(self) -> tuple[Check, ...]:
@@ -355,6 +378,7 @@ class RiskEngine:
             sizing=sizing,
             reward_risk=reward_risk,
             requested_quantity=requested,
+            approved_risk=None if sizing is None else sizing.risk_per_unit * approved,
         )
 
     # -- gate groups ---------------------------------------------------------
@@ -1106,6 +1130,7 @@ class RiskEngine:
                 ),
                 limit=f"{cap:.2f}",
                 observed=f"{value:.2f}",
+                reduced_to=fits,
             )
         )
         return min(allowed, fits)

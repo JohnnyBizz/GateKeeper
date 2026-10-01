@@ -47,13 +47,15 @@ def _verdict_out(verdict: RiskVerdict) -> VerdictOut:
         approved_quantity=verdict.approved_quantity,
         requested_quantity=verdict.requested_quantity,
         reward_risk=verdict.reward_risk.ratio if verdict.reward_risk else None,
-        projected_risk=verdict.sizing.projected_risk if verdict.sizing else None,
+        risk_at_stop=verdict.approved_risk,
+        binding_limits=[str(check.code) for check in verdict.binding_limits],
         checks=[
             CheckOut(
                 code=str(check.code),
                 outcome=str(check.outcome),
                 detail=check.detail,
                 limit=check.limit,
+                reduced_to=check.reduced_to,
                 observed=check.observed,
             )
             for check in verdict.checks

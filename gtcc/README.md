@@ -45,13 +45,26 @@ cp config/risk.example.yaml config/risk.yaml
 python -m gtcc init-db
 python -m gtcc create-user you@example.com
 python -m gtcc check          # configuration and adapter health
+python -m gtcc risk           # what your risk numbers mean in money
 python -m gtcc serve          # http://127.0.0.1:8000
+```
+
+`gtcc risk` is the one to read before trading anything. It converts every
+limit into money for a given account size, names the ceiling that
+actually binds each market (four of them cap face value and only the
+smallest is real), says at what stop distance a cap starts to override
+your risk budget, and runs one concrete trade through the real engine so
+the numbers come from the code rather than from the documentation:
+
+```bash
+python -m gtcc risk --equity 25000
+python -m gtcc risk --example      # read the shipped example first
 ```
 
 Tests:
 
 ```bash
-pytest                       # 498
+pytest                       # 520
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 

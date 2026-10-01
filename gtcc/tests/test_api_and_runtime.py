@@ -280,6 +280,25 @@ class TestOrdersGoThroughRisk:
         assert verdict["action"] in ("ALLOW", "REDUCE")
         assert before == after
 
+    def test_the_verdict_reports_the_loss_at_the_approved_size(self, owner_api):
+        """What the dashboard shows a human has to be the real loss.
+
+        This endpoint used to return the pre-cap risk budget, which on a
+        capped trade overstated the loss by several times.
+        """
+        verdict = owner_api.post("/api/risk/evaluate", json=_body()).json()
+
+        approved = D(verdict["approved_quantity"])
+        risk_at_stop = D(verdict["risk_at_stop"])
+        # BTCUSDT asks at 60,006 with the stop at 59,000.
+        assert risk_at_stop == approved * D("1006")
+        # The crypto cap is 50% of a 100,000 account, so the position is
+        # about 25,000 of face value and risks far less than the 500 the
+        # budget would have spent.
+        assert risk_at_stop < D("500")
+        assert verdict["binding_limits"], "this trade is capped, so say which cap"
+        assert "projected_risk" not in verdict
+
     def test_a_negative_quantity_is_refused_by_validation(self, owner_api):
         assert owner_api.post("/api/orders", json=_body(quantity="-5")).status_code == 422
 

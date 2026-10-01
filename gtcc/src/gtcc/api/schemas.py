@@ -70,6 +70,7 @@ class CheckOut(BaseModel):
     detail: str
     limit: str | None = None
     observed: str | None = None
+    reduced_to: Decimal | None = None
 
 
 class VerdictOut(BaseModel):
@@ -77,7 +78,13 @@ class VerdictOut(BaseModel):
     approved_quantity: Decimal
     requested_quantity: Decimal | None
     reward_risk: Decimal | None
-    projected_risk: Decimal | None
+    #: Loss at the protective stop for the quantity actually approved. The
+    #: engine also knows what the risk budget asked for before any ceiling
+    #: cut the size, but reporting that number would overstate the loss on
+    #: every capped trade, so it is not exposed here.
+    risk_at_stop: Decimal | None
+    #: Ceilings that reduced the size, so the caller can say which limit bound.
+    binding_limits: list[str] = []
     checks: list[CheckOut]
     reasons: list[str]
     explanation: str

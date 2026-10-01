@@ -48,12 +48,41 @@ concentration:
     FOREX: 40
     FUTURES: 30
 
-# Markets whose leveraged arithmetic needs its own ceilings. A 25%
-# notional cap is right for cash equities and makes a single futures
-# contract impossible, so futures carry their own numbers.
+# Per-market ceilings on FACE VALUE — the size of the thing you hold,
+# not the money you can lose. Four separate limits cap face value (the
+# position cap above, the per-asset cap above, the leverage cap, and the
+# market exposure cap in the block above this one) and ONLY THE SMALLEST
+# OF THEM IS REAL. Writing 300 here while a market exposure cap says 40
+# does not give you 300; it gives you 40 and a misleading file.
+#
+# So these numbers are deliberately set to the figure that actually
+# binds. Run `python -m gtcc risk` to see the binding cap per market in
+# money, and the stop distance at which it starts to override your
+# per-trade risk budget.
+#
+# A face-value cap and a risk budget are different ceilings, and the
+# tighter one sizes the trade. Tight stops need large positions to risk
+# the full budget, so below some stop distance the cap always wins and
+# the trade risks LESS than max_risk_pct. Under these numbers a forex
+# stop tighter than about 1.25% of price — roughly 135 pips on EUR/USD,
+# so very nearly every forex trade — is sized by the exposure cap, not
+# by the risk budget. That is conservative, not broken, but it does mean
+# max_risk_pct is a ceiling you rarely reach on forex. If you would
+# rather the risk budget governed, raise FOREX in BOTH places together
+# (the commented block below), and understand that you are agreeing to
+# hold twice the account in face value on one margined position.
 market_overrides:
+  FOREX:
+    max_position_notional_pct: 40
+    max_leverage: 3
+    max_exposure_per_asset_pct: 40
+  # To let the risk budget govern forex sizing instead, set FOREX to 200
+  # in max_market_exposure_pct above and use these:
+  #   max_position_notional_pct: 200
+  #   max_leverage: 3
+  #   max_exposure_per_asset_pct: 200
   FUTURES:
-    max_position_notional_pct: 600
+    max_position_notional_pct: 30
     max_leverage: 6
   CRYPTO:
     max_position_notional_pct: 50
