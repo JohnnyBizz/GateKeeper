@@ -42,6 +42,7 @@ python -m gtcc init-db
 python -m gtcc create-user you@example.com
 python -m gtcc check          # configuration and adapter health
 python -m gtcc risk           # what your risk numbers mean in money
+python -m gtcc scan EUR_USD GBP_USD   # analyse symbols, honestly
 python -m gtcc serve          # http://127.0.0.1:8000
 ```
 
@@ -60,7 +61,7 @@ python -m gtcc risk --example      # read the shipped example first
 Tests:
 
 ```bash
-pytest                       # 520
+pytest                       # 544
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -92,6 +93,7 @@ src/gtcc/
   features/      indicators and the regime classifier
   structure/     market structure, every detection carrying its rule
   strategies/    strategy framework, gates, and the first module
+  scanner/       many symbols at once, reporting what it could not read
   data/          validation: GOOD / DEGRADED / INVALID
   risk/          limits, state, sizing, the deterministic engine
   execution/     paper fill engine, order state machine
@@ -104,7 +106,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           520 tests
+tests/           544 tests
 ```
 
 ## Documentation

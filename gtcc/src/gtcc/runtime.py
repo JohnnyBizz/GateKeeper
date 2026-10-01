@@ -45,6 +45,8 @@ from gtcc.risk.safety import (
     initial_state,
 )
 from gtcc.risk.state import RiskState, fresh_state
+from gtcc.scanner import ScanSettings, Scanner
+from gtcc.strategies.registry import StrategyRegistry
 
 logger = logging.getLogger("gtcc.runtime")
 
@@ -92,6 +94,10 @@ class TradingRuntime:
     state_store: object | None = None
     #: Set by the last reconciliation. A dirty result stops live trading.
     last_reconciliation: Reconciliation | None = None
+    #: Strategies this deployment knows about. Consulted by the scanner and
+    #: by analysis; a proposal from one is an opinion that still has to pass
+    #: the risk engine like anything else.
+    strategies: StrategyRegistry = field(default_factory=StrategyRegistry)
 
     # -- wiring ---------------------------------------------------------------
 
@@ -147,6 +153,15 @@ class TradingRuntime:
     @property
     def data(self) -> MarketDataAdapter:
         return self.registry.data(self.data_name)
+
+    def scanner(self, settings: ScanSettings | None = None) -> Scanner:
+        """A scanner over this deployment's data adapter.
+
+        It is handed the data adapter and the strategy registry, and
+        nothing else. Passing it `self` would give analysis code a route
+        to `submit`, and there is exactly one path to a broker by design.
+        """
+        return Scanner(self.data, registry=self.strategies, settings=settings)
 
     def ensure_state(self) -> RiskState:
         if self.state is None:

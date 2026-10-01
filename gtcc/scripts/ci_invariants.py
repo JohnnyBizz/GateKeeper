@@ -126,6 +126,25 @@ for forbidden in ("arm_live", "reset_breaker", "gtcc.risk", "place_order"):
 config_source = (SRC / "gtcc" / "config.py").read_text(encoding="utf-8")
 check("frozen=True" in config_source, "settings are declared frozen")
 
+# The scanner analyses and cannot trade. It is handed a market-data
+# adapter and the strategy registry; giving it the runtime, a broker or the
+# risk engine would create a second route to a venue, and the whole design
+# rests on there being exactly one.
+scanner_sources = "\n".join(
+    path.read_text(encoding="utf-8") for path in (SRC / "gtcc" / "scanner").glob("*.py")
+)
+for forbidden in (
+    "place_order", "submit", "BrokerAdapter", "gtcc.runtime", "RiskEngine",
+):
+    check(
+        forbidden not in scanner_sources,
+        f"the scanner package never references {forbidden}",
+    )
+
+# The scan route may read the runtime, but must not submit through it.
+scan_route = (SRC / "gtcc" / "api" / "routes" / "scan.py").read_text(encoding="utf-8")
+check(".submit(" not in scan_route, "the scan route never submits an order")
+
 # The suite must stand alone. A test that reads the deployment's own risk
 # file passes on the machine where that file exists and fails everywhere
 # else, and couples its assertions to numbers the owner is free to change.

@@ -4,6 +4,9 @@
     python -m gtcc init-db        create tables (development; use Alembic otherwise)
     python -m gtcc create-user    create the owner account, prompting for a password
     python -m gtcc check          report configuration and adapter health, then exit
+    python -m gtcc risk           state the risk limits in money, with a worked example
+    python -m gtcc scan           analyse symbols and report what could not be read
+    python -m gtcc oanda-check    verify the OANDA connection and response shapes
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import sys
 from gtcc.bootstrap import build_runtime, init_database
 from gtcc.config import describe_url, get_settings
 from gtcc.logging_setup import configure_logging
+from gtcc.scanner import SortKey
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +41,19 @@ def main(argv: list[str] | None = None) -> int:
     risk.add_argument(
         "--example", action="store_true",
         help="read config/risk.example.yaml instead, to see it before adopting it",
+    )
+    scan = sub.add_parser(
+        "scan", help="analyse a list of symbols and report what was found"
+    )
+    scan.add_argument("symbols", nargs="+", help="symbols as the venue names them")
+    scan.add_argument("--timeframe", default="15m")
+    scan.add_argument("--min-history", type=int, default=60)
+    scan.add_argument(
+        "--max-requests", type=int, default=None,
+        help="ceiling on venue calls; symbols beyond it are reported unread",
+    )
+    scan.add_argument(
+        "--sort", default="SIGNAL", choices=[key.value for key in SortKey],
     )
     oanda = sub.add_parser(
         "oanda-check",
@@ -101,6 +118,25 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         print()
         for line in worked_example(limits, equity=_D(args.equity), currency=args.currency):
+            print(line)
+        return 0
+
+    if args.command == "scan":
+        from gtcc.bootstrap import build_runtime
+        from gtcc.domain.enums import Timeframe
+        from gtcc.scanner import ScanSettings
+        from gtcc.scanner.report import render
+
+        runtime = build_runtime(settings)
+        scanner = runtime.scanner(
+            ScanSettings(
+                timeframe=Timeframe(args.timeframe),
+                min_history=args.min_history,
+                max_requests=args.max_requests,
+            )
+        )
+        result = scanner.scan(args.symbols, now=runtime.clock())
+        for line in render(result, sort_by=SortKey(args.sort)):
             print(line)
         return 0
 

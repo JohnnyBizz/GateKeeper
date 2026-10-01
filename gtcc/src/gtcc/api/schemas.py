@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
-from gtcc.domain.enums import Market, OrderType, Side, TimeInForce, TradingMode
+from gtcc.domain.enums import Market, OrderType, Side, Timeframe, TimeInForce, TradingMode
 
 
 class LoginRequest(BaseModel):
@@ -197,3 +197,66 @@ class LiveArmIn(BaseModel):
     """
 
     confirmation: str = Field(min_length=1, max_length=128)
+
+
+class ScanRequestIn(BaseModel):
+    """What to scan. The symbol list is explicit, never "everything"."""
+
+    symbols: list[str] = Field(min_length=1, max_length=200)
+    timeframe: Timeframe = Timeframe.M15
+    #: Ceiling on venue requests for the whole scan. A scan that runs out
+    #: reports the symbols it never reached rather than omitting them.
+    max_requests: int | None = Field(default=None, ge=1, le=5000)
+    min_history: int = Field(default=60, ge=1, le=5000)
+    sort_by: str = "SIGNAL"
+
+
+class ScanProposalOut(BaseModel):
+    strategy: str
+    decision: str
+    rationale: str
+    entry: Decimal | None = None
+    stop: Decimal | None = None
+    targets: list[Decimal] = []
+    conviction: int = 0
+
+
+class ScanRowOut(BaseModel):
+    symbol: str
+    status: str
+    detail: str = ""
+    market: str | None = None
+    price: Decimal | None = None
+    change_pct: Decimal | None = None
+    atr: Decimal | None = None
+    atr_pct: Decimal | None = None
+    relative_volume: Decimal | None = None
+    spread_bps: Decimal | None = None
+    trend: str | None = None
+    regime: str | None = None
+    structure_summary: str = ""
+    data_quality: str | None = None
+    bars_seen: int = 0
+    signal: ScanProposalOut | None = None
+    #: Why the strategies that proposed nothing proposed nothing. Present
+    #: so that "no setup" and "nothing was eligible" stay distinguishable.
+    silent_because: list[str] = []
+
+
+class ScanResultOut(BaseModel):
+    """A scan's rows plus an account of what was not looked at.
+
+    `summary` and `not_analysed` exist so a caller cannot read this as
+    "these are the only symbols with anything happening" when in fact the
+    scan was cut short or several venues failed.
+    """
+
+    summary: str
+    requested: int
+    requests_made: int
+    request_budget: int | None = None
+    truncated: bool
+    started_at: datetime
+    finished_at: datetime
+    rows: list[ScanRowOut]
+    not_analysed: list[ScanRowOut]

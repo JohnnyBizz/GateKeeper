@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Sequence
+from typing import ClassVar, Sequence
 
 from gtcc.domain.enums import Decision, Market, Regime, Side, Timeframe, TradingMode
 from gtcc.domain.instruments import InstrumentSpec
@@ -177,6 +177,31 @@ class Strategy(ABC):
     #: Declared event strategies opt out of the macro blackout.
     event_strategy: bool = False
     description: str = ""
+
+    #: Attribute names that are easy to write instead of the real ones, and
+    #: the name meant. A typo here is quiet and one-directional: the gate
+    #: keeps its safe default, so the strategy never runs and nothing says
+    #: why. Caught at class-definition time instead.
+    _MISNAMED: ClassVar[dict[str, str]] = {
+        "validation_status": "validation",
+        "status": "validation",
+        "allowed_regimes": "regimes",
+        "allowed_timeframes": "timeframes",
+        "regime": "regimes",
+        "timeframe": "timeframes",
+        "is_event_strategy": "event_strategy",
+    }
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for wrong, right in Strategy._MISNAMED.items():
+            if wrong in vars(cls):
+                raise TypeError(
+                    f"{cls.__name__} sets {wrong!r}, which this framework does "
+                    f"not read; the attribute is {right!r}. Left alone, "
+                    f"{cls.__name__} would keep the safe default for {right!r} "
+                    "and silently never trade."
+                )
 
     def may_run(self, context: StrategyContext, mode: TradingMode) -> tuple[bool, str]:
         """Should this strategy be consulted at all?

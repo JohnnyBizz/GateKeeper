@@ -6,19 +6,25 @@ Specification section 1 defines the decision path. This is how it maps
 onto modules, and which parts exist today.
 
 ```
-MARKET DATA            adapters/        MarketDataAdapter         Phase 1 (replay)
+MARKET DATA            adapters/        MarketDataAdapter        Phase 1 replay, Phase 2 OANDA
       |
 DATA VALIDATION        data/quality.py  DataQualityReport          Phase 1  DONE
       |
-FEATURE ENGINE         features/        indicators, VWAP, ATR      Phase 2
+FEATURE ENGINE         features/        indicators, VWAP, ATR      Phase 2  DONE
       |
-STRATEGY ENGINES       strategies/      independent modules        Phase 2
+MARKET STRUCTURE       structure/       Detection + its rule       Phase 2  DONE
+      |
+STRATEGY ENGINES       strategies/      independent modules        Phase 2  DONE
+      |
+SCANNER                scanner/         ScanRow per symbol asked   Phase 2  DONE
       |
 ANALYSIS AGENTS        agents/          structure, flow, macro     Phase 3
       |
 GROK SYNTHESIS         ai/              MarketSnapshot -> AIDecision  schema Phase 1, client Phase 3
       |
 RISK ENGINE            risk/engine.py   RiskEngine.evaluate        Phase 1  DONE
+                       ^ the only path to a broker. The scanner sits above
+                         this and holds no broker, so it cannot reach one.
       |
 ORDER MANAGEMENT       execution/oms.py OrderManager               Phase 1  DONE
       |
@@ -122,3 +128,46 @@ server state, the API is already JSON-first, and a React toolchain adds
 surface without adding capability until the scanner and charts exist.
 Phase 2 introduces the Next.js terminal against the same endpoints, and
 the templates are the only thing thrown away.
+
+## The scanner reports absence as loudly as presence
+
+`scanner/` reads a universe of symbols and returns one `ScanRow` per
+symbol **requested**, never one per symbol that happened to work. Six
+statuses, and the distinctions between them are the point:
+
+| Status | Means |
+|---|---|
+| `SCANNED` | analysed, data good |
+| `DEGRADED` | analysed, data carried warnings |
+| `UNAVAILABLE` | the venue does not list this symbol — a universe problem |
+| `FAILED` | the venue did not answer — an operational problem |
+| `REFUSED` | the data arrived and is not fit to analyse |
+| `NOT_ATTEMPTED` | the request budget ran out before reaching it |
+
+A scanner that drops what it could not read converts "I could not look at
+these 28 symbols" into "there is nothing in these 28 symbols". Those are
+opposite statements, and the second one is the one that makes somebody
+stop watching a market. `ScanResult.summary()` therefore states the
+counts, and says in words that a truncated scan is not a finding.
+
+Every measurement on a row is optional, and `None` means "not computed".
+None of them fall back to zero: a relative volume of 0.00 is a claim that
+the market is dead, and a warm-up window is not that claim. The text
+renderer prints a dash. The JSON serialises `null`.
+
+`min_history` is enforced here as a hard refusal rather than passed to the
+quality checker and ignored. The structure engine's own floor is much
+lower — enough bars for the algorithm to run — and it will return a trend
+of `UNCLEAR` from five bars. `UNCLEAR` reads as "looked, saw nothing
+definite", which a five-bar series has not earned.
+
+There is deliberately no composite score. Ranking is by one named key at a
+time, and a row with no measurement sorts after every row that has one
+rather than being treated as a zero. Blending relative volume, volatility
+and conviction into a single number would produce an authoritative-looking
+order whose weights nobody chose, which section 14 forbids for exactly
+that reason.
+
+The scanner holds a market-data adapter and the strategy registry. It has
+no broker, no runtime and no risk engine, so there is no path from a scan
+to an order; CI asserts all four.
