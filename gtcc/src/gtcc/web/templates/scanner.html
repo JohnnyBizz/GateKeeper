@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Market Scanner — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Market Scanner</h1>
+<p class="subtitle">
+  Analysis only. Nothing on this page can place an order — the scanner holds no
+  broker.
+</p>
+
+<div class="panel">
+  <div class="panel-head"><h2>Scan</h2></div>
+  <form method="get" action="/scanner" class="scanform">
+    <label>Symbols
+      <input type="text" name="symbols" value="{{ symbols_raw }}"
+             placeholder="EUR_USD GBP_USD BTCUSDT" size="48">
+    </label>
+    <label>Timeframe
+      <select name="timeframe">
+        {% for tf in timeframes %}
+        <option value="{{ tf }}" {{ 'selected' if tf == timeframe else '' }}>{{ tf }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Sort
+      <select name="sort">
+        {% for key in sort_keys %}
+        <option value="{{ key }}" {{ 'selected' if key == sort else '' }}>{{ key }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Scan</button>
+  </form>
+  <p class="subtitle" style="margin:10px 0 0">
+    Space or comma separated, named exactly as the venue names them. The venue
+    here is <strong>{{ data_adapter }}</strong>.
+  </p>
+</div>
+
+{% if result is none %}
+<div class="panel" style="margin-top:14px">
+  <div class="empty">
+    <strong>Nothing scanned yet</strong>
+    Enter symbols above. This panel stays empty rather than showing a sample
+    list that could be mistaken for a reading of the market.
+  </div>
+</div>
+{% else %}
+
+<div class="banner {{ 'warn' if result.truncated else '' }}" style="margin-top:14px">
+  <strong>{{ result.summary() }}</strong>
+  {{ result.requests_made }} venue request{{ '' if result.requests_made == 1 else 's' }} made.
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head">
+    <h2>Analysed</h2><span class="tag">{{ result.analysed | length }}</span>
+  </div>
+  {% if result.analysed %}
+  <table>
+    <thead><tr>
+      <th>Symbol</th><th class="r">Price</th><th class="r">Chg %</th><th class="r">ATR %</th>
+      <th class="r">RVol</th><th class="r">Spread bps</th><th>Trend</th><th>Regime</th><th>Signal</th>
+    </tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.symbol }}</td>
+        <td class="r num">{{ row.price if row.price is not none else '—' }}</td>
+        <td class="r num {{ 'pos' if row.change_pct and row.change_pct > 0 else ('neg' if row.change_pct and row.change_pct < 0 else 'muted') }}">
+          {{ '{:+,.2f}'.format(row.change_pct) if row.change_pct is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.2f}'.format(row.atr_pct) if row.atr_pct is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.2f}'.format(row.relative_volume) if row.relative_volume is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.1f}'.format(row.spread_bps) if row.spread_bps is not none else '—' }}</td>
+        <td class="muted">{{ row.trend if row.trend is not none else '—' }}</td>
+        <td class="muted">{{ row.regime if row.regime is not none else 'unknown' }}</td>
+        <td>
+          {% if row.signal %}
+          <span class="tag ok">{{ row.signal.decision }}</span>
+          <span class="muted">{{ row.signal.strategy }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+      </tr>
+      {% if row.status == 'DEGRADED' and row.detail %}
+      <tr><td colspan="9" class="muted" style="padding-top:0">
+        <span class="tag warn">DEGRADED</span> {{ row.detail }}</td></tr>
+      {% endif %}
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    A dash means the value could not be computed, not that it is zero.
+  </p>
+  {% else %}
+  <div class="empty"><strong>Nothing was analysed</strong>Every symbol is accounted for below.</div>
+  {% endif %}
+</div>
+
+{% if result.not_analysed %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head">
+    <h2>Not analysed</h2><span class="tag warn">{{ result.not_analysed | length }}</span>
+  </div>
+  <p class="subtitle" style="margin:0 0 10px">
+    These are <strong>not findings about these symbols</strong>. Each one is a
+    reason the scanner could not form a view.
+  </p>
+  <table>
+    <thead><tr><th>Symbol</th><th>Status</th><th>Why</th></tr></thead>
+    <tbody>
+    {% for row in result.not_analysed %}
+      <tr>
+        <td>{{ row.symbol }}</td>
+        <td><span class="tag {{ 'bad' if row.status in ('FAILED',) else 'warn' }}">{{ row.status }}</span></td>
+        <td class="muted">{{ row.detail }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if silent %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Why the quiet symbols were quiet</h2></div>
+  <table>
+    <thead><tr><th>Symbol</th><th>Reason</th></tr></thead>
+    <tbody>
+    {% for symbol, reason in silent %}
+      <tr><td>{{ symbol }}</td><td class="muted">{{ reason }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    "No setup" and "no strategy was eligible" are different statements.
+  </p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

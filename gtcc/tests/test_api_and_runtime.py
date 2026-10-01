@@ -627,10 +627,43 @@ class TestTheDashboardRenders:
         assert "mode-PAPER" in owner_api.get("/").text
 
     def test_pages_for_later_phases_say_so_rather_than_showing_figures(self, owner_api):
-        text = owner_api.get("/scanner").text
+        # /agents is Phase 3. /scanner used to be the example here and now
+        # has an engine behind it, which is why this points somewhere else.
+        text = owner_api.get("/agents").text
 
         assert "No data to show yet" in text
-        assert "Phase 2" in text
+        assert "Phase 3" in text
+
+    def test_the_scanner_page_scans_nothing_until_asked(self, owner_api):
+        text = owner_api.get("/scanner").text
+
+        assert "Nothing scanned yet" in text
+        assert "mistaken for a reading of the market" in text
+
+    def test_the_scanner_page_separates_what_it_could_not_read(self, owner_api):
+        text = owner_api.get("/scanner?symbols=NOSUCHTHING").text
+
+        assert "Not analysed" in text
+        assert "not findings about these symbols" in text
+        assert "UNAVAILABLE" in text
+
+    def test_the_nav_badge_marks_unbuilt_pages_only(self, owner_api):
+        """A working page must not advertise a phase it already passed."""
+        text = owner_api.get("/").text
+
+        assert "P3" in text, "the Agent Room is genuinely unbuilt"
+        assert "P4" in text, "so are Analytics and the Backtest Lab"
+        # The scanner and journal are built; only the Trade Terminal is a
+        # Phase 2 page still pending, so exactly one P2 badge remains.
+        assert text.count("P2") == 1
+
+    def test_the_journal_page_says_when_there_is_no_journal(self, owner_api, runtime):
+        runtime.journal_store = None
+
+        text = owner_api.get("/journal").text
+
+        assert "No journal is configured" in text
+        assert "not a quiet week" in text
 
     def test_a_tripped_breaker_is_visible_on_every_page(self, owner_api, runtime):
         from gtcc.risk.safety import TripReason

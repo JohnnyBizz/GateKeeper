@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Journal — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Journal</h1>
+<p class="subtitle">
+  Every setup the platform considered, including the ones it refused. Written by
+  the submission path; nothing here can be edited afterwards.
+</p>
+
+{% if not journal_configured %}
+<div class="banner warn">
+  <strong>No journal is configured</strong>
+  There is no database behind this deployment, so nothing is being recorded.
+  That is a configuration fact, not a quiet week.
+</div>
+{% else %}
+
+<div class="grid cols-4">
+  {% for label, count in counts %}
+  <div class="panel stat">
+    <div class="label">{{ label }}</div>
+    <div class="value {{ 'pos' if label == 'TAKEN' else 'muted' }}">{{ count }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head">
+    <h2>Recent</h2>
+    <span class="tag">{{ rows | length }}</span>
+  </div>
+  <p class="subtitle" style="margin:0 0 10px">
+    {% for key, label in filters %}
+    <a href="/journal?outcome={{ key }}" class="{{ 'active' if key == outcome else '' }}">{{ label }}</a>{{ ' · ' if not loop.last else '' }}
+    {% endfor %}
+  </p>
+  {% if rows %}
+  <table>
+    <thead><tr>
+      <th>When</th><th>Symbol</th><th>Strategy</th><th>Side</th><th>Outcome</th>
+      <th class="r">Size</th><th class="r">Risk</th><th class="r">R:R</th><th>Why</th>
+    </tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td class="muted num">{{ row.considered_at.strftime('%m-%d %H:%M') }}</td>
+        <td>{{ row.symbol }}</td>
+        <td class="muted">{{ row.strategy }}</td>
+        <td class="{{ 'pos' if row.direction == 'BUY' else 'neg' }}">{{ row.direction }}</td>
+        <td><span class="tag {{ 'ok' if row.outcome == 'TAKEN' else 'warn' }}">{{ row.outcome }}</span></td>
+        <td class="r num">{{ row.planned_size if row.planned_size is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.2f}'.format(row.planned_risk) if row.planned_risk is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.2f}'.format(row.reward_risk) if row.reward_risk is not none else '—' }}</td>
+        <td class="muted">{{ row.why }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    A dash is a value the platform does not have. Outcome columns — realised
+    P&amp;L, R multiple — stay empty until position tracking lands in Phase 4,
+    rather than showing zeros.
+  </p>
+  {% else %}
+  <div class="empty">
+    <strong>No rows{{ ' with that outcome' if outcome else '' }}</strong>
+    Nothing has been submitted{{ ' matching this filter' if outcome else ' yet' }}.
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

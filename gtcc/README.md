@@ -61,7 +61,7 @@ python -m gtcc risk --example      # read the shipped example first
 Tests:
 
 ```bash
-pytest                       # 565
+pytest                       # 569
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -107,7 +107,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           565 tests
+tests/           569 tests
 ```
 
 ## Documentation
