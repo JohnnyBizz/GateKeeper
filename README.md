@@ -19,6 +19,17 @@ It is decision support, not a prediction machine and not a bot.
 
 ---
 
+## Two projects in this repository
+
+| Directory | Project |
+|---|---|
+| `poa/`, `tests/` | **GateKeeper** — the Pocket Option analysis overlay. Reads the platform feed, shows a CALL/PUT/WAIT read with a score, and never places a trade. |
+| `gtcc/` | **Grok Trading Command Center** — a multi-market trading research and execution platform: crypto, equities, forex and futures, with a deterministic risk engine and paper trading by default. See `gtcc/README.md`. |
+
+They share nothing but the repository. Each has its own dependencies,
+tests and documentation, and either can be split into a repository of its
+own without touching the other.
+
 ## Download
 
 **Windows, no Python needed.** One file, double-click it.

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="subtitle">Routed and navigable. The engine behind it arrives in Phase {{ phase }}.</p>
+<div class="empty">
+  <strong>No data to show yet</strong>
+  This page is deliberately empty rather than filled with sample figures.
+  Phase {{ phase }} delivers what belongs here.
+</div>
+{% endblock %}

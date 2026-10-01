@@ -1,0 +1,95 @@
+"""Command line entry points.
+
+    python -m gtcc serve          start the API and dashboard
+    python -m gtcc init-db        create tables (development; use Alembic otherwise)
+    python -m gtcc create-user    create the owner account, prompting for a password
+    python -m gtcc check          report configuration and adapter health, then exit
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import sys
+
+from gtcc.bootstrap import build_runtime, init_database
+from gtcc.config import get_settings
+from gtcc.logging_setup import configure_logging
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="gtcc", description="Grok Trading Command Center")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    serve = sub.add_parser("serve", help="run the API and dashboard")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+
+    sub.add_parser("init-db", help="create tables directly (development only)")
+    sub.add_parser("check", help="report configuration and adapter health")
+
+    create = sub.add_parser("create-user", help="create an account")
+    create.add_argument("email")
+    create.add_argument("--role", default="owner")
+
+    args = parser.parse_args(argv)
+    settings = get_settings()
+    configure_logging(settings.log_level, settings.log_format)
+
+    if args.command == "init-db":
+        init_database(settings)
+        print(f"tables created in {settings.database_url}")
+        return 0
+
+    if args.command == "create-user":
+        from gtcc.api.security import hash_password
+        from gtcc.storage import db
+        from gtcc.storage.models import User
+
+        db.configure(settings.database_url)
+        password = getpass.getpass("password (minimum 12 characters): ")
+        if password != getpass.getpass("repeat: "):
+            print("passwords do not match", file=sys.stderr)
+            return 1
+        with db.session_scope() as session:
+            session.add(
+                User(
+                    email=args.email.strip().lower(),
+                    password_hash=hash_password(password),
+                    role=args.role,
+                )
+            )
+        print(f"created {args.email} with role {args.role}")
+        return 0
+
+    if args.command == "check":
+        runtime = build_runtime(settings)
+        broker = runtime.broker.health()
+        data = runtime.data.health()
+        print(f"mode                 {settings.mode}")
+        print(f"live trading         {settings.live_trading}")
+        print(f"automatic execution  {settings.automatic_execution}")
+        print(f"database             {settings.database_url.split('://')[0]}")
+        print(f"grok model           {settings.grok_model or '(not configured)'}")
+        print(f"risk limits          {settings.risk_config_path}"
+              f"{' [EXAMPLE]' if runtime.limits.is_example else ''}")
+        print(f"broker  {runtime.broker.name:10} {'ok' if broker.healthy else 'DOWN'}  {broker.detail}")
+        print(f"data    {runtime.data.name:10} {'ok' if data.healthy else 'DOWN'}  {data.detail}")
+        return 0 if broker.healthy and data.healthy else 1
+
+    if args.command == "serve":
+        import uvicorn
+
+        from gtcc.api.app import create_app
+        from gtcc.storage import db
+
+        db.configure(settings.database_url)
+        app = create_app(settings=settings, runtime=build_runtime(settings))
+        uvicorn.run(app, host=args.host, port=args.port, log_config=None)
+        return 0
+
+    return 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

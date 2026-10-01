@@ -1,0 +1,65 @@
+name: GTCC tests
+
+# The Grok Trading Command Center has its own dependencies and its own
+# suite. The GateKeeper workflow scopes pytest to the root tests/ directory,
+# so without this job the GTCC suite would never run in CI.
+on:
+  push:
+    paths: ['gtcc/**', '.github/workflows/gtcc.yml']
+  pull_request:
+    paths: ['gtcc/**', '.github/workflows/gtcc.yml']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gtcc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: gtcc/requirements.txt
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: The migration matches the models
+        env:
+          GTCC_DATABASE_URL: sqlite:///./ci.db
+        run: |
+          PYTHONPATH=src python -m alembic upgrade head
+          PYTHONPATH=src python -m alembic check
+
+      - name: The example risk file is refused
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          from pathlib import Path
+          from gtcc.risk.limits import RiskConfigError, load_limits
+          try:
+              load_limits(Path("config/risk.example.yaml"))
+          except RiskConfigError:
+              print("the shipped example is refused, as intended")
+          else:
+              raise SystemExit("the example risk file was accepted; it must not be")
+          PY
+
+      - name: Live trading is off by default
+        env:
+          GTCC_SECRET_KEY: ${{ 'ci-secret-key-at-least-thirty-two-characters' }}
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          from gtcc.config import Settings
+          settings = Settings()
+          assert str(settings.mode) == "PAPER", settings.mode
+          assert settings.live_trading is False
+          assert settings.automatic_execution is False
+          print("defaults are PAPER, live off, automatic off")
+          PY

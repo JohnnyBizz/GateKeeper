@@ -1,0 +1,67 @@
+# ---------------------------------------------------------------------------
+# EXAMPLE risk limits for the Grok Trading Command Center.
+#
+# These numbers are an ILLUSTRATION OF THE FILE FORMAT. They are not a
+# recommendation, they are not tuned to any account, and they are not
+# financial advice. Copy this file to config/risk.yaml, read every line,
+# decide each number for yourself, and delete the marker below.
+#
+# The platform refuses to load this file while the marker is present.
+# ---------------------------------------------------------------------------
+marker: THIS_IS_AN_EXAMPLE_NOT_FINANCIAL_ADVICE
+
+per_trade:
+  # Percent of account equity risked between entry and protective stop.
+  max_risk_pct: 0.5
+  # Percent of equity a single position's face value may reach.
+  max_position_notional_pct: 25
+  # Hard ceiling on leverage, independent of what a venue would allow.
+  max_leverage: 2
+  # Minimum net reward:risk, measured to the NEAREST target, after fees,
+  # spread and estimated slippage.
+  min_reward_risk: 1.5
+  # Stops closer than this are noise rather than invalidation.
+  min_stop_distance_ticks: 8
+  # Refuse to trade a book wider than this.
+  max_spread_bps: 15
+  # Refuse when expected slippage alone exceeds this.
+  max_slippage_bps: 10
+
+drawdown:
+  # Realised loss, as a percent of the equity the day opened at, that
+  # stops new trades for the rest of the day.
+  max_daily_loss_pct: 2
+  max_weekly_loss_pct: 5
+  # Peak-to-trough equity decline that disables live execution entirely.
+  max_drawdown_pct: 10
+  # Consecutive losing trades before new trades stop.
+  max_consecutive_losses: 4
+
+concentration:
+  max_open_positions: 5
+  max_exposure_per_asset_pct: 25
+  max_correlated_exposure_pct: 40
+  max_sector_exposure_pct: 40
+  max_market_exposure_pct:
+    CRYPTO: 50
+    STOCKS: 60
+    FOREX: 40
+    FUTURES: 30
+
+# Markets whose leveraged arithmetic needs its own ceilings. A 25%
+# notional cap is right for cash equities and makes a single futures
+# contract impossible, so futures carry their own numbers.
+market_overrides:
+  FUTURES:
+    max_position_notional_pct: 600
+    max_leverage: 6
+  CRYPTO:
+    max_position_notional_pct: 50
+    max_leverage: 2
+
+events:
+  # No new short-dated trade within this many minutes of a high-impact
+  # scheduled release, unless the strategy declares itself an event
+  # strategy and has been tested as one.
+  blackout_minutes: 15
+  applies_to_timeframes_under_seconds: 3600

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="subtitle">Signed in as {{ user.email }} ({{ user.role }}). Secrets are never returned by the API; they show as set or unset only.</p>
+
+<div class="grid cols-2">
+  <div class="panel">
+    <div class="panel-head"><h2>Runtime configuration</h2></div>
+    <dl class="kv">
+      {% for key, value in settings_view.items() | sort %}
+      <dt>{{ key }}</dt><dd>{{ value if value != '' else '—' }}</dd>
+      {% endfor %}
+    </dl>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Trading mode</h2></div>
+    <p class="subtitle" style="margin-bottom:14px">
+      Switching to LIVE needs two independent things: the server environment must
+      already permit it, and the phrase below must be typed exactly. Neither alone
+      is enough, and the switch is never implicit.
+    </p>
+    <dl class="kv">
+      <dt>Current</dt><dd>{{ mode }}</dd>
+      <dt>Live permitted</dt><dd>{{ 'yes' if live_trading else 'no (set GTCC_LIVE_TRADING and restart)' }}</dd>
+      <dt>Confirmation</dt><dd>ENABLE LIVE TRADING</dd>
+    </dl>
+    <div class="empty" style="margin-top:16px">
+      <strong>Connections, strategies and notifications</strong>
+      Configured here from Phase 6, once sandbox broker integrations exist.
+    </div>
+  </div>
+</div>
+{% endblock %}

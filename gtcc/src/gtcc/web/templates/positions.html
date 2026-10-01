@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Positions — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Positions</h1>
+<p class="subtitle">Live position and order state, as reported by the {{ mode | lower }} broker.</p>
+
+<div class="panel">
+  <div class="panel-head"><h2>Positions</h2><span class="tag">{{ positions | length }}</span></div>
+  {% if positions %}
+  <table>
+    <thead><tr><th>Symbol</th><th>Market</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th>
+    <th class="r">Mark</th><th class="r">Stop</th><th class="r">Unrealised</th><th class="r">Realised</th><th>Strategy</th></tr></thead>
+    <tbody>
+    {% for p in positions %}
+      {% set u = p.unrealised_pnl() %}
+      <tr>
+        <td>{{ p.symbol }}</td>
+        <td class="muted">{{ p.market }}</td>
+        <td class="{{ 'pos' if p.quantity > 0 else 'neg' }}">{{ 'LONG' if p.quantity > 0 else 'SHORT' }}</td>
+        <td class="r num">{{ p.quantity }}</td>
+        <td class="r num">{{ p.average_entry_price }}</td>
+        <td class="r num">{{ p.mark_price if p.mark_price is not none else '—' }}</td>
+        <td class="r num">{{ p.protective_stop if p.protective_stop is not none else '—' }}</td>
+        <td class="r num {{ 'pos' if u and u > 0 else ('neg' if u and u < 0 else 'muted') }}">{{ '{:+,.2f}'.format(u) if u is not none else 'no mark' }}</td>
+        <td class="r num">{{ '{:+,.2f}'.format(p.realised_pnl) }}</td>
+        <td class="muted">{{ p.strategy }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>Flat</strong>No open positions.</div>
+  {% endif %}
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Orders</h2><span class="tag">{{ orders | length }}</span></div>
+  {% if orders %}
+  <table>
+    <thead><tr><th>Order</th><th>Symbol</th><th>Side</th><th>Type</th><th>Status</th>
+    <th class="r">Qty</th><th class="r">Filled</th><th class="r">Avg price</th><th class="r">Fees</th><th>Strategy</th></tr></thead>
+    <tbody>
+    {% for o in orders %}
+      <tr>
+        <td class="num muted">{{ o.client_order_id }}</td>
+        <td>{{ o.symbol }}</td>
+        <td class="{{ 'pos' if o.side == 'BUY' else 'neg' }}">{{ o.side }}</td>
+        <td class="muted">{{ o.order_type }}</td>
+        <td><span class="tag {{ 'ok' if o.status == 'FILLED' else ('bad' if o.status in ('REJECTED','CANCELED') else '') }}">{{ o.status }}</span></td>
+        <td class="r num">{{ o.quantity }}</td>
+        <td class="r num">{{ o.filled_quantity }}</td>
+        <td class="r num">{{ o.average_fill_price if o.average_fill_price is not none else '—' }}</td>
+        <td class="r num">{{ '{:,.4f}'.format(o.fees_paid) }}</td>
+        <td class="muted">{{ o.strategy }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty"><strong>No orders</strong>Nothing has been submitted in this session.</div>
+  {% endif %}
+</div>
+{% endblock %}
