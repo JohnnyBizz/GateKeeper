@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Command Center — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Command Center</h1>
+<p class="subtitle">Account {{ account.account_id }} · {{ account.currency }} · reconciled {{ account.reconciled_at.strftime('%Y-%m-%d %H:%M:%S UTC') if account.reconciled_at else 'never' }}</p>
+
+{% if breakers.new_trades_blocked %}
+<div class="banner">
+  <strong>New trades are blocked</strong>
+  {{ breakers.reasons | join('; ') }}
+</div>
+{% endif %}
+{% if limits.is_example %}
+<div class="banner warn">
+  <strong>Risk limits are the shipped example</strong>
+  Copy <code>config/risk.example.yaml</code> to <code>config/risk.yaml</code>, set your own numbers, and remove the marker line.
+</div>
+{% endif %}
+
+<div class="grid cols-4">
+  <div class="panel stat">
+    <div class="label">Equity</div>
+    <div class="value num">{{ '{:,.2f}'.format(account.equity) }}</div>
+    <div class="note">cash {{ '{:,.2f}'.format(account.cash) }}</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Realised today</div>
+    <div class="value num {{ 'pos' if daily_pnl > 0 else ('neg' if daily_pnl < 0 else 'muted') }}">
+      {{ '{:+,.2f}'.format(daily_pnl) }}
+    </div>
+    <div class="note">{{ state.trades_today }} settled trade(s)</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Daily loss used</div>
+    <div class="value num">{{ '{:.2f}'.format(daily_loss_pct) }}%</div>
+    <div class="bar"><i class="{{ 'bad' if daily_loss_pct >= limits.max_daily_loss * 100 else ('warn' if daily_loss_pct > limits.max_daily_loss * 50 else '') }}"
+       style="width: {{ [ (daily_loss_pct / (limits.max_daily_loss * 100) * 100) if limits.max_daily_loss else 0, 100 ] | min }}%"></i></div>
+    <div class="note">limit {{ '{:.2f}'.format(limits.max_daily_loss * 100) }}%</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Drawdown</div>
+    <div class="value num">{{ '{:.2f}'.format(drawdown_pct) }}%</div>
+    <div class="bar"><i class="{{ 'bad' if drawdown_pct >= limits.max_drawdown * 100 else ('warn' if drawdown_pct > limits.max_drawdown * 50 else '') }}"
+       style="width: {{ [ (drawdown_pct / (limits.max_drawdown * 100) * 100) if limits.max_drawdown else 0, 100 ] | min }}%"></i></div>
+    <div class="note">peak {{ '{:,.2f}'.format(state.peak_equity) }}</div>
+  </div>
+</div>
+
+<div class="grid cols-2" style="margin-top:14px">
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Open positions</h2>
+      <span class="tag">{{ positions | length }} / {{ limits.max_open_positions }}</span>
+    </div>
+    {% if positions %}
+    <table>
+      <thead><tr><th>Symbol</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Mark</th><th class="r">Unrealised</th></tr></thead>
+      <tbody>
+      {% for p in positions %}
+        {% set u = p.unrealised_pnl() %}
+        <tr>
+          <td>{{ p.symbol }}</td>
+          <td class="{{ 'pos' if p.quantity > 0 else 'neg' }}">{{ 'LONG' if p.quantity > 0 else 'SHORT' }}</td>
+          <td class="r num">{{ p.quantity }}</td>
+          <td class="r num">{{ p.average_entry_price }}</td>
+          <td class="r num">{{ p.mark_price if p.mark_price is not none else '—' }}</td>
+          <td class="r num {{ 'pos' if u and u > 0 else ('neg' if u and u < 0 else 'muted') }}">
+            {{ '{:+,.2f}'.format(u) if u is not none else 'no mark' }}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty"><strong>Flat</strong>No open positions.</div>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Risk status</h2></div>
+    <dl class="kv">
+      <dt>Mode</dt><dd>{{ mode }}</dd>
+      <dt>Live permitted here</dt><dd>{{ 'yes' if deployment_allows_live else 'no' }}</dd>
+      <dt>Live ARMED</dt><dd>{{ 'YES — ' + execution.armed_by if live_armed else 'no' }}</dd>
+      <dt>Safety breaker</dt><dd>{{ 'TRIPPED' if execution.tripped else 'clear' }}</dd>
+      <dt>Automatic execution</dt><dd>{{ 'ON' if automatic_execution else 'off' }}</dd>
+      <dt>Kill switch</dt><dd>{{ 'ENGAGED' if state.kill_switch else 'clear' }}</dd>
+      <dt>Trading paused</dt><dd>{{ 'yes' if state.trading_paused else 'no' }}</dd>
+      <dt>Consecutive losses</dt><dd>{{ state.consecutive_losses }} / {{ limits.max_consecutive_losses }}</dd>
+      <dt>Risk per trade</dt><dd>{{ '{:.2f}'.format(limits.max_risk_per_trade * 100) }}%</dd>
+      <dt>Minimum R:R</dt><dd>{{ limits.min_reward_risk }}</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="grid cols-3" style="margin-top:14px">
+  <div class="panel">
+    <div class="panel-head"><h2>Market regime</h2><span class="tag">Phase 2</span></div>
+    <div class="empty"><strong>Not classified</strong>The regime engine arrives with the feature pipeline.</div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Best current setups</h2><span class="tag">Phase 2</span></div>
+    <div class="empty"><strong>Scanner not running</strong>No setups are being ranked yet.</div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Upcoming events</h2><span class="tag">Phase 2</span></div>
+    <div class="empty"><strong>No calendar connected</strong>This is not evidence that nothing is scheduled.</div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,23 @@
+# Grok Trading Command Center — runtime dependencies.
+# Install with:  pip install -r requirements.txt
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+pydantic-settings>=2.2
+sqlalchemy>=2.0
+alembic>=1.13
+argon2-cffi>=23.1
+itsdangerous>=2.2
+python-multipart>=0.0.9
+httpx>=0.27
+PyYAML>=6.0
+jinja2>=3.1
+numpy>=1.24
+pandas>=2.0
+
+# Production database driver (SQLite is used for local development and tests).
+psycopg[binary]>=3.1
+
+# Tests
+pytest>=8.0
+pytest-asyncio>=0.23

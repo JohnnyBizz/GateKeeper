@@ -1,0 +1,49 @@
+# Development stack. Not a production deployment: no TLS termination, no
+# secret manager, and the database password is in the file.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gtcc
+      POSTGRES_PASSWORD: gtcc-dev-only
+      POSTGRES_DB: gtcc
+    ports: ["5432:5432"]
+    volumes: ["gtcc-db:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gtcc"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      GTCC_DATABASE_URL: postgresql+psycopg://gtcc:gtcc-dev-only@db:5432/gtcc
+      GTCC_REDIS_URL: redis://redis:6379/0
+      GTCC_MODE: PAPER
+      GTCC_LIVE_TRADING: "false"
+      GTCC_SECURE_COOKIES: "false"
+      GTCC_ENVIRONMENT: development
+    env_file: [.env]
+    ports: ["8000:8000"]
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m gtcc serve --host 0.0.0.0 --port 8000"
+
+volumes:
+  gtcc-db:

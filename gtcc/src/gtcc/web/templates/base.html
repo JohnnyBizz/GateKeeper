@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ app_name }}{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">GROK <span>TRADING</span> COMMAND CENTER</div>
+  <div class="spacer"></div>
+  {% if automatic_execution %}<span class="tag warn">AUTO EXECUTION ON</span>{% else %}<span class="tag">AUTO EXECUTION OFF</span>{% endif %}
+  {% if execution and execution.tripped %}<span class="tag bad">BREAKER TRIPPED</span>{% endif %}
+  {% if live_armed %}<span class="tag bad">LIVE ARMED</span>{% endif %}
+  <span class="mode mode-{{ mode }}">{{ mode }}</span>
+</header>
+<div class="shell">
+  <nav class="side">
+    {% for key, href, label, phase in pages %}
+    <a href="{{ href }}" class="{{ 'active' if active == key else '' }}">
+      <span>{{ label }}</span>
+      {% if phase > 1 %}<span class="phase">P{{ phase }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </nav>
+  <main>
+    {% if execution and execution.tripped %}
+    <div class="banner">
+      <strong>Execution is latched off</strong>
+      {% for trip in execution.trips %}{{ trip.describe() }}{% if not loop.last %}; {% endif %}{% endfor %}
+      <br>Recovery of the underlying dependency does not clear this. An
+      authorised reset is required, and it leaves live trading disarmed.
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+    <footer class="disclaimer">
+      Analysis and execution tooling. Nothing here is financial advice, and no
+      figure on these pages is a prediction or a guarantee. Paper mode simulates
+      fills and will not reproduce a live broker exactly.
+    </footer>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="subtitle">Signed in as {{ user.email }} ({{ user.role }}). Secrets are never returned by the API; they show as set or unset only.</p>
+
+<div class="grid cols-2">
+  <div class="panel">
+    <div class="panel-head"><h2>Runtime configuration</h2></div>
+    <dl class="kv">
+      {% for key, value in settings_view.items() | sort %}
+      <dt>{{ key }}</dt>
+      <dd>{% if value is mapping %}{{ value.scheme or '—' }}{% if value.host %}://{{ value.host }}{% if value.port %}:{{ value.port }}{% endif %}{{ value.path or '' }}{% endif %}{% else %}{{ value if value != '' else '—' }}{% endif %}</dd>
+      {% endfor %}
+    </dl>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>Trading mode</h2></div>
+    <p class="subtitle" style="margin-bottom:14px">
+      LIVE is not a mode you select. The deployment must permit it, and then a
+      person arms it with the exact phrase. Arming lasts for the life of this
+      process only: a restart always comes back disarmed, and no environment
+      variable can arm it.
+    </p>
+    <dl class="kv">
+      <dt>Current mode</dt><dd>{{ mode }}</dd>
+      <dt>Live permitted here</dt>
+      <dd>{{ 'yes' if deployment_allows_live else 'no (set GTCC_ALLOW_LIVE_TRADING and restart)' }}</dd>
+      <dt>Live armed now</dt>
+      <dd>{{ 'YES, by ' + execution.armed_by if live_armed else 'no' }}</dd>
+      <dt>Safety breaker</dt>
+      <dd>{{ 'TRIPPED — ' + (execution.trip_reasons | join(', ')) if execution.tripped else 'clear' }}</dd>
+      <dt>Confirmation phrase</dt><dd>ENABLE LIVE TRADING</dd>
+    </dl>
+    <div class="empty" style="margin-top:16px">
+      <strong>Connections, strategies and notifications</strong>
+      Configured here from Phase 6, once sandbox broker integrations exist.
+    </div>
+  </div>
+</div>
+{% endblock %}

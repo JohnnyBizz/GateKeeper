@@ -1,0 +1,99 @@
+# ---------------------------------------------------------------------------
+# THIS DEPLOYMENT'S RISK LIMITS. Not an example, not a default: these are
+# the numbers the owner read and accepted, in money, on 2026-10-01, with
+# the forex position cap left deliberately tight.
+#
+# There is no marker line here. config/risk.example.yaml carries one, and
+# the loader refuses any file that still has it, so the shipped
+# illustration can never be mistaken for a decision.
+#
+# Changing a number here is a change to how much money can be lost.
+# Read `python -m gtcc risk` before and after, so the edit is made in
+# money rather than in percentages, and commit it on its own, so the
+# history says when a limit moved and why.
+# ---------------------------------------------------------------------------
+
+per_trade:
+  # Percent of account equity risked between entry and protective stop.
+  max_risk_pct: 0.5
+  # Percent of equity a single position's face value may reach.
+  max_position_notional_pct: 25
+  # Hard ceiling on leverage, independent of what a venue would allow.
+  max_leverage: 2
+  # Minimum net reward:risk, measured to the NEAREST target, after fees,
+  # spread and estimated slippage.
+  min_reward_risk: 1.5
+  # Stops closer than this are noise rather than invalidation.
+  min_stop_distance_ticks: 8
+  # Refuse to trade a book wider than this.
+  max_spread_bps: 15
+  # Refuse when expected slippage alone exceeds this.
+  max_slippage_bps: 10
+
+drawdown:
+  # Realised loss, as a percent of the equity the day opened at, that
+  # stops new trades for the rest of the day.
+  max_daily_loss_pct: 2
+  max_weekly_loss_pct: 5
+  # Peak-to-trough equity decline that disables live execution entirely.
+  max_drawdown_pct: 10
+  # Consecutive losing trades before new trades stop.
+  max_consecutive_losses: 4
+
+concentration:
+  max_open_positions: 5
+  max_exposure_per_asset_pct: 25
+  max_correlated_exposure_pct: 40
+  max_sector_exposure_pct: 40
+  max_market_exposure_pct:
+    CRYPTO: 50
+    STOCKS: 60
+    FOREX: 40
+    FUTURES: 30
+
+# Per-market ceilings on FACE VALUE — the size of the thing you hold,
+# not the money you can lose. Four separate limits cap face value (the
+# position cap above, the per-asset cap above, the leverage cap, and the
+# market exposure cap in the block above this one) and ONLY THE SMALLEST
+# OF THEM IS REAL. Writing 300 here while a market exposure cap says 40
+# does not give you 300; it gives you 40 and a misleading file.
+#
+# So these numbers are deliberately set to the figure that actually
+# binds. Run `python -m gtcc risk` to see the binding cap per market in
+# money, and the stop distance at which it starts to override your
+# per-trade risk budget.
+#
+# A face-value cap and a risk budget are different ceilings, and the
+# tighter one sizes the trade. Tight stops need large positions to risk
+# the full budget, so below some stop distance the cap always wins and
+# the trade risks LESS than max_risk_pct. Under these numbers a forex
+# stop tighter than about 1.25% of price — roughly 135 pips on EUR/USD,
+# so very nearly every forex trade — is sized by the exposure cap, not
+# by the risk budget. That is conservative, not broken, but it does mean
+# max_risk_pct is a ceiling you rarely reach on forex. If you would
+# rather the risk budget governed, raise FOREX in BOTH places together
+# (the commented block below), and understand that you are agreeing to
+# hold twice the account in face value on one margined position.
+market_overrides:
+  FOREX:
+    max_position_notional_pct: 40
+    max_leverage: 3
+    max_exposure_per_asset_pct: 40
+  # To let the risk budget govern forex sizing instead, set FOREX to 200
+  # in max_market_exposure_pct above and use these:
+  #   max_position_notional_pct: 200
+  #   max_leverage: 3
+  #   max_exposure_per_asset_pct: 200
+  FUTURES:
+    max_position_notional_pct: 30
+    max_leverage: 6
+  CRYPTO:
+    max_position_notional_pct: 50
+    max_leverage: 2
+
+events:
+  # No new short-dated trade within this many minutes of a high-impact
+  # scheduled release, unless the strategy declares itself an event
+  # strategy and has been tested as one.
+  blackout_minutes: 15
+  applies_to_timeframes_under_seconds: 3600

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Risk Center — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Risk Center</h1>
+<p class="subtitle">The deterministic engine's current state. These limits are enforced in code, not by prompt.</p>
+
+{% if breakers.new_trades_blocked %}
+<div class="banner"><strong>New trades are blocked</strong>{{ breakers.reasons | join('; ') }}</div>
+{% endif %}
+{% if reconciliation and reconciliation.blocks_live_trading %}
+<div class="banner"><strong>Order reconciliation found differences</strong>{{ reconciliation.summary() }}</div>
+{% endif %}
+
+<div class="grid cols-3">
+  <div class="panel stat"><div class="label">Daily loss</div>
+    <div class="value num">{{ '{:.2f}'.format(daily_loss_pct) }}%</div>
+    <div class="note">limit {{ '{:.2f}'.format(limits.max_daily_loss * 100) }}% · {{ 'TRIPPED' if state.daily_breaker_tripped else 'clear' }}</div></div>
+  <div class="panel stat"><div class="label">Weekly loss</div>
+    <div class="value num">{{ '{:.2f}'.format(weekly_loss_pct) }}%</div>
+    <div class="note">limit {{ '{:.2f}'.format(limits.max_weekly_loss * 100) }}% · {{ 'TRIPPED' if state.weekly_breaker_tripped else 'clear' }}</div></div>
+  <div class="panel stat"><div class="label">Drawdown</div>
+    <div class="value num">{{ '{:.2f}'.format(drawdown_pct) }}%</div>
+    <div class="note">limit {{ '{:.2f}'.format(limits.max_drawdown * 100) }}% · {{ 'TRIPPED' if state.drawdown_breaker_tripped else 'clear' }}</div></div>
+</div>
+
+<div class="grid cols-2" style="margin-top:14px">
+  <div class="panel">
+    <div class="panel-head"><h2>Configured limits</h2>{% if limits.is_example %}<span class="tag warn">EXAMPLE</span>{% endif %}</div>
+    <dl class="kv">
+      <dt>Risk per trade</dt><dd>{{ '{:.3f}'.format(limits.max_risk_per_trade * 100) }}%</dd>
+      <dt>Position notional</dt><dd>{{ '{:.1f}'.format(limits.max_position_notional * 100) }}% of equity</dd>
+      <dt>Max leverage</dt><dd>{{ limits.max_leverage }}x</dd>
+      <dt>Minimum net R:R</dt><dd>{{ limits.min_reward_risk }}</dd>
+      <dt>Min stop distance</dt><dd>{{ limits.min_stop_distance_ticks }} ticks</dd>
+      <dt>Max spread</dt><dd>{{ limits.max_spread_bps }} bps</dd>
+      <dt>Max slippage</dt><dd>{{ limits.max_slippage_bps }} bps</dd>
+      <dt>Open positions</dt><dd>{{ limits.max_open_positions }}</dd>
+      <dt>Per asset</dt><dd>{{ '{:.1f}'.format(limits.max_exposure_per_asset * 100) }}%</dd>
+      <dt>Correlated</dt><dd>{{ '{:.1f}'.format(limits.max_correlated_exposure * 100) }}%</dd>
+      <dt>Sector</dt><dd>{{ '{:.1f}'.format(limits.max_sector_exposure * 100) }}%</dd>
+      <dt>Consecutive losses</dt><dd>{{ limits.max_consecutive_losses }}</dd>
+      <dt>Event blackout</dt><dd>{{ limits.event_blackout_minutes }} min</dd>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Controls</h2></div>
+    <dl class="kv">
+      <dt>Kill switch</dt><dd>{% if state.kill_switch %}<span class="tag bad">ENGAGED</span>{% else %}<span class="tag ok">CLEAR</span>{% endif %}</dd>
+      <dt>Trading</dt><dd>{% if state.trading_paused %}<span class="tag warn">PAUSED</span>{% else %}<span class="tag ok">ACTIVE</span>{% endif %}</dd>
+      <dt>Broker</dt><dd>{% if broker_health and broker_health.healthy %}<span class="tag ok">HEALTHY</span>{% else %}<span class="tag bad">UNHEALTHY</span>{% endif %}</dd>
+      <dt>Disabled symbols</dt><dd>{{ state.disabled_symbols | join(', ') if state.disabled_symbols else '—' }}</dd>
+      <dt>Disabled strategies</dt><dd>{{ state.disabled_strategies | join(', ') if state.disabled_strategies else '—' }}</dd>
+    </dl>
+    <dl class="kv" style="margin-top:14px">
+      <dt>Execution latch</dt>
+      <dd>{% if execution.tripped %}<span class="tag bad">TRIPPED</span>{% else %}<span class="tag ok">CLEAR</span>{% endif %}</dd>
+      <dt>Live armed</dt>
+      <dd>{% if live_armed %}<span class="tag bad">ARMED</span>{% else %}<span class="tag ok">no</span>{% endif %}</dd>
+    </dl>
+    <div class="actions" style="margin-top:16px">
+      <button class="danger" data-action="/api/control/kill-switch" data-enabled="{{ 'false' if state.kill_switch else 'true' }}">
+        {{ 'Release kill switch' if state.kill_switch else 'Engage kill switch' }}
+      </button>
+      <button data-action="/api/control/pause" data-enabled="{{ 'false' if state.trading_paused else 'true' }}">
+        {{ 'Resume trading' if state.trading_paused else 'Pause trading' }}
+      </button>
+      <button data-action="/api/control/reconcile" data-enabled="">Reconcile orders</button>
+      {% if execution.tripped %}
+      <button data-action="/api/control/breaker/reset" data-enabled="">Reset safety breaker</button>
+      {% endif %}
+    </div>
+    <div class="error" id="control-error"></div>
+  </div>
+</div>
+
+<script>window.GTCC_CSRF = {{ csrf_token | tojson }};</script>
+<script src="/static/controls.js"></script>
+{% endblock %}
