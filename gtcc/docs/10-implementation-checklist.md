@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 544 tests including the eight critical refusals
+- [x] 565 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -84,7 +84,10 @@ Findings from an external review of Phase 1, all closed:
       exhaustion is stated instead of looking like an empty market
 - [ ] Next.js terminal with charts, against the existing JSON API
 - [ ] Order book and order-flow analysis where a feed genuinely exists
-- [ ] Writing the regime and structure context onto journal rows
+- [x] Journal writer: every considered setup, taken or refused, written by
+      the single submission path, with the risk verdict and the analysis
+      context attached. A read-only endpoint, and no way to edit a row
+      afterwards
 
 ## Phase 3 — Grok and the agents
 
@@ -152,7 +155,10 @@ authorisation from the account owner.
 6. The execution latch is persisted and survives a restart; live arming
    is not and does not. See `docs/05-risk-engine.md` for why those two
    rules are deliberately opposite.
-7. Journal rows are not yet written by the runtime; the table and schema exist.
+7. Journal rows carry no outcome yet: `realised_pnl`, `r_multiple`, MFE
+   and MAE stay NULL because nothing closes a position and measures it.
+   The row is written when the setup is considered; the result has to be
+   filled in by the position tracking that arrives with Phase 4.
 8. Under the configured limits, a forex position's face value is capped
    by the market exposure limit well before the per-trade risk budget is
    reached, so forex trades risk materially less than `max_risk_pct`

@@ -23,7 +23,11 @@ from gtcc.logging_setup import log_event
 from gtcc.risk.limits import RiskConfigError, RiskLimits, load_limits
 from gtcc.runtime import TradingRuntime
 from gtcc.storage import db
-from gtcc.storage.repositories import ExecutionLatchRepository, RiskStateRepository
+from gtcc.storage.repositories import (
+    ExecutionLatchRepository,
+    RiskStateRepository,
+    TradeJournalRepository,
+)
 
 logger = logging.getLogger("gtcc.bootstrap")
 
@@ -91,10 +95,12 @@ def build_runtime(
     # it, and the runtime says so rather than pretending.
     state_store = None
     latch_store = None
+    journal_store = None
     try:
         db.get_engine()
         state_store = RiskStateRepository(db.session_scope)
         latch_store = ExecutionLatchRepository(db.session_scope)
+        journal_store = TradeJournalRepository(db.session_scope)
     except RuntimeError:
         log_event(
             logger,
@@ -102,7 +108,8 @@ def build_runtime(
             "risk state will not be persisted",
             reason=(
                 "database not configured before build_runtime; neither the "
-                "risk tally nor the safety latch will survive a restart"
+                "risk tally nor the safety latch will survive a restart, and "
+                "no setup will be journalled"
             ),
         )
 
@@ -114,6 +121,7 @@ def build_runtime(
         data_name=data.name,
         state_store=state_store,
         latch_store=latch_store,
+        journal_store=journal_store,
     )
     log_event(
         logger,

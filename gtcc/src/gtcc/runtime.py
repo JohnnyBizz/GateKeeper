@@ -26,7 +26,8 @@ from gtcc.domain.enums import RiskAction, TradingMode
 from gtcc.domain.instruments import InstrumentSpec
 from gtcc.domain.market_data import Quote, utcnow
 from gtcc.domain.money import ZERO, D
-from gtcc.domain.orders import Account, Order, OrderRequest
+from gtcc.domain.orders import Account, Order, OrderRequest, new_id
+from gtcc.journal.entry import TradeAnnotations, entry_for
 from gtcc.execution.oms import OrderManager, Reconciliation
 from gtcc.logging_setup import log_event
 from gtcc.risk.engine import (
@@ -98,6 +99,10 @@ class TradingRuntime:
     #: by analysis; a proposal from one is an opinion that still has to pass
     #: the risk engine like anything else.
     strategies: StrategyRegistry = field(default_factory=StrategyRegistry)
+    #: When set, every considered setup is written here — taken or refused.
+    #: See `_journal` for why a write failure is treated differently
+    #: depending on whether an order actually reached the venue.
+    journal_store: object | None = None
 
     # -- wiring ---------------------------------------------------------------
 
@@ -335,10 +340,29 @@ class TradingRuntime:
         assert context is not None
         return self.engine.evaluate(request, context)
 
-    def submit(self, request: OrderRequest, **kwargs) -> SubmissionResult:
-        """The only way an order reaches a broker."""
+    def submit(
+        self,
+        request: OrderRequest,
+        *,
+        annotations: TradeAnnotations | None = None,
+        **kwargs,
+    ) -> SubmissionResult:
+        """The only way an order reaches a broker.
+
+        *annotations* carry the analysis context behind the setup for the
+        journal. They are advisory data about why this order exists and
+        reach no decision: the risk engine never sees them.
+        """
         context, refusal = self._context_or_refusal(request, **kwargs)
         if refusal is not None:
+            # Journalled too. A setup refused because the venue was
+            # unreachable or the symbol unknown is still a setup the
+            # platform considered, and leaving it out would make the
+            # journal a record of the days the plumbing worked.
+            self._journal(
+                request, refusal, order=None, placed=False,
+                context=None, annotations=annotations,
+            )
             return SubmissionResult(
                 verdict=refusal, order=None, placed=False, detail=refusal.explain()
             )
@@ -358,6 +382,10 @@ class TradingRuntime:
         )
 
         if not verdict.allowed:
+            self._journal(
+                request, verdict, order=None, placed=False,
+                context=context, annotations=annotations,
+            )
             return SubmissionResult(
                 verdict=verdict, order=None, placed=False, detail=verdict.explain()
             )
@@ -373,9 +401,14 @@ class TradingRuntime:
                 logger, logging.WARNING, "broker rejected order",
                 client_order_id=order.client_order_id, error=str(exc),
             )
+            rejected = self.oms.get(order.client_order_id)
+            self._journal(
+                request, verdict, order=rejected, placed=False,
+                context=context, annotations=annotations,
+                venue_detail=f"the venue rejected this order: {exc}",
+            )
             return SubmissionResult(
-                verdict=verdict, order=self.oms.get(order.client_order_id),
-                placed=False, detail=str(exc),
+                verdict=verdict, order=rejected, placed=False, detail=str(exc),
             )
 
         tracked = self.oms.mark_accepted(
@@ -384,12 +417,89 @@ class TradingRuntime:
         for fill in placed.fills:
             tracked = self.oms.apply_fill(order.client_order_id, fill)
 
+        self._journal(
+            request, verdict, order=tracked, placed=True,
+            context=context, annotations=annotations,
+        )
         return SubmissionResult(
             verdict=verdict,
             order=tracked,
             placed=True,
             detail=f"{tracked.status}: filled {tracked.filled_quantity} of {tracked.quantity}",
         )
+
+    # -- journal ----------------------------------------------------------------------
+
+    def _journal(
+        self,
+        request: OrderRequest,
+        verdict: RiskVerdict,
+        *,
+        order: Order | None,
+        placed: bool,
+        context: RiskContext | None,
+        annotations: TradeAnnotations | None,
+        venue_detail: str | None = None,
+    ) -> None:
+        """Record one considered setup. Never raises.
+
+        The failure handling is deliberately asymmetric, because the two
+        failures mean different things.
+
+        A refusal that cannot be journalled is a lost record of something
+        that never happened at a venue. It is bad for later analysis and
+        harmless to the account, so it logs an error and trading continues.
+
+        A PLACED order that cannot be journalled is a position at a venue
+        with no local record of why it was opened. The next reconciliation
+        will find an order it cannot explain, and the platform's view of
+        its own account is now incomplete — which is the exact condition
+        section 42 says must stop trading. So that latches the breaker.
+        """
+        if self.journal_store is None:
+            return
+
+        account_id = "unknown"
+        equity = ZERO
+        if context is not None:
+            account_id = context.account.account_id
+            equity = context.account.equity
+
+        try:
+            entry = entry_for(
+                request,
+                verdict,
+                trade_id=new_id("trade"),
+                account_external_id=account_id,
+                now=self.clock(),
+                mode=self.ensure_execution().mode,
+                order=order,
+                placed=placed,
+                data_quality=(
+                    str(context.data_quality.status) if context is not None else None
+                ),
+                annotations=annotations,
+                venue_detail=venue_detail,
+            )
+            self.journal_store.record(entry, equity=equity)
+        except Exception as exc:  # noqa: BLE001 - the handling is the point
+            log_event(
+                logger,
+                logging.ERROR,
+                "could not write the trade journal",
+                symbol=request.symbol,
+                placed=placed,
+                error=str(exc),
+            )
+            if placed:
+                self.trip(
+                    TripReason.ACCOUNT_STATE_UNKNOWN,
+                    (
+                        f"an order was placed for {request.symbol} and could not be "
+                        f"journalled ({exc}); the platform cannot account for its "
+                        "own position"
+                    ),
+                )
 
     # -- operations -------------------------------------------------------------------
 

@@ -126,6 +126,18 @@ for forbidden in ("arm_live", "reset_breaker", "gtcc.risk", "place_order"):
 config_source = (SRC / "gtcc" / "config.py").read_text(encoding="utf-8")
 check("frozen=True" in config_source, "settings are declared frozen")
 
+# Every way out of submit() writes a journal row. Section 24 keeps the
+# refusals, and a path that returns without journalling would silently
+# make the journal a record of only the trades that worked — which is the
+# shape of journal that cannot answer whether the refusals were right.
+submit_source = runtime_source.split("def submit(")[1].split("\n    def ")[0]
+returns = submit_source.count("return SubmissionResult(")
+journals = submit_source.count("self._journal(")
+check(
+    returns == journals and returns >= 4,
+    f"every exit from submit journals ({returns} returns, {journals} journal writes)",
+)
+
 # The scanner analyses and cannot trade. It is handed a market-data
 # adapter and the strategy registry; giving it the runtime, a broker or the
 # risk engine would create a second route to a venue, and the whole design

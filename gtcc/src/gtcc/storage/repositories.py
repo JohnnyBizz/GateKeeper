@@ -23,7 +23,13 @@ from gtcc.domain.enums import Market
 from gtcc.domain.money import D
 from gtcc.risk.safety import Trip, TripReason
 from gtcc.risk.state import RiskState, fresh_state
-from gtcc.storage.models import ExecutionTrip, RiskStateRow, TradingAccount
+from gtcc.journal.entry import JournalEntry
+from gtcc.storage.models import (
+    ExecutionTrip,
+    RiskStateRow,
+    TradeJournalEntry,
+    TradingAccount,
+)
 
 
 def _to_state(row: RiskStateRow, account_external_id: str) -> RiskState:
@@ -248,3 +254,107 @@ def _ensure_account(session: DbSession, external_id: str, equity: Decimal) -> Tr
         session.add(account)
         session.flush()
     return account
+
+
+class TradeJournalRepository:
+    """Writes journal rows, including the setups that were refused.
+
+    Section 24 keeps every considered setup. The reason is that a journal
+    of taken trades can only answer "were my trades any good", and the
+    more useful question — "were my refusals right" — needs the refusal
+    written down with the verdict that caused it. Filtering to taken
+    trades would make the limits unfalsifiable.
+    """
+
+    def __init__(self, session_factory) -> None:
+        self._session_factory = session_factory
+
+    def record(self, entry: JournalEntry, *, equity: Decimal) -> int:
+        """Write one row and return its id.
+
+        Raises on failure. Swallowing the error here would leave the
+        caller believing the trade was recorded; the caller decides what
+        an unrecorded trade means, and for a placed order it means
+        something serious.
+        """
+        with self._session_factory() as session:
+            account = _ensure_account(session, entry.account_external_id, equity)
+            row = TradeJournalEntry(
+                trade_id=entry.trade_id,
+                account_id=account.id,
+                considered_at=entry.considered_at,
+                symbol=entry.symbol,
+                market=entry.market,
+                strategy=entry.strategy,
+                direction=entry.direction,
+                timeframe=entry.timeframe,
+                mode=entry.mode,
+                outcome=entry.outcome,
+                planned_entry=entry.planned_entry,
+                planned_stop=entry.planned_stop,
+                planned_targets=entry.planned_targets,
+                planned_size=entry.planned_size,
+                planned_risk=entry.planned_risk,
+                reward_risk=entry.reward_risk,
+                actual_entry=entry.actual_entry,
+                actual_size=entry.actual_size,
+                regime=entry.regime,
+                session=entry.session,
+                data_quality=entry.data_quality,
+                risk_verdict=entry.risk_verdict,
+                market_structure=entry.market_structure,
+                indicators=entry.indicators,
+                agent_outputs=entry.agent_outputs,
+                ai_decision=entry.ai_decision,
+                news_context=entry.news_context,
+                macro_context=entry.macro_context,
+                order_ids=entry.order_ids,
+                notes=entry.notes,
+                opened_at=entry.opened_at,
+            )
+            if entry.fees is not None:
+                row.fees = entry.fees
+            session.add(row)
+            session.commit()
+            return row.id
+
+    def recent(
+        self, account_external_id: str, *, limit: int = 50, outcome: str | None = None
+    ) -> list[TradeJournalEntry]:
+        with self._session_factory() as session:
+            account = session.scalar(
+                select(TradingAccount).where(
+                    TradingAccount.external_id == account_external_id
+                )
+            )
+            if account is None:
+                return []
+            query = (
+                select(TradeJournalEntry)
+                .where(TradeJournalEntry.account_id == account.id)
+                .order_by(TradeJournalEntry.considered_at.desc())
+                .limit(limit)
+            )
+            if outcome is not None:
+                query = query.where(TradeJournalEntry.outcome == outcome)
+            return list(session.scalars(query).all())
+
+    def count(self, account_external_id: str) -> dict[str, int]:
+        """Rows per outcome, so a caller can see refusals are being kept."""
+        with self._session_factory() as session:
+            account = session.scalar(
+                select(TradingAccount).where(
+                    TradingAccount.external_id == account_external_id
+                )
+            )
+            if account is None:
+                return {}
+            rows = session.scalars(
+                select(TradeJournalEntry).where(
+                    TradeJournalEntry.account_id == account.id
+                )
+            ).all()
+            counts: dict[str, int] = {}
+            for row in rows:
+                counts[row.outcome] = counts.get(row.outcome, 0) + 1
+            return counts

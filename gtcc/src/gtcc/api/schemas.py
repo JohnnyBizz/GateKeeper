@@ -260,3 +260,41 @@ class ScanResultOut(BaseModel):
     finished_at: datetime
     rows: list[ScanRowOut]
     not_analysed: list[ScanRowOut]
+
+
+class JournalRowOut(BaseModel):
+    trade_id: str
+    considered_at: datetime
+    symbol: str
+    market: str
+    strategy: str
+    direction: str
+    timeframe: str | None = None
+    mode: str
+    outcome: str
+    planned_entry: Decimal | None = None
+    planned_stop: Decimal | None = None
+    planned_targets: list[str] = []
+    planned_size: Decimal | None = None
+    planned_risk: Decimal | None = None
+    reward_risk: Decimal | None = None
+    actual_entry: Decimal | None = None
+    actual_size: Decimal | None = None
+    realised_pnl: Decimal | None = None
+    regime: str | None = None
+    data_quality: str | None = None
+    #: The refusal reasons, so a kept refusal is readable without a join.
+    failures: list[str] = []
+    notes: str | None = None
+
+
+class JournalOut(BaseModel):
+    """Journal rows plus the counts per outcome.
+
+    The counts are here so that a reader can see at a glance that
+    refusals are being kept. A journal that silently stopped recording
+    them would otherwise look like a quiet week.
+    """
+
+    counts: dict[str, int]
+    rows: list[JournalRowOut]

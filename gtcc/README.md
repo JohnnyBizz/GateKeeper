@@ -61,7 +61,7 @@ python -m gtcc risk --example      # read the shipped example first
 Tests:
 
 ```bash
-pytest                       # 544
+pytest                       # 565
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -94,6 +94,7 @@ src/gtcc/
   structure/     market structure, every detection carrying its rule
   strategies/    strategy framework, gates, and the first module
   scanner/       many symbols at once, reporting what it could not read
+  journal/       every considered setup, including the refused ones
   data/          validation: GOOD / DEGRADED / INVALID
   risk/          limits, state, sizing, the deterministic engine
   execution/     paper fill engine, order state machine
@@ -106,7 +107,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           544 tests
+tests/           565 tests
 ```
 
 ## Documentation

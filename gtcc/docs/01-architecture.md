@@ -30,7 +30,7 @@ ORDER MANAGEMENT       execution/oms.py OrderManager               Phase 1  DONE
       |
 BROKER / EXCHANGE      adapters/        BrokerAdapter              Phase 1 (paper)
       |
-TRADE JOURNAL          storage/models   TradeJournalEntry          table Phase 1, writer Phase 4
+TRADE JOURNAL          journal/         every considered setup     Phase 2  DONE
       |
 PERFORMANCE DATABASE   storage/models   PerformanceSnapshot        table Phase 1, metrics Phase 4
 ```
@@ -171,3 +171,47 @@ that reason.
 The scanner holds a market-data adapter and the strategy registry. It has
 no broker, no runtime and no risk engine, so there is no path from a scan
 to an order; CI asserts all four.
+
+
+## The journal keeps the refusals
+
+`TradingRuntime.submit` writes a row on every exit path, and CI counts the
+returns against the writes so a new path cannot skip it. A refusal is a
+row with the verdict attached, including the checks that *passed* —
+because "why was this allowed" is a question worth being able to answer
+about a loss, and storing only failures would make rejections auditable
+and approvals not.
+
+A journal of taken trades can only answer "were my trades any good". The
+question worth answering is "were my refusals right", and that one is
+unanswerable unless the refusal was written down at the time. There is no
+endpoint that creates or edits a row: a journal somebody can revise
+afterwards is not evidence.
+
+Three distinctions the row preserves:
+
+**Refused by risk vs refused by the venue.** Risk approving an order that
+the venue then rejects is not a risk refusal. Recording it as one would
+blame the limits for a broker problem and corrupt any later study of them.
+
+**Absent context vs empty context.** A caller that passed no structure
+report leaves `{"_not_supplied": true}`, not `{}`. An empty dict reads as
+"the structure engine looked and found nothing", which is a claim about
+the market rather than about the caller.
+
+**Unknown vs zero.** Fees on a setup that never reached a venue are NULL,
+not 0.00 — a zero would average into every later cost statistic as a free
+trade. Realised P&L stays NULL until something closes the position.
+
+### A failed journal write is handled asymmetrically
+
+A refusal that cannot be journalled logs an error and trading continues:
+nothing is at the venue, so the account is still accountable and only the
+analysis record is poorer.
+
+A **placed** order that cannot be journalled latches the breaker. There
+is now a position at a venue that the platform cannot explain, the next
+reconciliation will find an order it has no row for, and an account state
+that cannot be reliably determined is exactly the condition section 42
+says must stop trading. Both halves have a test, and both were confirmed
+by inverting the condition and watching the matching test fail.
