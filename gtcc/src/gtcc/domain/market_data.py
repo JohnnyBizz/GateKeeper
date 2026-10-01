@@ -26,6 +26,27 @@ def _require_utc(moment: datetime, name: str) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
+def _require_finite(owner: object, **values: Decimal | None) -> None:
+    """Refuse NaN and the infinities at the domain boundary.
+
+    NaN propagates through arithmetic and then raises at whichever
+    comparison reaches it first, far from the feed that produced it.
+    Infinity is worse: it compares and multiplies without complaint, so
+    an infinite price passes every range check downstream. Catching
+    both where the object is built turns a bad feed into a loud error
+    at the edge.
+    """
+    for name, value in values.items():
+        if value is None:
+            continue
+        if not isinstance(value, Decimal):
+            raise TypeError(
+                f"{type(owner).__name__}.{name} must be a Decimal, got {type(value).__name__}"
+            )
+        if not value.is_finite():
+            raise ValueError(f"{type(owner).__name__}.{name} is not a finite number: {value}")
+
+
 @dataclass(frozen=True, slots=True)
 class Bar:
     """One OHLCV candle. *timestamp* is the bar's OPEN time."""
@@ -45,6 +66,10 @@ class Bar:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp", _require_utc(self.timestamp, "Bar.timestamp"))
+        _require_finite(
+            self, open=self.open, high=self.high, low=self.low,
+            close=self.close, volume=self.volume,
+        )
 
     @property
     def close_time(self) -> datetime:
@@ -83,6 +108,10 @@ class Quote:
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp", _require_utc(self.timestamp, "Quote.timestamp"))
         object.__setattr__(self, "received_at", _require_utc(self.received_at, "Quote.received_at"))
+        _require_finite(
+            self, bid=self.bid, ask=self.ask,
+            bid_size=self.bid_size, ask_size=self.ask_size,
+        )
 
     @property
     def mid(self) -> Decimal:
@@ -113,6 +142,9 @@ class Quote:
 class BookLevel:
     price: Decimal
     size: Decimal
+
+    def __post_init__(self) -> None:
+        _require_finite(self, price=self.price, size=self.size)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,3 +202,6 @@ class Trade:
     #: Which side was the aggressor, when the venue reports it. None
     #: means unknown — do not infer it from an uptick.
     aggressor: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_finite(self, price=self.price, size=self.size)

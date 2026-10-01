@@ -21,7 +21,9 @@ No bypass flag, no trusted caller, no second path. Grok's output arrives
 as advisory data and the engine does not read it.
 
 **Nothing is invented.** No fabricated market data, fills, balances,
-news, backtest results or model confidence. When a datum is unavailable
+news, backtest results or model confidence. Non-finite numbers are
+refused at the domain boundary, and connection URLs are never rendered
+with their credentials. When a datum is unavailable
 the code says so: a bar-only recording refuses to produce a quote, a
 position with no mark reports `None` rather than zero, and a page with no
 engine behind it says which phase delivers it instead of showing a
@@ -49,7 +51,7 @@ python -m gtcc serve          # http://127.0.0.1:8000
 Tests:
 
 ```bash
-pytest                       # 171
+pytest                       # 313
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -78,7 +80,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.example.yaml
 migrations/      Alembic
-tests/           171 tests
+tests/           313 tests
 ```
 
 ## Documentation
@@ -89,7 +91,7 @@ tests/           171 tests
 | `docs/02-database-schema.md` | All 20 tables and why each column exists |
 | `docs/03-adapter-interface.md` | The broker/data interface and planned venues |
 | `docs/04-market-data-pipeline.md` | Validation, timeframes, look-ahead prevention |
-| `docs/05-risk-engine.md` | The 33 checks, breakers, sizing, reward:risk |
+| `docs/05-risk-engine.md` | The 36 checks, the latch, breakers, sizing, reward:risk |
 | `docs/06-grok-contract.md` | Structured input, validated output, rejection rules |
 | `docs/07-paper-trading.md` | What is modelled, and what is explicitly not |
 | `docs/08-testing-strategy.md` | The seven critical tests and the rest |
@@ -98,11 +100,25 @@ tests/           171 tests
 
 ## Live trading
 
-Disabled. Reaching it needs, independently: `GTCC_LIVE_TRADING=true` in
-the server environment, the confirmation phrase typed exactly, no
-circuit breaker blocking live execution, and a human decision. Live mode
-disables itself when market data goes stale, the broker disconnects,
-order state cannot be reconciled, or a loss limit is reached.
+Disabled, and reaching it is deliberately two separate things.
+
+**Deployment permission** is `GTCC_ALLOW_LIVE_TRADING=true` in the
+server environment. It means this server may *offer* live mode. It arms
+nothing.
+
+**Runtime arming** is a signed-in owner posting the exact phrase
+`ENABLE LIVE TRADING` to `/api/control/live/arm`. Arming lasts for the
+life of that process only. Every restart comes back disarmed, and there
+is no environment variable that carries the phrase, so a stale deploy
+environment cannot stand in for a person.
+
+A critical safety failure **latches** execution off: stale or invalid
+market data, an unhealthy broker, a failed order reconciliation, an
+unvaluable position, or a daily, weekly or drawdown loss breaker.
+Recovery of the underlying dependency does **not** clear the latch. An
+authorised person must reset it, the reset is refused while anything is
+still unhealthy, and the reset leaves live disarmed, so resuming costs
+two deliberate actions.
 
 Phase 7 is extended forward testing. Live infrastructure is enabled only
 after that and an explicit authorisation from the account owner.

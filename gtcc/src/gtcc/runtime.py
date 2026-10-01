@@ -37,6 +37,12 @@ from gtcc.risk.engine import (
     exposure_from_positions,
 )
 from gtcc.risk.limits import RiskLimits
+from gtcc.risk.safety import (
+    ExecutionState,
+    LiveArmingError,
+    TripReason,
+    initial_state,
+)
 from gtcc.risk.state import RiskState, fresh_state
 
 logger = logging.getLogger("gtcc.runtime")
@@ -70,6 +76,10 @@ class TradingRuntime:
     broker_name: str = "paper"
     data_name: str = "paper"
     clock: Callable[[], datetime] = utcnow
+    #: Runtime execution state. Starts disarmed and untripped on every
+    #: process start, whatever the environment says. Nothing in the
+    #: configuration can arm it.
+    execution: ExecutionState | None = None
     state: RiskState | None = None
     #: When set, the risk state is read on first use and written after
     #: every change, so a restart cannot clear a tripped breaker.
@@ -78,6 +88,11 @@ class TradingRuntime:
     last_reconciliation: Reconciliation | None = None
 
     # -- wiring ---------------------------------------------------------------
+
+    def ensure_execution(self) -> ExecutionState:
+        if self.execution is None:
+            self.execution = initial_state(self.settings.mode)
+        return self.execution
 
     @property
     def broker(self) -> BrokerAdapter:
@@ -173,9 +188,31 @@ class TradingRuntime:
         if self.last_reconciliation is not None and self.last_reconciliation.blocks_live_trading:
             healthy = False
 
+        # These conditions do not merely fail one order: they latch
+        # execution off until a person resets it. Recovering the broker
+        # on the next poll must not quietly resume trading, because
+        # whatever happened in between is unaccounted for.
+        if not broker_health.healthy:
+            self.trip(TripReason.BROKER_UNHEALTHY, broker_health.detail or "broker unhealthy")
+        if self.last_reconciliation is not None and self.last_reconciliation.blocks_live_trading:
+            self.trip(
+                TripReason.RECONCILIATION_FAILED, self.last_reconciliation.summary()
+            )
+        if not data_quality.tradeable:
+            self.trip(
+                TripReason.STALE_MARKET_DATA
+                if any("STALE" in str(code) for code in data_quality.codes)
+                else TripReason.INVALID_MARKET_DATA,
+                data_quality.summary(),
+            )
+        if not exposure_known:
+            self.trip(
+                TripReason.ACCOUNT_STATE_UNKNOWN,
+                "an open position cannot be valued, so exposure is unknown",
+            )
+
         return RiskContext(
-            mode=self.settings.mode,
-            live_trading_enabled=self.settings.live_trading,
+            execution=self.ensure_execution(),
             account=account,
             instrument=instrument,
             limits=self.limits,
@@ -248,7 +285,7 @@ class TradingRuntime:
                 verdict=verdict, order=None, placed=False, detail=verdict.explain()
             )
 
-        order = self.oms.register(request, verdict, mode=self.settings.mode)
+        order = self.oms.register(request, verdict, mode=self.ensure_execution().mode)
         self.oms.mark_submitted(order.client_order_id)
 
         try:
@@ -289,9 +326,100 @@ class TradingRuntime:
             )
         return result
 
-    def engage_kill_switch(self, engaged: bool) -> RiskState:
+    # -- live arming and the latched breaker -------------------------------
+
+    def arm_live(self, *, actor: str, confirmation: str) -> ExecutionState:
+        """Arm live execution. Raises :class:`LiveArmingError` if refused.
+
+        The confirmation is compared against a phrase supplied in this
+        call, never against anything read from configuration, so there
+        is no environment variable that can stand in for a person.
+        """
+        state = self.ensure_execution().arm_live(
+            actor=actor,
+            confirmation=confirmation,
+            deployment_allows_live=self.settings.allow_live_trading,
+            now=self.clock(),
+        )
+        self.execution = state
+        log_event(
+            logger, logging.WARNING, "live execution ARMED",
+            actor=actor, armed_at=state.armed_at.isoformat() if state.armed_at else None,
+        )
+        return state
+
+    def disarm_live(self, *, actor: str) -> ExecutionState:
+        self.execution = self.ensure_execution().disarm_live(actor=actor, now=self.clock())
+        log_event(logger, logging.WARNING, "live execution disarmed", actor=actor)
+        return self.execution
+
+    def trip(self, reason: TripReason, detail: str) -> ExecutionState:
+        """Latch execution off. Idempotent for a reason already latched."""
+        before = self.ensure_execution()
+        state = before.trip(reason, detail, now=self.clock())
+        self.execution = state
+        if reason not in before.trip_reasons:
+            log_event(
+                logger, logging.ERROR, "safety breaker TRIPPED",
+                reason=str(reason), detail=detail,
+                occurred_at=state.trips[-1].occurred_at.isoformat(),
+                was_live_armed=before.live_armed,
+            )
+        return state
+
+    def system_healthy(self) -> tuple[bool, str]:
+        """Is every dependency the breaker cares about healthy right now?
+
+        Read before a reset is allowed, so a breaker cannot be cleared
+        while the condition that tripped it is still true.
+        """
+        problems: list[str] = []
+        try:
+            health = self.broker.health()
+            if not health.healthy:
+                problems.append(f"broker: {health.detail or 'unhealthy'}")
+        except Exception as exc:
+            problems.append(f"broker: {exc}")
+        try:
+            data = self.data.health()
+            if not data.healthy:
+                problems.append(f"data: {data.detail or 'unhealthy'}")
+        except Exception as exc:
+            problems.append(f"data: {exc}")
+        if self.last_reconciliation is not None and not self.last_reconciliation.clean:
+            problems.append(f"reconciliation: {self.last_reconciliation.summary()}")
+        if self.state is not None and not self.state.breakers().clear:
+            problems.append("risk breakers: " + "; ".join(self.state.breakers().reasons))
+        return (not problems), "; ".join(problems)
+
+    def reset_breaker(self, *, actor: str) -> ExecutionState:
+        """Clear the latch, leaving the process disarmed.
+
+        Refused while anything is still unhealthy. Clearing does not
+        re-arm: resuming live trading costs a second deliberate action.
+        """
+        healthy, detail = self.system_healthy()
+        state = self.ensure_execution().reset_breaker(
+            actor=actor, healthy=healthy, unhealthy_detail=detail, now=self.clock()
+        )
+        self.execution = state
+        log_event(
+            logger, logging.WARNING, "safety breaker reset",
+            actor=actor, mode=str(state.mode), live_armed=state.live_armed,
+        )
+        return state
+
+    def set_mode(self, mode, *, actor: str) -> ExecutionState:
+        """Switch between the non-live modes. LIVE is not reachable here."""
+        self.execution = self.ensure_execution().set_mode(mode, actor=actor)
+        log_event(logger, logging.INFO, "mode switched", actor=actor, mode=str(mode))
+        return self.execution
+
+    def engage_kill_switch(self, engaged: bool, *, actor: str = "operator") -> RiskState:
         state = self._persist(self.ensure_state().with_kill_switch(engaged))
-        log_event(logger, logging.WARNING, "kill switch", engaged=engaged)
+        if engaged:
+            self.trip(TripReason.KILL_SWITCH, f"kill switch engaged by {actor}")
+        log_event(logger, logging.WARNING, "kill switch", engaged=engaged, actor=actor)
         return state
 
     def pause(self, paused: bool) -> RiskState:
@@ -314,6 +442,16 @@ class TradingRuntime:
                 daily=daily, weekly=weekly, drawdown=drawdown,
                 realised_pnl=str(realised_pnl),
             )
+            # A loss breaker is a critical safety event, so it latches
+            # execution as well as blocking new trades. Tomorrow's roll
+            # clears the daily tally; it does not clear this.
+            for tripped, reason in (
+                (daily, TripReason.DAILY_LOSS_LIMIT),
+                (weekly, TripReason.WEEKLY_LOSS_LIMIT),
+                (drawdown, TripReason.MAX_DRAWDOWN),
+            ):
+                if tripped:
+                    self.trip(reason, f"realised {realised_pnl} breached the limit")
         return self._persist(state)
 
     def account(self) -> Account:

@@ -187,17 +187,52 @@ class TestTheLedger:
         assert paper_broker.get_balance() < D("100000")
 
     def test_adding_to_a_position_averages_the_entry(self, paper_broker):
+        """Exact arithmetic, not a tolerance.
+
+        The previous version of this test compared the average against
+        the first fill with a loose relative tolerance, which would have
+        passed for almost any implementation. Two equal fills average to
+        the arithmetic mean of their prices, exactly, and that is what is
+        asserted here.
+        """
         request = OrderRequest(
             symbol="BTCUSDT", market=Market.CRYPTO, side=Side.BUY,
             order_type=OrderType.MARKET, strategy="test",
         )
-        paper_broker.place_order(request, quantity=D("1"))
-        first = paper_broker.get_positions()[0].average_entry_price
-        paper_broker.place_order(request, quantity=D("1"))
-        position = paper_broker.get_positions()[0]
+        first_order = paper_broker.place_order(request, quantity=D("1"))
+        first_price = first_order.fills[0].price
 
+        second_order = paper_broker.place_order(request, quantity=D("1"))
+        second_price = second_order.fills[0].price
+
+        position = paper_broker.get_positions()[0]
         assert position.quantity == D("2")
-        assert position.average_entry_price == pytest.approx(float(first), rel=D("0.001"))
+        assert position.average_entry_price == (first_price + second_price) / D("2")
+
+    def test_averaging_weights_by_quantity(self, paper_broker, now):
+        """Unequal fills weight by size, not by count."""
+        from dataclasses import replace
+
+        request = OrderRequest(
+            symbol="BTCUSDT", market=Market.CRYPTO, side=Side.BUY,
+            order_type=OrderType.MARKET, strategy="test",
+        )
+        one = paper_broker.place_order(request, quantity=D("1"))
+        more = paper_broker.place_order(
+            replace(request, client_order_id="second"), quantity=D("3")
+        )
+        # The second order fills partially: participation is capped at a
+        # fraction of displayed size. Weight by what actually filled,
+        # which is the point of the test.
+        fills = list(one.fills) + list(more.fills)
+        assert len({fill.quantity for fill in fills}) > 1, "fills must differ in size"
+
+        total = sum(fill.quantity for fill in fills)
+        expected = sum(fill.price * fill.quantity for fill in fills) / total
+
+        position = paper_broker.get_positions()[0]
+        assert position.quantity == total
+        assert position.average_entry_price == expected
 
     def test_fees_reduce_the_balance(self, paper_broker):
         before = paper_broker.get_balance()

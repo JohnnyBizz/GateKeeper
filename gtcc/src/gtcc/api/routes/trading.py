@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session as DbSession
 from gtcc.api.deps import AppContext, Principal, current_principal, get_context, get_db, require_owner
 from gtcc.api.schemas import (
     AccountOut,
+    LiveArmIn,
     CheckOut,
     LimitsOut,
     ModeSwitchIn,
@@ -27,7 +28,7 @@ from gtcc.api.schemas import (
     VerdictOut,
 )
 from gtcc.api.security import audit
-from gtcc.config import LIVE_CONFIRMATION_PHRASE
+from gtcc.risk.safety import LIVE_CONFIRMATION_PHRASE, ExecutionState, LiveArmingError
 from gtcc.domain.enums import TradingMode
 from gtcc.domain.money import D
 from gtcc.domain.orders import Order, OrderRequest, Position
@@ -278,7 +279,9 @@ def kill_switch(
     principal: Principal = Depends(require_owner),
     db: DbSession = Depends(get_db),
 ) -> RiskStateOut:
-    state = context.runtime.engage_kill_switch(body.enabled)
+    state = context.runtime.engage_kill_switch(
+        body.enabled, actor=principal.user.email
+    )
     audit(
         db,
         "control.kill_switch",
@@ -329,39 +332,20 @@ def switch_mode(
     principal: Principal = Depends(require_owner),
     db: DbSession = Depends(get_db),
 ) -> dict:
-    """Switch trading mode.
+    """Switch between BACKTEST and PAPER.
 
-    Moving to LIVE needs two independent things: the deployment's
-    environment must already permit live trading, and the owner must
-    type the confirmation phrase. Neither alone is enough, and the
-    switch is never implicit.
+    LIVE is deliberately not reachable here. It is not a mode you
+    select; it is a state a person arms, with a phrase, through
+    ``/api/control/live/arm``. Keeping it off this endpoint means there
+    is exactly one door into live execution.
     """
-    settings = context.settings
-    if body.target is TradingMode.LIVE:
-        if not settings.live_trading:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "live trading is not enabled for this deployment. Set "
-                    "GTCC_LIVE_TRADING=true in the server environment and restart "
-                    "before switching."
-                ),
-            )
-        if body.confirmation != LIVE_CONFIRMATION_PHRASE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"type exactly {LIVE_CONFIRMATION_PHRASE!r} to confirm",
-            )
-        breakers = context.runtime.ensure_state().breakers()
-        if breakers.live_execution_blocked:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="a circuit breaker is blocking live execution: "
-                + "; ".join(breakers.reasons),
-            )
+    runtime = context.runtime
+    previous = runtime.ensure_execution().mode
+    try:
+        state = runtime.set_mode(body.target, actor=principal.user.email)
+    except LiveArmingError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    previous = settings.mode
-    settings.mode = body.target
     audit(
         db,
         "control.mode_switch",
@@ -369,7 +353,137 @@ def switch_mode(
         ip_address=request.client.host if request.client else None,
         detail={"from": str(previous), "to": str(body.target)},
     )
-    return {"mode": str(body.target), "previous": str(previous)}
+    return {"mode": str(state.mode), "previous": str(previous)}
+
+
+def _execution_out(state: ExecutionState) -> dict:
+    return {
+        "mode": str(state.mode),
+        "live_armed": state.live_armed,
+        "live_permitted": state.live_permitted,
+        "armed_by": state.armed_by,
+        "armed_at": state.armed_at.isoformat() if state.armed_at else None,
+        "tripped": state.tripped,
+        "new_trades_blocked": state.new_trades_blocked,
+        "trips": [
+            {
+                "reason": str(trip.reason),
+                "detail": trip.detail,
+                "occurred_at": trip.occurred_at.isoformat(),
+            }
+            for trip in state.trips
+        ],
+        "last_reset_at": state.last_reset_at.isoformat() if state.last_reset_at else None,
+        "last_reset_by": state.last_reset_by,
+        "summary": state.describe(),
+    }
+
+
+@router.get("/control/live", response_model=dict)
+def live_status(
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(current_principal),
+) -> dict:
+    state = context.runtime.ensure_execution()
+    return {
+        "deployment_allows_live": context.settings.allow_live_trading,
+        "confirmation_phrase_required": LIVE_CONFIRMATION_PHRASE,
+        **_execution_out(state),
+    }
+
+
+@router.post("/control/live/arm", response_model=dict)
+def arm_live(
+    body: LiveArmIn,
+    request: Request,
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(require_owner),
+    db: DbSession = Depends(get_db),
+) -> dict:
+    """Arm live execution for the lifetime of this process.
+
+    Requires an authenticated owner, deployment permission, the exact
+    confirmation phrase, and no latched breaker. A restart disarms it;
+    there is no configuration that re-arms it.
+    """
+    try:
+        state = context.runtime.arm_live(
+            actor=principal.user.email, confirmation=body.confirmation
+        )
+    except LiveArmingError as exc:
+        audit(
+            db,
+            "control.live_arm_refused",
+            user_id=principal.user.id,
+            ip_address=request.client.host if request.client else None,
+            detail={"reason": str(exc)},
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    audit(
+        db,
+        "control.live_armed",
+        user_id=principal.user.id,
+        ip_address=request.client.host if request.client else None,
+        detail={
+            "armed_by": state.armed_by,
+            "armed_at": state.armed_at.isoformat() if state.armed_at else None,
+        },
+    )
+    return _execution_out(state)
+
+
+@router.post("/control/live/disarm", response_model=dict)
+def disarm_live(
+    request: Request,
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(require_owner),
+    db: DbSession = Depends(get_db),
+) -> dict:
+    state = context.runtime.disarm_live(actor=principal.user.email)
+    audit(
+        db,
+        "control.live_disarmed",
+        user_id=principal.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    return _execution_out(state)
+
+
+@router.post("/control/breaker/reset", response_model=dict)
+def reset_breaker(
+    request: Request,
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(require_owner),
+    db: DbSession = Depends(get_db),
+) -> dict:
+    """Clear a latched safety breaker.
+
+    Refused while anything is still unhealthy, and the reset leaves the
+    process disarmed: resuming live trading needs a separate arm with
+    the phrase.
+    """
+    before = context.runtime.ensure_execution()
+    try:
+        state = context.runtime.reset_breaker(actor=principal.user.email)
+    except LiveArmingError as exc:
+        audit(
+            db,
+            "control.breaker_reset_refused",
+            user_id=principal.user.id,
+            ip_address=request.client.host if request.client else None,
+            detail={"reason": str(exc)},
+        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    audit(
+        db,
+        "control.breaker_reset",
+        user_id=principal.user.id,
+        ip_address=request.client.host if request.client else None,
+        detail={"cleared": [str(trip.reason) for trip in before.trips]},
+    )
+    return _execution_out(state)
 
 
 @router.post("/control/reconcile", response_model=dict)

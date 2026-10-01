@@ -34,7 +34,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 addopts = "-q --strict-markers"
 markers = ["slow: long-running tests"]
 

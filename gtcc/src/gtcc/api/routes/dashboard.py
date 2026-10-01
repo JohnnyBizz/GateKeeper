@@ -44,12 +44,15 @@ PAGES = [
 
 def _base(request: Request, context: AppContext, active: str) -> dict:
     settings = context.settings
+    execution = context.runtime.ensure_execution()
     return {
         "request": request,
         "pages": PAGES,
         "active": active,
-        "mode": str(settings.mode),
-        "live_trading": settings.live_trading,
+        "mode": str(execution.mode),
+        "execution": execution,
+        "deployment_allows_live": settings.allow_live_trading,
+        "live_armed": execution.live_armed,
         "automatic_execution": settings.automatic_execution,
         "app_name": settings.app_name,
     }
@@ -150,7 +153,7 @@ def settings_page(
     data = _base(request, context, "settings")
     data.update(
         {
-            "settings_view": context.settings.redacted(),
+            "settings_view": context.settings.public_view(),
             "limits": context.runtime.limits,
             "csrf_token": principal.csrf_token,
             "user": principal.user,

@@ -16,7 +16,12 @@ _SessionFactory: sessionmaker[Session] | None = None
 
 
 def configure(database_url: str, *, echo: bool = False) -> Engine:
-    """Create the engine. Called once at startup, and by tests."""
+    """Create the engine. Called once at startup, and by tests.
+
+    Takes the plain connection string, not the SecretStr that holds it
+    in settings: callers pass ``settings.database_dsn`` so that the
+    unwrapping is visible at the call site rather than hidden here.
+    """
     global _engine, _SessionFactory
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     _engine = create_engine(

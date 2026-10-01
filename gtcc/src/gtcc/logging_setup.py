@@ -29,6 +29,12 @@ _SENSITIVE_KEYS = re.compile(
 #: Long opaque strings that look like keys even without a telling name.
 _KEY_SHAPED = re.compile(r"\b(?:xai-|sk-|pk_|Bearer\s+)[A-Za-z0-9_\-\.]{12,}")
 
+#: Credentials inside a connection URL. No key name gives these away:
+#: a field called "database_url" looks harmless and carries the
+#: password in the middle of its value. The userinfo segment between
+#: "://" and "@" is replaced wholesale.
+_URL_CREDENTIALS = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)(?P<userinfo>[^/@\s]*@)")
+
 REDACTED = "***redacted***"
 
 
@@ -44,7 +50,8 @@ def scrub(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, (list, tuple)):
         return [scrub(item, _depth + 1) for item in value]
     if isinstance(value, str):
-        return _KEY_SHAPED.sub(REDACTED, value)
+        cleaned = _URL_CREDENTIALS.sub(rf"\g<scheme>{REDACTED}@", value)
+        return _KEY_SHAPED.sub(REDACTED, cleaned)
     return value
 
 

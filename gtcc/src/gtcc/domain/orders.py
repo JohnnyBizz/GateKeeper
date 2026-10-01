@@ -29,6 +29,27 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
+def _require_finite(owner: object, **values: Decimal | None) -> None:
+    """Refuse NaN and the infinities at the domain boundary.
+
+    NaN propagates through arithmetic and then raises at whichever
+    comparison reaches it first, far from the feed that produced it.
+    Infinity is worse: it compares and multiplies without complaint, so
+    an infinite price passes every range check downstream. Catching
+    both where the object is built turns a bad feed into a loud error
+    at the edge.
+    """
+    for name, value in values.items():
+        if value is None:
+            continue
+        if not isinstance(value, Decimal):
+            raise TypeError(
+                f"{type(owner).__name__}.{name} must be a Decimal, got {type(value).__name__}"
+            )
+        if not value.is_finite():
+            raise ValueError(f"{type(owner).__name__}.{name} is not a finite number: {value}")
+
+
 @dataclass(frozen=True, slots=True)
 class OrderRequest:
     """What a strategy or an operator wants to do.
@@ -56,6 +77,15 @@ class OrderRequest:
     created_at: datetime = field(default_factory=utcnow)
     metadata: dict = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        _require_finite(
+            self, quantity=self.quantity, limit_price=self.limit_price,
+            stop_price=self.stop_price, take_profit=self.take_profit,
+            protective_stop=self.protective_stop,
+        )
+        for index, target in enumerate(self.targets):
+            _require_finite(self, **{f"targets[{index}]": target})
+
     @property
     def reference_price(self) -> Decimal | None:
         """The price the trade is planned around, when one is known."""
@@ -75,6 +105,13 @@ class Fill:
     timestamp: datetime
     liquidity: str = "taker"
     venue_fill_id: str = field(default_factory=lambda: new_id("fill"))
+
+    def __post_init__(self) -> None:
+        _require_finite(self, quantity=self.quantity, price=self.price, fee=self.fee)
+        if self.quantity <= ZERO:
+            raise ValueError(f"a fill of {self.quantity} is not an execution")
+        if self.price <= ZERO:
+            raise ValueError(f"a fill at {self.price} is not a price")
 
     @property
     def notional(self) -> Decimal:
@@ -107,6 +144,13 @@ class Order:
     reject_reason: str | None = None
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
+
+    def __post_init__(self) -> None:
+        _require_finite(
+            self, quantity=self.quantity, limit_price=self.limit_price,
+            stop_price=self.stop_price, filled_quantity=self.filled_quantity,
+            average_fill_price=self.average_fill_price, fees_paid=self.fees_paid,
+        )
 
     @property
     def remaining_quantity(self) -> Decimal:
@@ -162,6 +206,14 @@ class Position:
     opened_at: datetime = field(default_factory=utcnow)
     strategy: str = "manual"
 
+    def __post_init__(self) -> None:
+        _require_finite(
+            self, quantity=self.quantity,
+            average_entry_price=self.average_entry_price,
+            mark_price=self.mark_price, realised_pnl=self.realised_pnl,
+            fees_paid=self.fees_paid, protective_stop=self.protective_stop,
+        )
+
     @property
     def is_flat(self) -> bool:
         return self.quantity == ZERO
@@ -204,6 +256,13 @@ class Account:
     reconciled_at: datetime | None = None
     #: High-water mark of equity, for drawdown. Maintained by the risk store.
     peak_equity: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        _require_finite(
+            self, equity=self.equity, cash=self.cash,
+            buying_power=self.buying_power, margin_used=self.margin_used,
+            peak_equity=self.peak_equity,
+        )
 
     @property
     def drawdown(self) -> Decimal:

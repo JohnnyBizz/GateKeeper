@@ -29,6 +29,21 @@ TRADE JOURNAL          storage/models   TradeJournalEntry          table Phase 1
 PERFORMANCE DATABASE   storage/models   PerformanceSnapshot        table Phase 1, metrics Phase 4
 ```
 
+## Configuration versus state
+
+These are separate on purpose, and conflating them was the worst defect
+found in review.
+
+**Settings** describe the deployment: where the database is, what this
+server is permitted to offer. They are frozen, so a validator cannot be
+walked around by assigning a field afterwards, which an API route was
+doing. Settings survive restarts.
+
+**ExecutionState** describes what the process is doing right now: the
+mode in force, whether a person armed live execution, whether a safety
+breaker has latched. It lives in memory and starts fresh on every
+process start. No configuration value can produce an armed state.
+
 ## The one invariant
 
 Every order reaches a broker through `TradingRuntime.submit`, and that
@@ -49,6 +64,7 @@ risk engine does not read it at all.
 ```
 api/            HTTP, auth, CSRF, serialisation. No trading logic.
 runtime.py      The application container and the single submission path.
+risk/safety.py  Runtime execution state: live arming and the latched breaker.
 risk/           Deterministic authority. Pure functions over value objects.
 execution/      Order lifecycle and paper fills.
 adapters/       Venue translation. The only layer that knows a vendor.

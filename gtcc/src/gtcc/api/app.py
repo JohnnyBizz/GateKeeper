@@ -123,7 +123,9 @@ def create_app(
 
     log_event(
         logger, logging.INFO, "application started",
-        mode=str(settings.mode), live_trading=settings.live_trading,
+        mode=str(runtime.ensure_execution().mode),
+        deployment_allows_live=settings.allow_live_trading,
+        live_armed=runtime.ensure_execution().live_armed,
         automatic_execution=settings.automatic_execution,
     )
     return app

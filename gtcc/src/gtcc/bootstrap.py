@@ -87,11 +87,12 @@ def build_runtime(
         broker=broker.name,
         data=data.name,
         mode=str(settings.mode),
+        allow_live_trading=settings.allow_live_trading,
         limits_are_example=limits.is_example,
     )
     return runtime
 
 
 def init_database(settings: Settings) -> None:
-    db.configure(settings.database_url)
+    db.configure(settings.database_dsn)
     db.create_all()

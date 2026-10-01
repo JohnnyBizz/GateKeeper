@@ -14,17 +14,25 @@ and only outside development.
 |---|---|---|
 | `GTCC_SECRET_KEY` | Sessions | 32+ random characters. `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
 | `GTCC_DATABASE_URL` | Storage | Defaults to SQLite. PostgreSQL in production |
-| `GTCC_MODE` | Mode | `BACKTEST` / `PAPER` / `LIVE`. Defaults to PAPER |
-| `GTCC_LIVE_TRADING` | Live | Must be true before LIVE is reachable |
-| `GTCC_LIVE_CONFIRMATION` | Live | Must equal `ENABLE LIVE TRADING` exactly |
+| `GTCC_MODE` | Mode | `BACKTEST` or `PAPER`. **`LIVE` is refused**: live is armed at runtime, never configured |
+| `GTCC_ALLOW_LIVE_TRADING` | Live | Deployment permission only. Lets the server OFFER live mode; arms nothing |
 | `GTCC_RISK_CONFIG_PATH` | Risk | Defaults to `config/risk.yaml` |
 | `GTCC_GROK_API_KEY` | Phase 3 | xAI key |
 | `GTCC_GROK_MODEL` | Phase 3 | **No default.** Set it from current xAI documentation |
 | `GTCC_REDIS_URL` | Scale | Rate limiting across more than one instance |
 
 Secrets are read from the environment or a secret store, never from a
-committed file, and `Settings.redacted()` is the only shape that reaches
-a response or a log line.
+committed file. `Settings.public_view()` is the only shape that reaches
+a response or a page, and it is an **allowlist**: a new setting is
+invisible until somebody adds it to `PUBLIC_FIELDS`. Connection URLs are
+described by scheme, host, port and path, with the userinfo segment
+never read out of the parsed result, so a password inside
+`postgresql://user:pass@host/db` cannot be rendered. The log filter
+strips the same userinfo segment from any string it emits.
+
+There is deliberately **no** environment variable carrying the live
+confirmation phrase. One used to exist, and it meant a stale deploy
+environment satisfied the human-confirmation gate at startup.
 
 ## Services to evaluate
 

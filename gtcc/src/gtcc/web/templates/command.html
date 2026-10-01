@@ -80,7 +80,9 @@
     <div class="panel-head"><h2>Risk status</h2></div>
     <dl class="kv">
       <dt>Mode</dt><dd>{{ mode }}</dd>
-      <dt>Live trading</dt><dd>{{ 'ENABLED' if live_trading else 'disabled' }}</dd>
+      <dt>Live permitted here</dt><dd>{{ 'yes' if deployment_allows_live else 'no' }}</dd>
+      <dt>Live ARMED</dt><dd>{{ 'YES — ' + execution.armed_by if live_armed else 'no' }}</dd>
+      <dt>Safety breaker</dt><dd>{{ 'TRIPPED' if execution.tripped else 'clear' }}</dd>
       <dt>Automatic execution</dt><dd>{{ 'ON' if automatic_execution else 'off' }}</dd>
       <dt>Kill switch</dt><dd>{{ 'ENGAGED' if state.kill_switch else 'clear' }}</dd>
       <dt>Trading paused</dt><dd>{{ 'yes' if state.trading_paused else 'no' }}</dd>

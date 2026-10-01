@@ -15,7 +15,8 @@ full, at any size produces an equity curve no broker will reproduce.
 | Commission | The instrument's own maker and taker schedule |
 | Latency | Fills are stamped after the configured delay, so a strategy cannot act on its own fill before it would have heard |
 | Market hours | An equity order outside its session rests rather than filling |
-| Limit protection | A limit order never fills worse than its limit, whatever the slippage model says |
+| Limit protection | A limit order never fills worse than its limit. The fill is put on the tick grid **first**, in the venue's favour, and clamped to the limit **after**. The reverse order let a buy limit of 100.00 round up to 100.01 |
+| Tick direction | A buy pays up to the next tick, a sell receives down to the previous one. Rounding to nearest would hand the strategy a fraction of a tick no venue would give |
 
 ## Not modelled, and documented rather than faked
 

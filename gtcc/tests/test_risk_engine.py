@@ -25,6 +25,7 @@ from gtcc.domain.enums import (
     Timeframe,
     TradingMode,
 )
+from gtcc.risk.safety import LIVE_CONFIRMATION_PHRASE, TripReason, initial_state
 from gtcc.domain.events import EconomicEvent, EventImpact
 from gtcc.domain.market_data import Quote
 from gtcc.domain.money import D
@@ -110,20 +111,55 @@ class TestTheSevenRefusals:
         assert Check.STOP_PRESENT in verdict.failure_codes
         assert verdict.approved_quantity == 0
 
-    def test_a_live_order_is_impossible_while_live_trading_is_off(self, engine, context):
+    def test_a_live_order_is_impossible_while_live_is_unarmed(self, engine, context):
         """The one that must never regress.
 
-        Mode LIVE with live trading disabled is not a warning state. No
-        quantity is approved, whatever else about the request is sound.
+        Reaching LIVE mode without a person having armed it in this
+        process is not a warning state. No quantity is approved,
+        whatever else about the request is sound.
+
+        The state here is constructed by hand precisely because the
+        supported path cannot produce it: ``arm_live`` is the only way
+        into LIVE and it sets ``live_armed``. This proves the engine
+        would still refuse if some future code path manufactured the
+        inconsistent state.
         """
-        verdict = engine.evaluate(
-            _request(),
-            replace(context, mode=TradingMode.LIVE, live_trading_enabled=False),
+        from dataclasses import replace as dc_replace
+
+        unarmed_live = dc_replace(
+            initial_state(TradingMode.PAPER), mode=TradingMode.LIVE, live_armed=False
         )
+        verdict = engine.evaluate(_request(), replace(context, execution=unarmed_live))
 
         assert verdict.action is RiskAction.REJECT
         assert Check.LIVE_MODE_PERMITTED in verdict.failure_codes
         assert verdict.approved_quantity == 0
+
+    def test_a_latched_breaker_refuses_every_order(self, engine, context):
+        """The eighth refusal, added by this repair pass.
+
+        A latched safety trip stops orders in every mode, and recovery
+        of the dependency does not clear it.
+        """
+        tripped = context.execution.trip(TripReason.BROKER_UNHEALTHY, "connection lost")
+
+        verdict = engine.evaluate(_request(), replace(context, execution=tripped))
+
+        assert verdict.action is RiskAction.REJECT
+        assert Check.EXECUTION_NOT_TRIPPED in verdict.failure_codes
+
+    def test_an_armed_live_order_is_allowed(self, engine, context):
+        """The positive case, so the refusal above is not vacuous."""
+        armed = context.execution.arm_live(
+            actor="owner@example.com",
+            confirmation=LIVE_CONFIRMATION_PHRASE,
+            deployment_allows_live=True,
+        )
+
+        verdict = engine.evaluate(_request(), replace(context, execution=armed))
+
+        assert verdict.action in (RiskAction.ALLOW, RiskAction.REDUCE)
+        assert Check.LIVE_MODE_PERMITTED not in verdict.failure_codes
 
 
 class TestTheHappyPath:

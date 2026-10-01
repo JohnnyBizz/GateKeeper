@@ -9,21 +9,28 @@
     <div class="panel-head"><h2>Runtime configuration</h2></div>
     <dl class="kv">
       {% for key, value in settings_view.items() | sort %}
-      <dt>{{ key }}</dt><dd>{{ value if value != '' else '—' }}</dd>
+      <dt>{{ key }}</dt>
+      <dd>{% if value is mapping %}{{ value.scheme or '—' }}{% if value.host %}://{{ value.host }}{% if value.port %}:{{ value.port }}{% endif %}{{ value.path or '' }}{% endif %}{% else %}{{ value if value != '' else '—' }}{% endif %}</dd>
       {% endfor %}
     </dl>
   </div>
   <div class="panel">
     <div class="panel-head"><h2>Trading mode</h2></div>
     <p class="subtitle" style="margin-bottom:14px">
-      Switching to LIVE needs two independent things: the server environment must
-      already permit it, and the phrase below must be typed exactly. Neither alone
-      is enough, and the switch is never implicit.
+      LIVE is not a mode you select. The deployment must permit it, and then a
+      person arms it with the exact phrase. Arming lasts for the life of this
+      process only: a restart always comes back disarmed, and no environment
+      variable can arm it.
     </p>
     <dl class="kv">
-      <dt>Current</dt><dd>{{ mode }}</dd>
-      <dt>Live permitted</dt><dd>{{ 'yes' if live_trading else 'no (set GTCC_LIVE_TRADING and restart)' }}</dd>
-      <dt>Confirmation</dt><dd>ENABLE LIVE TRADING</dd>
+      <dt>Current mode</dt><dd>{{ mode }}</dd>
+      <dt>Live permitted here</dt>
+      <dd>{{ 'yes' if deployment_allows_live else 'no (set GTCC_ALLOW_LIVE_TRADING and restart)' }}</dd>
+      <dt>Live armed now</dt>
+      <dd>{{ 'YES, by ' + execution.armed_by if live_armed else 'no' }}</dd>
+      <dt>Safety breaker</dt>
+      <dd>{{ 'TRIPPED — ' + (execution.trip_reasons | join(', ')) if execution.tripped else 'clear' }}</dd>
+      <dt>Confirmation phrase</dt><dd>ENABLE LIVE TRADING</dd>
     </dl>
     <div class="empty" style="margin-top:16px">
       <strong>Connections, strategies and notifications</strong>

@@ -33,16 +33,25 @@ def health(context: AppContext = Depends(get_context)) -> HealthOut:
         data_ok, data_detail = False, f"data adapter error: {exc}"
 
     limits = runtime.limits
-    ready = broker_ok and data_ok and not limits.is_example
+    execution = runtime.ensure_execution()
+    # A latched breaker is not "degraded", it is stopped. Reporting it
+    # as ready because the dependencies came back is exactly the lie
+    # the latch exists to prevent.
+    ready = broker_ok and data_ok and not limits.is_example and not execution.tripped
 
     return HealthOut(
-        status="ready" if ready else "degraded",
-        mode=settings.mode,
-        live_trading=settings.live_trading,
+        status="tripped" if execution.tripped else ("ready" if ready else "degraded"),
+        mode=execution.mode,
+        deployment_allows_live=settings.allow_live_trading,
+        live_armed=execution.live_armed,
+        execution_tripped=execution.tripped,
+        trip_reasons=[str(reason) for reason in execution.trip_reasons],
         automatic_execution=settings.automatic_execution,
         broker_healthy=broker_ok,
         data_healthy=data_ok,
         risk_limits_loaded=True,
         risk_limits_are_example=limits.is_example,
-        detail="; ".join(part for part in (broker_detail, data_detail) if part),
+        detail="; ".join(
+            part for part in (broker_detail, data_detail, execution.describe()) if part
+        ),
     )

@@ -1,6 +1,6 @@
 # Testing strategy
 
-171 tests, all passing. `cd gtcc && pytest`.
+313 tests, all passing. `cd gtcc && pytest`.
 
 ## The seven that matter most
 
@@ -15,7 +15,8 @@ failure says what broke:
 | Stale price | `test_a_stale_price_is_refused` |
 | Broker disconnected | `test_a_broker_disconnect_is_refused` |
 | Invalid stop | `test_an_invalid_stop_is_refused`, `test_a_missing_stop_is_refused` |
-| Live mode disabled | `test_a_live_order_is_impossible_while_live_trading_is_off` |
+| Live mode unarmed | `test_a_live_order_is_impossible_while_live_is_unarmed` |
+| Safety breaker latched | `test_a_latched_breaker_refuses_every_order` |
 | Malformed AI response | `TestMalformedAnswersAreRejected` (ten shapes) |
 
 If one of these ever goes green by accident the platform can lose money
@@ -29,7 +30,10 @@ in a way no other test catches.
 | `test_paper_execution.py` | Fill friction, the ledger, the order state machine, reconciliation |
 | `test_data_and_instruments.py` | Quote and bar validation, instrument arithmetic, sizing edges, the replay adapter's refusal to invent a quote |
 | `test_ai_contract.py` | Schema acceptance, ten malformed shapes, hallucination rejection, snapshot construction |
-| `test_api_and_runtime.py` | Auth, CSRF, rate limiting, security headers, orders through risk, operator controls, dashboard rendering, the single submission path, configuration gates, risk state surviving a restart, unknown symbols |
+| `test_api_and_runtime.py` | Auth, CSRF per endpoint and per identity, rate limiting, security headers, production cookie flags, session fixation, live arming, the latched breaker, dashboard rendering, configuration gates, secret rendering |
+| `test_money_and_pricing.py` | Non-finite rejection at every boundary, tick rounding direction for limits, stops and targets, and that a paper fill cannot violate its limit |
+| `test_adapter_failures.py` | Stale data, crossed quotes, provider exceptions, rate limiting, broker disconnect, broker rejection, unvaluable positions, reconciliation failure, strict-fixture enforcement |
+| `test_migrations.py` | Alembic upgrade from empty to head, drift check, downgrade, and the application running against the migrated schema |
 
 ## Principles
 
@@ -45,6 +49,25 @@ its own cause.
 written out in `conftest.py` rather than loaded from
 `risk.example.yaml`, so editing the example cannot silently stop a test
 from testing what it says.
+
+**Fakes are strict.** `StrictDataAdapter` answers only for symbols it
+was given and raises `FixtureMisuse` otherwise, distinguishing that
+from a symbol the venue genuinely does not list, which raises
+`FeatureUnavailable` as production would. `FailingBroker` raises if
+asked to place an order the test did not arrange. A double that answers
+every question can make a broken test pass, and one did: the original
+instrument source returned the same crypto contract for every symbol,
+so an AAPL order was sized against Bitcoin and nothing noticed.
+
+**Authentication is not bundled into convenience.** There are five
+clients — anonymous, owner, owner without CSRF, owner with a bad CSRF
+token, and a non-owner — and every dangerous endpoint is parametrised
+across them. A single signed-in fixture makes the happy path short and
+the denial paths easy to never write.
+
+**Migrations are run, not assumed.** `create_all` builds the schema
+from ORM metadata and proves nothing about production. The migration
+tests shell out to the real Alembic CLI against an empty database.
 
 **Tests that would catch a quiet bug.** Five came from real defects found
 while building, and each now has a test naming the symptom:
@@ -72,6 +95,6 @@ see the future, not just a comment saying it does not.
 ```
 cd gtcc
 pip install -r requirements.txt
-pytest                      # all 171
+pytest                      # all 313
 pytest -k TheSevenRefusals  # the critical risk tests
 ```

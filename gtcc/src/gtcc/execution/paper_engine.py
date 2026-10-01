@@ -35,7 +35,8 @@ from decimal import Decimal
 from gtcc.domain.enums import AssetClass, OrderStatus, OrderType, Side
 from gtcc.domain.instruments import InstrumentSpec
 from gtcc.domain.market_data import OrderBook, Quote
-from gtcc.domain.money import ONE, ZERO, D, quantize_price
+from gtcc.domain.money import ONE, ZERO, D, ceil_to_tick, floor_to_tick
+from gtcc.domain.pricing import normalise_entry_limit, respects_limit
 from gtcc.domain.orders import Fill, Order
 
 #: US regular trading hours, in exchange local time. Only used for
@@ -142,16 +143,26 @@ class PaperFillEngine:
                 )
             return FillOutcome(fills=(), status=OrderStatus.ACCEPTED, reason=note)
 
-        # A limit order never fills worse than its limit, whatever the
-        # slippage model says.
-        if order.limit_price is not None:
-            price = (
-                min(price, order.limit_price)
-                if order.side is Side.BUY
-                else max(price, order.limit_price)
-            )
+        # Put the fill on the tick grid in the venue's favour: a buy pays
+        # up to the next tick, a sell receives down to the previous one.
+        # Rounding to nearest here would hand the strategy a fraction of
+        # a tick it would not get from a real venue.
+        price = (
+            ceil_to_tick(price, instrument.tick_size)
+            if order.side is Side.BUY
+            else floor_to_tick(price, instrument.tick_size)
+        )
 
-        price = quantize_price(price, instrument.tick_size)
+        # The limit is applied AFTER rounding, not before. Clamping first
+        # and rounding second let a buy limit of 100.00 round up to
+        # 100.01 and fill a cent above the price the trader set.
+        if order.limit_price is not None:
+            limit = normalise_entry_limit(order.limit_price, instrument.tick_size, order.side)
+            price = min(price, limit) if order.side is Side.BUY else max(price, limit)
+            if not respects_limit(price, limit, order.side):  # pragma: no cover - guard
+                raise AssertionError(
+                    f"paper fill at {price} violates the {order.side} limit {limit}"
+                )
         notional = instrument.notional(price, quantity)
         fee = instrument.fee(notional, maker=order.order_type is OrderType.LIMIT)
 

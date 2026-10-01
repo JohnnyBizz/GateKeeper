@@ -9,7 +9,7 @@ timestamps are UTC-enforced via `UtcDateTime`.
 |---|---|---|
 | `users` | Accounts | Argon2id hash, failed-login counter, lockout timestamp |
 | `sessions` | Server-side sessions | Opaque id, CSRF token, revocable; the cookie carries only a signed id |
-| `audit_log` | Who did what | Append-only by convention; correlation id ties rows to log lines |
+| `audit_log` | Who did what | Append-only by convention; correlation id ties rows to log lines. Records `control.live_armed`, `control.live_arm_refused`, `control.breaker_reset`, `control.breaker_reset_refused`, `control.kill_switch`, `control.mode_switch` and `order.submit`, each with the acting user |
 
 ## Accounts and venues
 

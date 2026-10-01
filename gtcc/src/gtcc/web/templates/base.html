@@ -11,6 +11,8 @@
   <div class="brand">GROK <span>TRADING</span> COMMAND CENTER</div>
   <div class="spacer"></div>
   {% if automatic_execution %}<span class="tag warn">AUTO EXECUTION ON</span>{% else %}<span class="tag">AUTO EXECUTION OFF</span>{% endif %}
+  {% if execution and execution.tripped %}<span class="tag bad">BREAKER TRIPPED</span>{% endif %}
+  {% if live_armed %}<span class="tag bad">LIVE ARMED</span>{% endif %}
   <span class="mode mode-{{ mode }}">{{ mode }}</span>
 </header>
 <div class="shell">
@@ -23,6 +25,14 @@
     {% endfor %}
   </nav>
   <main>
+    {% if execution and execution.tripped %}
+    <div class="banner">
+      <strong>Execution is latched off</strong>
+      {% for trip in execution.trips %}{{ trip.describe() }}{% if not loop.last %}; {% endif %}{% endfor %}
+      <br>Recovery of the underlying dependency does not clear this. An
+      authorised reset is required, and it leaves live trading disarmed.
+    </div>
+    {% endif %}
     {% block content %}{% endblock %}
     <footer class="disclaimer">
       Analysis and execution tooling. Nothing here is financial advice, and no

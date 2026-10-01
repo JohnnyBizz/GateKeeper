@@ -24,7 +24,13 @@ class UserOut(BaseModel):
 class HealthOut(BaseModel):
     status: str
     mode: TradingMode
-    live_trading: bool
+    #: Deployment permission: this server may OFFER live mode.
+    deployment_allows_live: bool
+    #: Runtime arming: a person armed live in THIS process. Always false
+    #: immediately after a restart.
+    live_armed: bool
+    execution_tripped: bool
+    trip_reasons: list[str] = Field(default_factory=list)
     automatic_execution: bool
     broker_healthy: bool
     data_healthy: bool
@@ -170,5 +176,17 @@ class ToggleIn(BaseModel):
 
 
 class ModeSwitchIn(BaseModel):
+    """Switch between the non-live modes. LIVE is refused by the route."""
+
     target: TradingMode
-    confirmation: str = ""
+
+
+class LiveArmIn(BaseModel):
+    """Arm live execution.
+
+    The phrase is supplied in the request by a person. It is never read
+    from configuration, which is the whole point: an environment
+    variable cannot stand in for somebody deciding.
+    """
+
+    confirmation: str = Field(min_length=1, max_length=128)

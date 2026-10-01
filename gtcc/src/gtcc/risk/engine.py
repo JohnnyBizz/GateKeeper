@@ -44,6 +44,7 @@ from gtcc.domain.market_data import Quote, utcnow
 from gtcc.domain.money import ONE, ZERO, D
 from gtcc.domain.orders import Account, Order, OrderRequest, Position
 from gtcc.risk.limits import RiskLimits
+from gtcc.risk.safety import ExecutionState
 from gtcc.risk.sizing import SizingResult, size_position
 from gtcc.risk.state import RiskState
 
@@ -52,6 +53,8 @@ class Check(StrEnum):
     """Stable identifiers. Dashboards, alerts and tests key on these."""
 
     INSTRUMENT_KNOWN = "INSTRUMENT_KNOWN"
+    SYMBOL_CONSISTENT = "SYMBOL_CONSISTENT"
+    EXECUTION_NOT_TRIPPED = "EXECUTION_NOT_TRIPPED"
     LIVE_MODE_PERMITTED = "LIVE_MODE_PERMITTED"
     KILL_SWITCH = "KILL_SWITCH"
     TRADING_NOT_PAUSED = "TRADING_NOT_PAUSED"
@@ -150,8 +153,10 @@ class RiskContext:
     else — no globals, no database, no clock.
     """
 
-    mode: TradingMode
-    live_trading_enabled: bool
+    #: Runtime execution state: current mode, whether a person armed
+    #: live during this process's life, and any latched safety trip.
+    #: The engine reads it and cannot change it.
+    execution: ExecutionState
     account: Account
     instrument: InstrumentSpec
     limits: RiskLimits
@@ -179,6 +184,15 @@ class RiskContext:
     event_strategy: bool = False
     strategy_timeframe: Timeframe | None = None
     now: datetime = field(default_factory=utcnow)
+
+    @property
+    def mode(self) -> TradingMode:
+        return self.execution.mode
+
+    @property
+    def live_trading_enabled(self) -> bool:
+        """Armed by a person during this process's life."""
+        return self.execution.live_armed
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +280,7 @@ class RiskEngine:
         add = checks.append
 
         self._check_mode(request, context, add)
+        self._check_symbol_consistency(request, context, add)
         self._check_operator_switches(request, context, add)
         self._check_system_health(context, add)
         self._check_market_conditions(context, add)
@@ -344,25 +359,48 @@ class RiskEngine:
     # -- gate groups ---------------------------------------------------------
 
     def _check_mode(self, request: OrderRequest, ctx: RiskContext, add) -> None:
-        """A LIVE order is impossible unless live trading is explicitly on."""
-        if ctx.mode is TradingMode.LIVE and not ctx.live_trading_enabled:
+        """Nothing may execute while a safety breaker is latched, and a
+        live order needs arming that happened in this process's life.
+
+        These are two separate checks because they fail for different
+        reasons and recover differently. A latched breaker stops orders
+        in every mode, paper included, and clears only by an authorised
+        reset. Live arming is about who permitted real money.
+        """
+        execution = ctx.execution
+
+        add(
+            CheckResult(
+                code=Check.EXECUTION_NOT_TRIPPED,
+                outcome=Outcome.FAIL if execution.tripped else Outcome.PASS,
+                detail=(
+                    "a safety breaker is latched and needs an authorised reset: "
+                    + "; ".join(trip.describe() for trip in execution.trips)
+                    if execution.tripped
+                    else "no safety breaker is latched"
+                ),
+                observed=",".join(str(reason) for reason in execution.trip_reasons) or "clear",
+            )
+        )
+
+        if execution.mode is TradingMode.LIVE and not execution.live_armed:
             add(
                 CheckResult(
                     code=Check.LIVE_MODE_PERMITTED,
                     outcome=Outcome.FAIL,
                     detail=(
-                        "mode is LIVE but live trading is not enabled; "
-                        "no order may reach a broker"
+                        "mode is LIVE but nobody armed live execution in this "
+                        "process; no order may reach a broker"
                     ),
                 )
             )
             return
-        if ctx.mode is TradingMode.LIVE and ctx.state.breakers().live_execution_blocked:
+        if execution.mode is TradingMode.LIVE and ctx.state.breakers().live_execution_blocked:
             add(
                 CheckResult(
                     code=Check.LIVE_MODE_PERMITTED,
                     outcome=Outcome.FAIL,
-                    detail="live execution is disabled by a circuit breaker",
+                    detail="live execution is disabled by a risk circuit breaker",
                 )
             )
             return
@@ -370,8 +408,11 @@ class RiskEngine:
             CheckResult(
                 code=Check.LIVE_MODE_PERMITTED,
                 outcome=Outcome.PASS,
-                detail=f"mode {ctx.mode}",
-                observed=str(ctx.mode),
+                detail=(
+                    f"mode {execution.mode}"
+                    + (f", armed by {execution.armed_by}" if execution.live_armed else "")
+                ),
+                observed=str(execution.mode),
             )
         )
 
@@ -415,6 +456,34 @@ class RiskEngine:
                 request.market not in state.disabled_markets,
                 f"{request.market} is enabled",
                 f"{request.market} is disabled by the operator",
+            )
+        )
+
+    def _check_symbol_consistency(self, request: OrderRequest, ctx: RiskContext, add) -> None:
+        """The order, the contract spec and the quote must name one symbol.
+
+        A test fixture that returned one instrument for every symbol let
+        an AAPL order be sized against a Bitcoin contract specification,
+        and nothing in the engine noticed. In production the same shape
+        of mistake is an adapter mapping error, and it would price and
+        size a position against the wrong instrument entirely.
+        """
+        names = {("order", request.symbol), ("instrument", ctx.instrument.symbol)}
+        if ctx.quote is not None:
+            names.add(("quote", ctx.quote.symbol))
+        distinct = {symbol for _, symbol in names}
+
+        add(
+            CheckResult(
+                code=Check.SYMBOL_CONSISTENT,
+                outcome=Outcome.PASS if len(distinct) == 1 else Outcome.FAIL,
+                detail=(
+                    f"order, instrument and quote all name {request.symbol}"
+                    if len(distinct) == 1
+                    else "symbol mismatch: "
+                    + ", ".join(f"{role}={symbol}" for role, symbol in sorted(names))
+                ),
+                observed=",".join(sorted(distinct)),
             )
         )
 

@@ -13,7 +13,7 @@ import getpass
 import sys
 
 from gtcc.bootstrap import build_runtime, init_database
-from gtcc.config import get_settings
+from gtcc.config import describe_url, get_settings
 from gtcc.logging_setup import configure_logging
 
 
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "init-db":
         init_database(settings)
-        print(f"tables created in {settings.database_url}")
+        print(f"tables created in {describe_url(settings.database_dsn)}")
         return 0
 
     if args.command == "create-user":
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         from gtcc.storage import db
         from gtcc.storage.models import User
 
-        db.configure(settings.database_url)
+        db.configure(settings.database_dsn)
         password = getpass.getpass("password (minimum 12 characters): ")
         if password != getpass.getpass("repeat: "):
             print("passwords do not match", file=sys.stderr)
@@ -66,10 +66,13 @@ def main(argv: list[str] | None = None) -> int:
         runtime = build_runtime(settings)
         broker = runtime.broker.health()
         data = runtime.data.health()
-        print(f"mode                 {settings.mode}")
-        print(f"live trading         {settings.live_trading}")
+        execution = runtime.ensure_execution()
+        print(f"mode                 {execution.mode}")
+        print(f"live permitted here  {settings.allow_live_trading}  (deployment permission)")
+        print(f"live ARMED           {execution.live_armed}  (runtime; always false at startup)")
+        print(f"breaker              {'TRIPPED' if execution.tripped else 'clear'}")
         print(f"automatic execution  {settings.automatic_execution}")
-        print(f"database             {settings.database_url.split('://')[0]}")
+        print(f"database             {describe_url(settings.database_dsn)['scheme']}")
         print(f"grok model           {settings.grok_model or '(not configured)'}")
         print(f"risk limits          {settings.risk_config_path}"
               f"{' [EXAMPLE]' if runtime.limits.is_example else ''}")
@@ -83,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         from gtcc.api.app import create_app
         from gtcc.storage import db
 
-        db.configure(settings.database_url)
+        db.configure(settings.database_dsn)
         app = create_app(settings=settings, runtime=build_runtime(settings))
         uvicorn.run(app, host=args.host, port=args.port, log_config=None)
         return 0

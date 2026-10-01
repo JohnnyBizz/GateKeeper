@@ -16,12 +16,19 @@ approved quantity, the sizing result, the reward-to-risk breakdown, and
 and the observed value. Section 14 asks the platform to show exactly why
 a setup scored what it did; the same applies more strongly to a refusal.
 
-## The 33 checks
+## The 36 checks
 
-**System gates** — `LIVE_MODE_PERMITTED`, `KILL_SWITCH`,
-`TRADING_NOT_PAUSED`, `SYMBOL_ENABLED`, `STRATEGY_ENABLED`,
-`MARKET_ENABLED`, `BROKER_HEALTHY`, `ACCOUNT_RECONCILED`,
-`EXPOSURE_KNOWN`.
+**System gates** — `EXECUTION_NOT_TRIPPED`, `LIVE_MODE_PERMITTED`,
+`SYMBOL_CONSISTENT`, `KILL_SWITCH`, `TRADING_NOT_PAUSED`,
+`SYMBOL_ENABLED`, `STRATEGY_ENABLED`, `MARKET_ENABLED`,
+`BROKER_HEALTHY`, `ACCOUNT_RECONCILED`, `EXPOSURE_KNOWN`,
+`INSTRUMENT_KNOWN`.
+
+`SYMBOL_CONSISTENT` requires the order, the contract specification and
+the quote to name one symbol. An adapter mapping error would otherwise
+size a position against the wrong instrument entirely, and a test
+fixture that returned one specification for every symbol proved the
+engine would not have noticed.
 
 **Market conditions** — `DATA_QUALITY`, `QUOTE_AVAILABLE`,
 `SPREAD_WITHIN_LIMIT`, `SLIPPAGE_WITHIN_LIMIT`, `EVENT_BLACKOUT`.
@@ -74,15 +81,40 @@ The **nearest** target is scored, not the furthest. Section 15 forbids
 inventing a distant target to clear the minimum ratio, and scoring the
 nearest one removes the incentive to try.
 
-## Breakers
+## Two different breakers, and they are not the same thing
 
-| Condition | Effect |
+**Risk breakers** live in `RiskState`. They count settled results and
+block new trades: daily loss, weekly loss, drawdown, consecutive
+losses. Rolling the day clears the daily one.
+
+**The execution latch** lives in `ExecutionState` and is a system-level
+stop. It is what the README means by live mode disabling itself.
+
+| Condition | Latches execution |
 |---|---|
-| Daily realised loss >= limit | New trades blocked for the rest of the day |
-| Weekly realised loss >= limit | New trades blocked |
-| Drawdown from high-water mark >= limit | **Live execution disabled** |
-| Consecutive losses >= limit | New trades blocked |
-| Kill switch | Everything stops, including live execution |
+| Stale or invalid market data | yes |
+| Broker reports unhealthy | yes |
+| Order reconciliation finds a difference | yes |
+| An open position cannot be valued | yes |
+| Daily, weekly or drawdown loss breaker | yes |
+| Kill switch | yes |
+| Operator trip | yes |
+
+Once latched:
+
+* New submissions are refused in **every** mode, paper included. Paper
+  results are the evidence base for whether any of this works, and
+  recording them while the feed is stale would poison that record.
+* **Recovery does not clear it.** The broker coming back on the next
+  poll leaves the latch set, because whatever happened in between is
+  unaccounted for.
+* Clearing requires `reset_breaker` with an actor, and is refused while
+  any dependency is still unhealthy.
+* A reset leaves live **disarmed**. Resuming live trading after a
+  safety event costs two deliberate human actions, not one.
+
+Every trip and every reset is logged and written to the audit table
+with the reason, the timestamp and, for a reset, who performed it.
 
 Breakers read **settled** results only. An unrealised number moves on its
 own, and a breaker that trips on a wick trips at random.
@@ -109,7 +141,25 @@ Rounding is always downward, and projected risk is recomputed from the
 rounded quantity, because a size rounded up onto a lot grid can exceed
 the limit the sizing was meant to respect.
 
+## Live execution is armed, not configured
+
+There is no setting that turns live trading on. `GTCC_ALLOW_LIVE_TRADING`
+is deployment *permission*; the state that actually permits an order is
+`ExecutionState.live_armed`, which is in memory, starts false on every
+process start, and is set only by an authenticated owner passing the
+exact phrase. The engine checks all three of mode, arming and latch,
+and no two of them imply the third.
+
+An earlier version made the phrase an environment-backed setting. A
+process whose environment still carried it booted straight into a state
+where live orders were permitted, with nobody present. That is the
+defect this design exists to prevent, and
+`test_an_environment_that_sets_the_old_variables_arms_nothing` sets
+every one of those variables and asserts nothing is armed.
+
 ## What Grok cannot do
 
-It cannot change a limit, cannot be consulted by the engine, and cannot
-place an order. `RiskEngine` does not import anything from `ai/`.
+It cannot change a limit, cannot be consulted by the engine, cannot
+place an order, and cannot arm or reset anything. `RiskEngine` does not
+import anything from `ai/`, and a test greps the AI package for
+`arm_live`, `reset_breaker` and any `gtcc.risk` import.
