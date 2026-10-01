@@ -13,7 +13,7 @@ module only moves it to and from a row.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -21,8 +21,9 @@ from sqlalchemy.orm import Session as DbSession
 
 from gtcc.domain.enums import Market
 from gtcc.domain.money import D
+from gtcc.risk.safety import Trip, TripReason
 from gtcc.risk.state import RiskState, fresh_state
-from gtcc.storage.models import RiskStateRow, TradingAccount
+from gtcc.storage.models import ExecutionTrip, RiskStateRow, TradingAccount
 
 
 def _to_state(row: RiskStateRow, account_external_id: str) -> RiskState:
@@ -134,3 +135,116 @@ class RiskStateRepository:
             session.add(account)
             session.flush()
         return account
+
+
+class ExecutionLatchRepository:
+    """Persists the latched safety trips, and only those.
+
+    Deliberately asymmetric with the rest of the execution state. Live
+    arming is never written here: it is a decision a person made about
+    a running process, and a restart must invalidate it. Trips are
+    always written: the process may have died *because* of the
+    condition that tripped it, and coming back clear would hide that.
+    """
+
+    def __init__(self, session_factory) -> None:
+        self._session_factory = session_factory
+
+    def open_trips(self, account_external_id: str) -> tuple[Trip, ...]:
+        """Every trip that has not been explicitly cleared."""
+        with self._session_factory() as session:
+            account = session.scalar(
+                select(TradingAccount).where(
+                    TradingAccount.external_id == account_external_id
+                )
+            )
+            if account is None:
+                return ()
+            rows = session.scalars(
+                select(ExecutionTrip)
+                .where(ExecutionTrip.account_id == account.id)
+                .where(ExecutionTrip.cleared_at.is_(None))
+                .order_by(ExecutionTrip.occurred_at)
+            ).all()
+            return tuple(
+                Trip(
+                    reason=TripReason(row.reason),
+                    detail=row.detail,
+                    occurred_at=row.occurred_at,
+                )
+                for row in rows
+            )
+
+    def record(self, account_external_id: str, trip: Trip, equity: Decimal) -> None:
+        """Write a trip. Idempotent per open reason.
+
+        A condition that keeps failing on every poll must not grow an
+        unbounded table, and the first occurrence is the one that says
+        when the problem actually started.
+        """
+        with self._session_factory() as session:
+            account = _ensure_account(session, account_external_id, equity)
+            already = session.scalar(
+                select(ExecutionTrip)
+                .where(ExecutionTrip.account_id == account.id)
+                .where(ExecutionTrip.reason == str(trip.reason))
+                .where(ExecutionTrip.cleared_at.is_(None))
+            )
+            if already is not None:
+                return
+            session.add(
+                ExecutionTrip(
+                    account_id=account.id,
+                    reason=str(trip.reason),
+                    detail=trip.detail[:1024],
+                    occurred_at=trip.occurred_at,
+                )
+            )
+
+    def clear(
+        self, account_external_id: str, *, actor: str, now: datetime, equity: Decimal
+    ) -> int:
+        """Close every open trip. Returns how many were cleared."""
+        with self._session_factory() as session:
+            account = _ensure_account(session, account_external_id, equity)
+            rows = session.scalars(
+                select(ExecutionTrip)
+                .where(ExecutionTrip.account_id == account.id)
+                .where(ExecutionTrip.cleared_at.is_(None))
+            ).all()
+            for row in rows:
+                row.cleared_at = now
+                row.cleared_by = actor
+            return len(rows)
+
+    def history(self, account_external_id: str, limit: int = 50) -> list[ExecutionTrip]:
+        with self._session_factory() as session:
+            account = session.scalar(
+                select(TradingAccount).where(
+                    TradingAccount.external_id == account_external_id
+                )
+            )
+            if account is None:
+                return []
+            return list(
+                session.scalars(
+                    select(ExecutionTrip)
+                    .where(ExecutionTrip.account_id == account.id)
+                    .order_by(ExecutionTrip.occurred_at.desc())
+                    .limit(limit)
+                ).all()
+            )
+
+
+def _ensure_account(session: DbSession, external_id: str, equity: Decimal) -> TradingAccount:
+    account = session.scalar(
+        select(TradingAccount).where(TradingAccount.external_id == external_id)
+    )
+    if account is None:
+        account = TradingAccount(
+            external_id=external_id, broker="paper", mode="PAPER",
+            currency="USD", starting_equity=D(equity),
+        )
+        session.add(account)
+        session.flush()
+    return account

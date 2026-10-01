@@ -804,3 +804,221 @@ class TestConfigurationGates:
 
         with pytest.raises(ValueError):
             Settings(**{field: value})
+
+
+class TestTheLatchSurvivesARestartButArmingDoesNot:
+    """The asymmetry is the whole design.
+
+    A process may have died *because* of the condition that tripped the
+    breaker, so coming back clear would hide it. Live arming is the
+    opposite: it is a decision a person made about a running process,
+    and a restart must invalidate it. One store, two opposite rules.
+    """
+
+    @pytest.fixture
+    def stores(self, settings):
+        from gtcc.storage import db
+        from gtcc.storage.repositories import (
+            ExecutionLatchRepository,
+            RiskStateRepository,
+        )
+
+        db.configure(settings.database_dsn)
+        db.create_all()
+        return (
+            RiskStateRepository(db.session_scope),
+            ExecutionLatchRepository(db.session_scope),
+        )
+
+    def _runtime(self, settings, limits, paper_broker, data_adapter, now, stores):
+        from gtcc.adapters.base import AdapterRegistry
+        from gtcc.runtime import TradingRuntime
+
+        registry = AdapterRegistry()
+        registry.register_data(data_adapter)
+        registry.register_broker(paper_broker)
+        state_store, latch_store = stores
+        return TradingRuntime(
+            settings=settings, limits=limits, registry=registry,
+            broker_name="paper", data_name=data_adapter.name, clock=lambda: now,
+            state_store=state_store, latch_store=latch_store,
+        )
+
+    def test_a_latched_trip_is_still_latched_after_a_restart(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        from gtcc.risk.safety import TripReason
+
+        first = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        first.trip(TripReason.BROKER_UNHEALTHY, "connection lost mid-session")
+        assert first.ensure_execution().tripped
+
+        restarted = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+
+        execution = restarted.ensure_execution()
+        assert execution.tripped is True
+        assert TripReason.BROKER_UNHEALTHY in execution.trip_reasons
+        assert execution.trips[0].detail == "connection lost mid-session"
+        assert execution.new_trades_blocked
+
+    def test_the_original_trip_time_is_preserved_across_the_restart(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        """When the problem started matters more than when it was noticed."""
+        from gtcc.risk.safety import TripReason
+
+        first = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        first.trip(TripReason.MAX_DRAWDOWN, "drawdown limit")
+        original = first.ensure_execution().trips[0].occurred_at
+
+        restarted = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+
+        assert restarted.ensure_execution().trips[0].occurred_at == original
+
+    def test_a_restart_still_comes_back_disarmed(
+        self, live_settings, limits, paper_broker, data_adapter, now
+    ):
+        """The other half: arming is never restored, latch or no latch."""
+        from gtcc.storage import db
+        from gtcc.storage.repositories import ExecutionLatchRepository
+
+        db.configure(live_settings.database_dsn)
+        db.create_all()
+        latch = ExecutionLatchRepository(db.session_scope)
+
+        def build():
+            from gtcc.adapters.base import AdapterRegistry
+            from gtcc.runtime import TradingRuntime
+
+            registry = AdapterRegistry()
+            registry.register_data(data_adapter)
+            registry.register_broker(paper_broker)
+            return TradingRuntime(
+                settings=live_settings, limits=limits, registry=registry,
+                broker_name="paper", data_name=data_adapter.name,
+                clock=lambda: now, latch_store=latch,
+            )
+
+        first = build()
+        first.arm_live(actor="owner@example.com", confirmation=LIVE_CONFIRMATION_PHRASE)
+        assert first.ensure_execution().live_permitted is True
+
+        restarted = build()
+
+        assert restarted.ensure_execution().live_armed is False
+        assert restarted.ensure_execution().tripped is False
+
+    def test_an_authorised_reset_clears_it_permanently(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        from gtcc.risk.safety import TripReason
+
+        first = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        first.trip(TripReason.OPERATOR, "manual")
+        first.reset_breaker(actor="owner@example.com")
+
+        restarted = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+
+        assert restarted.ensure_execution().tripped is False
+
+    def test_the_cleared_trip_keeps_its_history(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        """Cleared is not deleted. Who cleared what, and when, is the
+        record somebody will want after an incident."""
+        from gtcc.risk.safety import TripReason
+
+        _, latch = stores
+        runtime = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        runtime.trip(TripReason.STALE_MARKET_DATA, "feed stale")
+        runtime.reset_breaker(actor="owner@example.com")
+
+        history = latch.history("TEST-1")
+
+        assert len(history) == 1
+        assert history[0].reason == "STALE_MARKET_DATA"
+        assert history[0].cleared_by == "owner@example.com"
+        assert history[0].cleared_at is not None
+
+    def test_repeating_the_same_condition_does_not_grow_the_table(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        """A dependency failing on every poll must not write a row each
+        time, and the first occurrence is the one to keep."""
+        from gtcc.risk.safety import TripReason
+
+        _, latch = stores
+        runtime = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        for _ in range(5):
+            runtime.trip(TripReason.BROKER_UNHEALTHY, "still down")
+
+        assert len(latch.history("TEST-1")) == 1
+
+    def test_two_different_conditions_are_both_recorded(
+        self, settings, limits, paper_broker, data_adapter, now, stores
+    ):
+        from gtcc.risk.safety import TripReason
+
+        _, latch = stores
+        runtime = self._runtime(settings, limits, paper_broker, data_adapter, now, stores)
+        runtime.trip(TripReason.BROKER_UNHEALTHY, "down")
+        runtime.trip(TripReason.STALE_MARKET_DATA, "stale")
+
+        assert len(latch.history("TEST-1")) == 2
+        assert len(runtime.ensure_execution().trips) == 2
+
+    def test_an_unreadable_latch_latches_defensively(
+        self, settings, limits, paper_broker, data_adapter, now
+    ):
+        """If the latch cannot be read, the safe assumption is that it
+        was set. Resuming on an unknown safety state is the one answer
+        that is definitely wrong."""
+        from gtcc.adapters.base import AdapterRegistry
+        from gtcc.risk.safety import TripReason
+        from gtcc.runtime import TradingRuntime
+
+        class _Unreadable:
+            def open_trips(self, account_id):
+                raise RuntimeError("the database is unreachable")
+
+        registry = AdapterRegistry()
+        registry.register_data(data_adapter)
+        registry.register_broker(paper_broker)
+        runtime = TradingRuntime(
+            settings=settings, limits=limits, registry=registry,
+            broker_name="paper", data_name=data_adapter.name,
+            clock=lambda: now, latch_store=_Unreadable(),
+        )
+
+        execution = runtime.ensure_execution()
+
+        assert execution.tripped is True
+        assert TripReason.ACCOUNT_STATE_UNKNOWN in execution.trip_reasons
+
+    def test_a_storage_failure_does_not_lose_the_in_memory_latch(
+        self, settings, limits, paper_broker, data_adapter, now
+    ):
+        from gtcc.adapters.base import AdapterRegistry
+        from gtcc.risk.safety import TripReason
+        from gtcc.runtime import TradingRuntime
+
+        class _WriteOnlyFails:
+            def open_trips(self, account_id):
+                return ()
+
+            def record(self, account_id, trip, equity):
+                raise RuntimeError("disk full")
+
+        registry = AdapterRegistry()
+        registry.register_data(data_adapter)
+        registry.register_broker(paper_broker)
+        runtime = TradingRuntime(
+            settings=settings, limits=limits, registry=registry,
+            broker_name="paper", data_name=data_adapter.name,
+            clock=lambda: now, latch_store=_WriteOnlyFails(),
+        )
+
+        runtime.trip(TripReason.BROKER_UNHEALTHY, "down")
+
+        # Degrades to "latched until restart", never to "not latched".
+        assert runtime.ensure_execution().tripped is True

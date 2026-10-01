@@ -29,12 +29,27 @@ config.set_main_option("sqlalchemy.url", database_url)
 target_metadata = Base.metadata
 
 
+def render_item(type_, obj, autogen_context):
+    """Render the application's custom column types as plain SQLAlchemy.
+
+    ``UtcDateTime`` is a TypeDecorator whose impl is
+    ``DateTime(timezone=True)``, so the DDL is identical. Rendering the
+    plain type keeps migrations free of imports from application code:
+    a migration has to keep running years after the model it was
+    generated from has been renamed or deleted.
+    """
+    if type_ == "type" and obj.__class__.__name__ == "UtcDateTime":
+        return "sa.DateTime(timezone=True)"
+    return False
+
+
 def run_migrations_offline() -> None:
     context.configure(
         url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         compare_type=True,
+        render_item=render_item,
         dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
@@ -52,6 +67,7 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
+            render_item=render_item,
             # SQLite cannot ALTER most things in place; batch mode
             # rewrites the table instead, so one migration file works
             # on both engines.

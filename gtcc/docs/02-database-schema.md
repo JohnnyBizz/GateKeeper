@@ -44,6 +44,7 @@ news, macro).
 |---|---|---|
 | `risk_events` | Breaker trips, kill-switch flips | Severity and acknowledgement |
 | `risk_state` | Persisted tally | **A restart must not clear a tripped breaker.** A crash is not a fresh trading day |
+| `execution_trips` | Latched safety stops | One row per trip; `cleared_at` null means execution is latched off. Holds trips only, never the armed state, because the two have opposite restart rules |
 
 ## Research tables
 

@@ -356,6 +356,39 @@ class RiskEvent(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
 
 
+class ExecutionTrip(Base):
+    """One latched safety event, and whether it has been cleared.
+
+    Separate from :class:`RiskStateRow` because the two have opposite
+    restart semantics, and conflating them is how a safety stop gets
+    lost. Live *arming* must never survive a restart: a process that
+    came back trading because a row said so would be the original
+    defect wearing a different hat. A latched *trip* must always
+    survive one: the process may have died because of whatever tripped
+    it, and restarting is not an answer to that.
+
+    So arming lives only in memory and this table holds only trips. A
+    row with ``cleared_at`` null means execution is latched off.
+    """
+
+    __tablename__ = "execution_trips"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    reason: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    detail: Mapped[str] = mapped_column(String(1024), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        UtcDateTime(), default=utcnow, nullable=False, index=True
+    )
+    #: Null while latched. Set by an authorised reset, never by recovery.
+    cleared_at: Mapped[datetime | None] = mapped_column(UtcDateTime())
+    cleared_by: Mapped[str | None] = mapped_column(String(320))
+
+    __table_args__ = (
+        Index("ix_execution_trips_open", "account_id", "cleared_at"),
+    )
+
+
 class RiskStateRow(Base, TimestampMixin):
     """Persisted so a restart cannot clear a tripped breaker."""
 

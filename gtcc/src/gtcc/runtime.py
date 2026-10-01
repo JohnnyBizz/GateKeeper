@@ -13,7 +13,7 @@ broker, so there is no second thing to audit.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable
@@ -40,6 +40,7 @@ from gtcc.risk.limits import RiskLimits
 from gtcc.risk.safety import (
     ExecutionState,
     LiveArmingError,
+    Trip,
     TripReason,
     initial_state,
 )
@@ -80,6 +81,11 @@ class TradingRuntime:
     #: process start, whatever the environment says. Nothing in the
     #: configuration can arm it.
     execution: ExecutionState | None = None
+    #: When set, latched trips are read on first use and written as they
+    #: happen, so a safety stop survives a restart. Live arming is
+    #: deliberately NOT persisted: a process must never come back
+    #: trading because a row said it was armed.
+    latch_store: object | None = None
     state: RiskState | None = None
     #: When set, the risk state is read on first use and written after
     #: every change, so a restart cannot clear a tripped breaker.
@@ -90,9 +96,49 @@ class TradingRuntime:
     # -- wiring ---------------------------------------------------------------
 
     def ensure_execution(self) -> ExecutionState:
+        """The execution state for this process.
+
+        Starts disarmed, always. Any trip that was latched when the
+        last process died is read back, because the condition that
+        tripped it has not been looked at by a person yet, and a
+        restart is not a diagnosis.
+        """
         if self.execution is None:
-            self.execution = initial_state(self.settings.mode)
+            state = initial_state(self.settings.mode)
+            if self.latch_store is not None:
+                try:
+                    trips = self.latch_store.open_trips(self._account_id())
+                except Exception as exc:  # pragma: no cover - storage failure
+                    # Cannot read the latch. Assume the worst and latch,
+                    # because the alternative is resuming on an unknown
+                    # safety state.
+                    log_event(
+                        logger, logging.ERROR,
+                        "could not read the execution latch; latching defensively",
+                        error=str(exc),
+                    )
+                    trips = (
+                        Trip(
+                            reason=TripReason.ACCOUNT_STATE_UNKNOWN,
+                            detail=f"the latch could not be read on startup: {exc}",
+                            occurred_at=self.clock(),
+                        ),
+                    )
+                if trips:
+                    state = replace(state, trips=tuple(trips))
+                    log_event(
+                        logger, logging.WARNING,
+                        "execution latch restored from storage",
+                        reasons=[str(trip.reason) for trip in trips],
+                    )
+            self.execution = state
         return self.execution
+
+    def _account_id(self) -> str:
+        try:
+            return self.broker.get_account().account_id
+        except Exception:  # pragma: no cover - broker failure path
+            return "unknown"
 
     @property
     def broker(self) -> BrokerAdapter:
@@ -365,7 +411,28 @@ class TradingRuntime:
                 occurred_at=state.trips[-1].occurred_at.isoformat(),
                 was_live_armed=before.live_armed,
             )
+            self._persist_trip(state.trips[-1])
         return state
+
+    def _persist_trip(self, trip: Trip) -> None:
+        """Write the trip. A failure here must not lose the latch.
+
+        The in-memory state is already tripped by the time this runs,
+        so a storage failure degrades to "latched until restart"
+        rather than "not latched at all", and says so loudly.
+        """
+        if self.latch_store is None:
+            return
+        try:
+            self.latch_store.record(
+                self._account_id(), trip, self.broker.get_account().equity
+            )
+        except Exception as exc:  # pragma: no cover - storage failure path
+            log_event(
+                logger, logging.ERROR,
+                "could not persist the execution latch; it will not survive a restart",
+                error=str(exc), reason=str(trip.reason),
+            )
 
     def system_healthy(self) -> tuple[bool, str]:
         """Is every dependency the breaker cares about healthy right now?
@@ -399,10 +466,30 @@ class TradingRuntime:
         re-arm: resuming live trading costs a second deliberate action.
         """
         healthy, detail = self.system_healthy()
+        now = self.clock()
         state = self.ensure_execution().reset_breaker(
-            actor=actor, healthy=healthy, unhealthy_detail=detail, now=self.clock()
+            actor=actor, healthy=healthy, unhealthy_detail=detail, now=now
         )
         self.execution = state
+        if self.latch_store is not None:
+            try:
+                cleared = self.latch_store.clear(
+                    self._account_id(), actor=actor, now=now,
+                    equity=self.broker.get_account().equity,
+                )
+                log_event(
+                    logger, logging.WARNING, "execution latch cleared in storage",
+                    actor=actor, trips_cleared=cleared,
+                )
+            except Exception as exc:  # pragma: no cover - storage failure
+                # The row is still open, so the next restart re-latches.
+                # That is the safe direction, and it is said out loud.
+                log_event(
+                    logger, logging.ERROR,
+                    "cleared the latch in memory but not in storage; "
+                    "a restart will latch again",
+                    error=str(exc), actor=actor,
+                )
         log_event(
             logger, logging.WARNING, "safety breaker reset",
             actor=actor, mode=str(state.mode), live_armed=state.live_armed,

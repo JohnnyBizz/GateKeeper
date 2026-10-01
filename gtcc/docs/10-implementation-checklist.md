@@ -55,6 +55,8 @@ Findings from an external review of Phase 1, all closed:
 - [x] Failure-injection adapters for every venue failure mode
 - [x] Numeric configuration validated at startup
 - [x] Dead validator branch removed
+- [x] Execution latch persisted, so a crash during a safety event cannot
+      be cleared by restarting, while live arming still never resumes
 
 ## Phase 2 — real data and analysis
 
@@ -120,12 +122,9 @@ authorisation from the account owner.
    loss tally and its breakers survive a restart. It is not guarded
    against two processes writing the same account concurrently; a single
    instance is fine, more than one needs row locking.
-4. **The execution latch is in-process only.** A restart clears it. That
-   is deliberate for live arming, which must never resume by itself, but
-   it means a latched breaker does not currently survive a restart
-   either. The safe direction would be to persist the latch as well, so
-   a crash during a safety event cannot be cleared by restarting; that
-   is not yet implemented and is the first item of the next pass.
+4. The execution latch is persisted and survives a restart; live arming
+   is not and does not. See `docs/05-risk-engine.md` for why those two
+   rules are deliberately opposite.
 5. No real market data adapter, so the platform cannot currently trade
    anything. This is the correct state for Phase 1 and the first Phase 2 item.
 6. Journal rows are not yet written by the runtime; the table and schema exist.

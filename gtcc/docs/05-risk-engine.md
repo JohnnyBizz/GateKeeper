@@ -116,6 +116,28 @@ Once latched:
 Every trip and every reset is logged and written to the audit table
 with the reason, the timestamp and, for a reset, who performed it.
 
+### What survives a restart, and what must not
+
+These two rules are deliberately opposite, and conflating them is how a
+safety stop gets lost.
+
+**A latched trip survives.** It is written to `execution_trips` as it
+happens and read back on startup. The process may have died *because*
+of whatever tripped it, and restarting is not a diagnosis. If the latch
+cannot be read at startup the runtime latches defensively and says so,
+because resuming on an unknown safety state is the one answer that is
+definitely wrong.
+
+**Live arming does not survive.** It is a decision a person made about
+a running process and is never written anywhere. A process that came
+back trading because a row said it was armed would be the original
+configuration defect wearing a different hat.
+
+A cleared trip is marked cleared, not deleted, so who cleared what and
+when stays on the record. Repeating the same condition on every poll
+updates nothing: the first occurrence is kept, because when the problem
+started matters more than when it was noticed again.
+
 Breakers read **settled** results only. An unrealised number moves on its
 own, and a breaker that trips on a wick trips at random.
 
