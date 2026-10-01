@@ -126,6 +126,53 @@ for forbidden in ("arm_live", "reset_breaker", "gtcc.risk", "place_order"):
 config_source = (SRC / "gtcc" / "config.py").read_text(encoding="utf-8")
 check("frozen=True" in config_source, "settings are declared frozen")
 
+# The backtester measures the real system. A backtest whose risk engine is
+# not the live risk engine, or that relaxes a check because the mode is
+# BACKTEST, produces numbers for a platform that does not exist — and the
+# numbers would be better than the real ones, which is the direction that
+# gets a strategy promoted.
+backtest_source = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (SRC / "gtcc" / "backtest").glob("*.py")
+)
+check(
+    "RiskEngine()" in backtest_source and "self.engine.evaluate" in backtest_source,
+    "the backtester sizes through the real risk engine",
+)
+for smell in ("skip_risk", "bypass", "ignore_limits", "force=True"):
+    check(smell not in backtest_source, f"the backtester has no {smell}")
+# Shuffling a time series split leaks the future through autocorrelation:
+# tomorrow's bar ends up in-sample while today's is held out. Checked on the
+# parsed source, since the module docstring explains the rule in words and a
+# grep would fail on the explanation.
+
+
+def _names(source: str) -> set[str]:
+    """Imported modules, attribute names and called names in a module."""
+    found: set[str] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module.split(".")[0])
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.Name):
+            found.add(node.id)
+    return found
+
+
+backtest_names: set[str] = set()
+for path in (SRC / "gtcc" / "backtest").glob("*.py"):
+    backtest_names |= _names(path.read_text(encoding="utf-8"))
+for forbidden in ("random", "shuffle", "sample", "choice"):
+    check(
+        forbidden not in backtest_names,
+        f"no split in the backtester calls {forbidden}",
+    )
+
 # Every way out of submit() writes a journal row. Section 24 keeps the
 # refusals, and a path that returns without journalling would silently
 # make the journal a record of only the trades that worked — which is the

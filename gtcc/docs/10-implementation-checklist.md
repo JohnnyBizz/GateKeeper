@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 569 tests including the eight critical refusals
+- [x] 597 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -102,10 +102,18 @@ Findings from an external review of Phase 1, all closed:
 
 ## Phase 4 — measurement
 
-- [ ] Event-driven backtester with a **test proving** it cannot see the future
-- [ ] In-sample / validation / out-of-sample splits and walk-forward
+- [x] Event-driven backtester with **tests proving** it cannot see the
+      future: a decision fills no earlier than the next bar, a prefix run
+      gives the same trades as a full run, and an ambiguous bar resolves as
+      a stop. All three verified by reintroducing the bug
+- [x] Chronological in-sample / validation / out-of-sample splits and
+      walk-forward windows, never shuffled, with a ledger counting how often
+      held-out data has been looked at
 - [ ] Journal writer, including rejected setups
-- [ ] Performance metrics and the breakdowns in section 21
+- [x] Performance metrics that carry their own reliability: untrustworthy
+      below 30 closed trades, caveat printed before the statistics, and
+      nothing uncomputable reported as zero
+- [ ] The remaining section 21 breakdowns (by regime, session, strategy)
 - [ ] Analytics and Backtest Lab pages
 - [ ] Parameter sensitivity and fee/slippage stress testing
 - [ ] Anti-overfitting flags for edges that vanish under small changes
