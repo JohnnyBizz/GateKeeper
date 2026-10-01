@@ -12,7 +12,12 @@ venv/
 htmlcov/
 .coverage
 node_modules/
-# The owner's own risk numbers are theirs, not the repository's.
-config/risk.yaml
+# config/risk.yaml IS tracked, deliberately. It was ignored at first, on
+# the reasoning that an owner's risk numbers are theirs and not the
+# repository's. That turned out to be wrong twice over: the file is the
+# single most consequential thing in the deployment, so a change to it
+# deserves the same history as a change to the engine; and an untracked
+# file does not survive a fresh clone, which left the platform refusing
+# to start with no way for the owner to fix it. It holds no credentials.
 # Recorded market data can be large and is often licensed.
 data/recordings/*.csv

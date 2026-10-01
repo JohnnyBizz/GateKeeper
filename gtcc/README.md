@@ -38,10 +38,6 @@ pip install -r requirements.txt
 cp .env.example .env
 python -c "import secrets; print('GTCC_SECRET_KEY=' + secrets.token_urlsafe(48))" >> .env
 
-# Your risk numbers. Read every line; the platform refuses the example.
-cp config/risk.example.yaml config/risk.yaml
-#   ... edit, then delete the marker line ...
-
 python -m gtcc init-db
 python -m gtcc create-user you@example.com
 python -m gtcc check          # configuration and adapter health
@@ -76,6 +72,18 @@ recommendation, and this platform is not qualified to make one.
 line; `load_limits` refuses to read it while that marker is present, so a
 deployment cannot quietly run on numbers chosen by a stranger.
 
+`config/risk.yaml` holds this deployment's own numbers and is tracked, so
+that a change to a limit appears in history like a change to any other
+code — the limits are the most consequential thing here, and an edit to
+them should be as reviewable as an edit to the engine. Read
+`python -m gtcc risk` before and after any change: the point is to decide
+in money, not in percentages.
+
+Four separate limits cap one position's face value, and only the smallest
+of them is real. `gtcc risk` names the binding one per market, and prints
+the stop distance at which a cap starts to override the risk budget
+entirely.
+
 ## Layout
 
 ```
@@ -94,9 +102,9 @@ src/gtcc/
   web/           dashboard templates and stylesheet
   runtime.py     the application container and the single submission path
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
-config/          risk.example.yaml
+config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           498 tests
+tests/           520 tests
 ```
 
 ## Documentation
