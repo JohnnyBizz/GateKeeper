@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 432 tests including the eight critical refusals
+- [x] 491 tests including the eight critical refusals
 - [x] Architecture, schema, adapter, pipeline, risk, AI, paper, testing docs
 
 ## Safety repair pass (2026-10-01)
@@ -70,8 +70,10 @@ Findings from an external review of Phase 1, all closed:
 - [x] Regime classifier with its thresholds recorded alongside each reading
 - [x] Strategy framework with validation-status and regime gates, and the
       first strategy module
-- [ ] First live data adapter against a sandbox, with its own test suite
-      **(blocked: needs a provider decision and credentials)**
+- [x] First live data adapter against a sandbox: OANDA v20 practice,
+      with 59 tests and a read-only verifier the owner runs themselves
+      **(awaiting one `oanda-check` run against a real token to confirm
+      the response field names)**
 - [ ] Market scanner and its columns
 - [ ] Next.js terminal with charts, against the existing JSON API
 - [ ] Order book and order-flow analysis where a feed genuinely exists

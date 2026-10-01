@@ -51,7 +51,7 @@ python -m gtcc serve          # http://127.0.0.1:8000
 Tests:
 
 ```bash
-pytest                       # 432
+pytest                       # 491
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -83,7 +83,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.example.yaml
 migrations/      Alembic
-tests/           432 tests
+tests/           491 tests
 ```
 
 ## Documentation
@@ -100,6 +100,41 @@ tests/           432 tests
 | `docs/08-testing-strategy.md` | The seven critical tests and the rest |
 | `docs/09-credentials-and-services.md` | Keys, sandboxes, what must be verified |
 | `docs/10-implementation-checklist.md` | Phase by phase, with known limitations |
+
+## Connecting OANDA
+
+Phase 2 reads real prices from an OANDA practice account: simulated
+funds, live market data. Orders still pass through the deterministic
+risk engine; OANDA is only the venue at the far end.
+
+**Do not send your token to anybody, including an AI assistant.** It is
+not your username and password: it is a v20 personal access token you
+generate from your own account's API access page, and this server is the
+only thing that should ever hold it.
+
+```bash
+# In .env, which is gitignored, or in a secret manager.
+GTCC_OANDA_TOKEN=<your v20 personal access token>
+GTCC_OANDA_ACCOUNT_ID=101-004-1234567-001
+GTCC_OANDA_ENVIRONMENT=practice
+
+python -m gtcc oanda-check     # read-only: places no order
+```
+
+`oanda-check` calls each endpoint the adapter uses and prints which
+fields came back against what the adapter expects, then lists your
+tradeable instruments as the platform sees them. It never prints the
+token.
+
+Run it once before anything else. The adapter was written without access
+to OANDA's API documentation, so its field names are an assumption until
+that command confirms them. If something does not match, the output
+names the exact field and the fix is a small change in one file.
+
+Nothing about an instrument is written into this codebase. Tick size,
+pip size, lot step, minimum size and leverage all come from your
+account, which is why a wrong guess in the adapter cannot reach the
+position sizing.
 
 ## Live trading
 

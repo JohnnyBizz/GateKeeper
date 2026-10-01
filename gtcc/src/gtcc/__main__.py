@@ -27,6 +27,13 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init-db", help="create tables directly (development only)")
     sub.add_parser("check", help="report configuration and adapter health")
+    oanda = sub.add_parser(
+        "oanda-check",
+        help="verify the OANDA connection and response shapes (read-only)",
+    )
+    oanda.add_argument(
+        "--symbol", default="EUR_USD", help="instrument to probe (default EUR_USD)"
+    )
 
     create = sub.add_parser("create-user", help="create an account")
     create.add_argument("email")
@@ -61,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"created {args.email} with role {args.role}")
         return 0
+
+    if args.command == "oanda-check":
+        from gtcc.adapters import oanda_check
+
+        return oanda_check.run(settings)
 
     if args.command == "check":
         runtime = build_runtime(settings)

@@ -141,6 +141,20 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: LogFormat = LogFormat.JSON
 
+    # -- OANDA ------------------------------------------------------------------
+    #: A v20 personal access token, generated from the account's own API
+    #: access page. SecretStr, read only from the environment: it is
+    #: never prompted for, never written to a file by this codebase, and
+    #: never rendered by public_view().
+    oanda_token: SecretStr = SecretStr("")
+    oanda_account_id: str = ""
+    #: "practice" or "live". Pointing at live additionally requires
+    #: deployment permission AND a runtime arming, checked in the
+    #: adapter rather than trusted from here.
+    oanda_environment: str = "practice"
+    oanda_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    oanda_requests_per_second: float = Field(default=20.0, gt=0, le=100)
+
     # -- market data providers (keys only; adapters read these) ---------------
     provider_keys: dict[str, SecretStr] = Field(default_factory=dict)
 
@@ -155,6 +169,15 @@ class Settings(BaseSettings):
                 "Set GTCC_ALLOW_LIVE_TRADING=true to permit arming."
             )
         return value
+
+    @field_validator("oanda_environment")
+    @classmethod
+    def _known_oanda_environment(cls, value: str) -> str:
+        allowed = {"practice", "live"}
+        lowered = value.strip().lower()
+        if lowered not in allowed:
+            raise ValueError(f"oanda_environment must be one of {sorted(allowed)}")
+        return lowered
 
     @field_validator("log_level")
     @classmethod
@@ -198,6 +221,10 @@ class Settings(BaseSettings):
         return self.redis_url.get_secret_value()
 
     @property
+    def oanda_configured(self) -> bool:
+        return bool(self.oanda_token.get_secret_value() and self.oanda_account_id)
+
+    @property
     def uses_sqlite(self) -> bool:
         return self.database_dsn.startswith("sqlite")
 
@@ -226,6 +253,10 @@ class Settings(BaseSettings):
         "require_grok_for_trades",
         "log_level",
         "log_format",
+        "oanda_account_id",
+        "oanda_environment",
+        "oanda_timeout_seconds",
+        "oanda_requests_per_second",
     )
 
     def public_view(self) -> dict[str, object]:
@@ -244,6 +275,7 @@ class Settings(BaseSettings):
         view["redis"] = describe_url(self.redis_dsn)
         view["secret_key_set"] = bool(self.secret_key.get_secret_value())
         view["grok_api_key_set"] = bool(self.grok_api_key.get_secret_value())
+        view["oanda_token_set"] = bool(self.oanda_token.get_secret_value())
         view["provider_keys_configured"] = sorted(self.provider_keys)
         return view
 

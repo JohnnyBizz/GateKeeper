@@ -1,6 +1,6 @@
 # Testing strategy
 
-432 tests, all passing. `cd gtcc && pytest`.
+491 tests, all passing. `cd gtcc && pytest`.
 
 ## The seven that matter most
 
@@ -37,6 +37,7 @@ in a way no other test catches.
 | `test_features.py` | Indicator values against hand arithmetic and an independently written reference, series alignment, and warm-up behaviour |
 | `test_structure.py` | Swings, sequence, breaks, gaps, sweeps, ranges, and the look-ahead guards |
 | `test_regime_and_strategies.py` | Regime classification, the validation and regime gates, proposal coherence, and the registry |
+| `test_oanda.py` | The OANDA adapter against a strict stub transport: instrument translation, quotes, candles, order placement, every failure mode, the live-host gate, and that the token never reaches any output |
 
 ## Principles
 
@@ -71,6 +72,14 @@ the denial paths easy to never write.
 **Migrations are run, not assumed.** `create_all` builds the schema
 from ORM metadata and proves nothing about production. The migration
 tests shell out to the real Alembic CLI against an empty database.
+
+**The OANDA fixtures are labelled as assumptions.** They were written
+from the v20 API as documented elsewhere, not captured from live
+traffic, because the build environment could not reach OANDA. They
+prove the adapter handles the shape it expects and they do not prove
+that shape is right. `python -m gtcc oanda-check` is what closes that,
+and one test asserts the verifier's checklist has not drifted away from
+the fields the adapter actually reads.
 
 **Tests that would catch a quiet bug.** Five came from real defects found
 while building, and each now has a test naming the symptom:

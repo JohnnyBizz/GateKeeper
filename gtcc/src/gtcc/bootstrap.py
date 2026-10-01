@@ -45,13 +45,33 @@ def build_runtime(
 ) -> TradingRuntime:
     limits = load_risk_limits(settings)
 
-    data = ReplayAdapter(directory=data_directory or Path("data/recordings"))
-    broker = PaperBroker(
-        starting_cash=D(starting_cash),
-        quote_source=data.get_quote,
-        instrument_source=data.get_instrument,
-        fill_engine=PaperFillEngine(FillModel()),
-    )
+    if settings.oanda_configured:
+        # A practice account gives real prices and simulated funds,
+        # which is what Phase 2 wants. Orders still go through the risk
+        # engine; OANDA is only the venue at the far end.
+        from gtcc.adapters.oanda import build_oanda
+
+        data, broker = build_oanda(
+            token=settings.oanda_token.get_secret_value(),
+            account_id=settings.oanda_account_id,
+            environment=settings.oanda_environment,
+            deployment_allows_live=settings.allow_live_trading,
+            timeout_seconds=settings.oanda_timeout_seconds,
+        )
+        data.client.limiter.per_second = settings.oanda_requests_per_second
+        log_event(
+            logger, logging.INFO, "using the OANDA adapter",
+            environment=settings.oanda_environment,
+            account_id=settings.oanda_account_id,
+        )
+    else:
+        data = ReplayAdapter(directory=data_directory or Path("data/recordings"))
+        broker = PaperBroker(
+            starting_cash=D(starting_cash),
+            quote_source=data.get_quote,
+            instrument_source=data.get_instrument,
+            fill_engine=PaperFillEngine(FillModel()),
+        )
 
     registry = AdapterRegistry()
     registry.register_data(data)

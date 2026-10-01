@@ -49,6 +49,28 @@ empty.
 |---|---|---|
 | `ReplayAdapter` | data | CSV recordings. **Refuses to produce a quote from a bar close** — a close is not a bid and a spread inferred from one is a number nobody observed. Serves quotes only when the file has `bid`/`ask` columns. A cursor hides bars after the replay position, which is what stops a backtest reading its own future |
 | `PaperBroker` | broker | Real ledger: average entry, realised P&L on reduction, venue fees |
+| `OandaDataAdapter` | data | OANDA v20 quotes, candles and instrument specifications. Every instrument detail comes from OANDA's own endpoint; nothing is hardcoded. `complete` maps to the platform's `closed`, so a forming candle cannot reach the indicators. An untradeable instrument raises rather than returning a stale price |
+| `OandaBroker` | broker | Account, positions and orders. Direction is the sign of `units` and that translation happens in one place. The protective stop and first target are attached as OANDA's own `stopLossOnFill` and `takeProfitOnFill`, so they survive this process dying |
+
+### A documented uncertainty in the OANDA adapter
+
+It was written without access to OANDA's API documentation, which the
+build environment could not reach. The endpoint paths come from
+secondary sources and the response field names from the API as
+understood at the time. Three things contain that risk:
+
+* Every response is parsed strictly. A missing field raises
+  `OandaSchemaError` naming the endpoint and the field, never a default.
+* No instrument detail is hardcoded, so a wrong field name produces a
+  loud error rather than a quietly wrong tick size.
+* `python -m gtcc oanda-check` probes every endpoint with the owner's
+  own token and reports which fields were actually present. It is
+  read-only and must be run once before the adapter is trusted.
+
+The live host is gated in code: constructing a live-pointing adapter
+requires both deployment permission and a runtime arming. A practice
+token against the live host fails harmlessly; a live token would not,
+which is why the check is not left to configuration.
 
 ## Planned adapters and their sandboxes
 
