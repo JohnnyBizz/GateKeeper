@@ -264,14 +264,26 @@ class TestBrokerFailures:
         assert tracked.status is OrderStatus.REJECTED
         assert tracked.filled_quantity == 0
 
-    def test_an_account_call_that_raises_does_not_approve(self, failing_runtime):
+    def test_an_account_call_that_raises_refuses_rather_than_propagating(
+        self, failing_runtime
+    ):
+        """An unreachable venue is a refusal and a latched breaker.
+
+        This used to assert that the exception escaped `submit`. It no
+        longer does, deliberately: an API route that received the
+        exception would turn a venue outage into a 500 for the operator
+        to interpret, and the breaker would never have tripped. The
+        refusal carries a named check instead, like every other one.
+        """
         runtime, broker, _ = failing_runtime
         broker.account_error = ConnectionUnhealthy("account endpoint down")
 
-        with pytest.raises(AdapterError):
-            runtime.submit(_order())
+        result = runtime.submit(_order())
 
+        assert result.placed is False
         assert broker.place_calls == 0
+        assert "VENUE_REACHABLE" in result.verdict.explain()
+        assert TripReason.BROKER_UNHEALTHY in runtime.ensure_execution().trip_reasons
 
     def test_an_order_the_broker_never_heard_of_trips_reconciliation(self, failing_runtime):
         runtime, broker, _ = failing_runtime

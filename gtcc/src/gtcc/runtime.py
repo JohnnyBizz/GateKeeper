@@ -295,6 +295,22 @@ class TradingRuntime:
                 Check.INSTRUMENT_KNOWN,
                 f"no contract specification for {request.symbol}: {exc}",
             )
+        except AdapterError as exc:
+            # The venue could not be reached well enough to assemble a
+            # context: its account endpoint failed, or a call timed out.
+            # That is a refusal and a latched breaker, not an exception
+            # for the caller to handle. A route that got a 500 here
+            # would be a 500 the operator has to interpret, and the
+            # breaker would never have tripped.
+            log_event(
+                logger, logging.ERROR, "order refused: venue unreachable",
+                symbol=request.symbol, error=str(exc),
+            )
+            self.trip(TripReason.BROKER_UNHEALTHY, f"venue unreachable: {exc}")
+            return None, RiskVerdict.refused(
+                Check.VENUE_REACHABLE,
+                f"the venue could not be reached to price or fund this order: {exc}",
+            )
 
     def evaluate(self, request: OrderRequest, **kwargs) -> RiskVerdict:
         """Dry run: what would the risk engine say? Places nothing."""

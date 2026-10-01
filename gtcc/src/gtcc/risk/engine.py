@@ -52,6 +52,7 @@ from gtcc.risk.state import RiskState
 class Check(StrEnum):
     """Stable identifiers. Dashboards, alerts and tests key on these."""
 
+    VENUE_REACHABLE = "VENUE_REACHABLE"
     INSTRUMENT_KNOWN = "INSTRUMENT_KNOWN"
     SYMBOL_CONSISTENT = "SYMBOL_CONSISTENT"
     EXECUTION_NOT_TRIPPED = "EXECUTION_NOT_TRIPPED"

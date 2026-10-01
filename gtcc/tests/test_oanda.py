@@ -60,6 +60,10 @@ from gtcc.domain.orders import OrderRequest
 TOKEN = "oanda-TEST-TOKEN-NEVER-LOGGED"
 ACCOUNT = "101-004-1234567-001"
 
+#: The moment the fixtures below are stamped at. Tests that go through
+#: the data-quality gate pin the clock here.
+FIXTURE_TIME = datetime(2026, 10, 1, 14, 30, 0, 123456, tzinfo=timezone.utc)
+
 INSTRUMENTS = {
     "instruments": [
         {
@@ -892,3 +896,204 @@ class TestTheVerifier:
         # adapter, otherwise the checklist is verifying fiction.
         for leaf in leaves:
             assert leaf in source, f"oanda_check expects {leaf!r} which oanda.py never reads"
+
+
+class TestTheBootstrapWiring:
+    """Proves the whole path works with OANDA configured, so that when a
+    real token arrives the only unknown left is the field names.
+
+    Exercises `build_runtime` itself rather than the adapters it builds:
+    a correct adapter wired up wrongly is still a platform that does
+    not work.
+    """
+
+    @pytest.fixture
+    def oanda_settings(self, tmp_path):
+        import secrets as _secrets
+
+        from gtcc.config import Settings, set_settings
+
+        set_settings(None)
+        created = Settings(
+            secret_key=_secrets.token_urlsafe(48),
+            database_url=f"sqlite:///{tmp_path / 'oanda.db'}",
+            environment="development",
+            oanda_token=TOKEN,
+            oanda_account_id=ACCOUNT,
+            oanda_environment="practice",
+            risk_config_path=Path_to_risk_config(),
+            log_level="WARNING",
+        )
+        set_settings(created)
+        yield created
+        set_settings(None)
+
+    def test_the_runtime_is_built_on_oanda_when_configured(self, oanda_settings):
+        from gtcc.bootstrap import build_runtime
+
+        runtime = build_runtime(oanda_settings, oanda_transport=StubTransport(ALL_ROUTES))
+
+        assert runtime.data.name == "oanda"
+        assert runtime.broker.name == "oanda"
+        assert runtime.broker.mode is TradingMode.PAPER
+
+    def test_it_falls_back_to_replay_when_no_token_is_set(self, settings):
+        from gtcc.bootstrap import build_runtime
+
+        runtime = build_runtime(settings)
+
+        assert runtime.data.name == "replay"
+        assert runtime.broker.name == "paper"
+
+    def test_an_order_travels_the_whole_path_to_the_venue(self, oanda_settings):
+        """Risk engine, order manager, adapter, venue. One test, because
+        the seams between them are where this breaks."""
+        from gtcc.bootstrap import build_runtime
+        from gtcc.domain.enums import RiskAction
+
+        transport = StubTransport(ALL_ROUTES)
+        runtime = build_runtime(oanda_settings, oanda_transport=transport)
+        runtime.data.client.limiter.per_second = 0
+        # The fixture quote is stamped at a fixed moment. Without
+        # pinning the clock the staleness gate correctly refuses it,
+        # which would be the data-quality check working rather than
+        # this test's subject.
+        runtime.clock = lambda: FIXTURE_TIME
+
+        result = runtime.submit(
+            OrderRequest(
+                symbol="EUR_USD", market=Market.FOREX, side=Side.BUY,
+                order_type=OrderType.MARKET, protective_stop=D("1.08000"),
+                targets=(D("1.09500"),), strategy="manual",
+            )
+        )
+
+        assert result.verdict.action in (RiskAction.ALLOW, RiskAction.REDUCE), (
+            result.verdict.explain()
+        )
+        assert result.placed is True
+
+        # The order that reached the venue carried the APPROVED size,
+        # on OANDA's own lot step, not a requested one.
+        body = json.loads(
+            next(r for r in transport.requests if r.method == "POST").content
+        )["order"]
+        assert body["units"] == str(result.verdict.approved_quantity)
+        assert Decimal(body["units"]) % Decimal("1") == 0
+
+        # The fixture's fill transaction reports fewer units than the
+        # engine approved, so the order is genuinely partially filled.
+        # The OMS must say so rather than rounding up to FILLED, which
+        # is section 18's rule arriving through a real adapter.
+        assert result.order.status is OrderStatus.PARTIALLY_FILLED
+        assert result.order.filled_quantity < result.order.quantity
+        assert result.order.filled_quantity == Decimal("10000")
+
+    def test_a_venue_that_fills_the_whole_order_reports_filled(self, oanda_settings):
+        """The other half, with a transport that fills what it is asked."""
+        from gtcc.bootstrap import build_runtime
+
+        class EchoingVenue(StubTransport):
+            """Fills exactly the units the order requested."""
+
+            def handle_request(self, request):
+                if request.method == "POST" and request.url.path.endswith("/orders"):
+                    self.requests.append(request)
+                    self.calls.append(f"POST {request.url.path}")
+                    units = json.loads(request.content)["order"]["units"]
+                    filled = dict(MARKET_FILL)
+                    filled["orderFillTransaction"] = {
+                        **MARKET_FILL["orderFillTransaction"], "units": units,
+                    }
+                    return httpx.Response(201, json=filled, request=request)
+                return super().handle_request(request)
+
+        transport = EchoingVenue(ALL_ROUTES)
+        runtime = build_runtime(oanda_settings, oanda_transport=transport)
+        runtime.data.client.limiter.per_second = 0
+        runtime.clock = lambda: FIXTURE_TIME
+
+        result = runtime.submit(
+            OrderRequest(
+                symbol="EUR_USD", market=Market.FOREX, side=Side.BUY,
+                order_type=OrderType.MARKET, protective_stop=D("1.08000"),
+                targets=(D("1.09500"),), strategy="manual",
+            )
+        )
+
+        assert result.placed is True
+        assert result.order.status is OrderStatus.FILLED
+        assert result.order.filled_quantity == result.verdict.approved_quantity
+
+    def test_a_stale_quote_from_oanda_is_refused_and_latches(self, oanda_settings):
+        """The fixture is stamped in the past. Left unpinned, the
+        staleness gate refuses it, which is the behaviour wanted: a
+        price old enough to matter must not be traded on."""
+        from gtcc.bootstrap import build_runtime
+        from gtcc.risk.safety import TripReason
+
+        transport = StubTransport(ALL_ROUTES)
+        runtime = build_runtime(oanda_settings, oanda_transport=transport)
+        runtime.data.client.limiter.per_second = 0
+
+        result = runtime.submit(
+            OrderRequest(
+                symbol="EUR_USD", market=Market.FOREX, side=Side.BUY,
+                order_type=OrderType.MARKET, protective_stop=D("1.08000"),
+                targets=(D("1.09500"),), strategy="manual",
+            )
+        )
+
+        assert result.placed is False
+        assert "STALE_QUOTE" in result.verdict.explain()
+        assert TripReason.STALE_MARKET_DATA in runtime.ensure_execution().trip_reasons
+        assert not any(r.method == "POST" for r in transport.requests)
+
+    def test_a_venue_outage_refuses_rather_than_raising(self, oanda_settings):
+        """A 500 from the account endpoint must not escape to the
+        caller. An API route that got an exception here would be a 500
+        the operator has to interpret, and the breaker would never have
+        tripped."""
+        from gtcc.bootstrap import build_runtime
+        from gtcc.risk.safety import TripReason
+
+        transport = StubTransport({**ALL_ROUTES, "/summary": (500, {"e": "down"})})
+        runtime = build_runtime(oanda_settings, oanda_transport=transport)
+        runtime.data.client.limiter.per_second = 0
+
+        result = runtime.submit(
+            OrderRequest(
+                symbol="EUR_USD", market=Market.FOREX, side=Side.BUY,
+                order_type=OrderType.MARKET, protective_stop=D("1.08000"),
+                targets=(D("1.09500"),), strategy="manual",
+            )
+        )
+
+        assert result.placed is False
+        assert "VENUE_REACHABLE" in result.verdict.explain()
+        assert TripReason.BROKER_UNHEALTHY in runtime.ensure_execution().trip_reasons
+
+    def test_a_refused_verdict_sends_nothing_to_oanda(self, oanda_settings):
+        from gtcc.bootstrap import build_runtime
+
+        transport = StubTransport(ALL_ROUTES)
+        runtime = build_runtime(oanda_settings, oanda_transport=transport)
+        runtime.data.client.limiter.per_second = 0
+
+        runtime.clock = lambda: FIXTURE_TIME
+
+        result = runtime.submit(
+            OrderRequest(
+                symbol="EUR_USD", market=Market.FOREX, side=Side.BUY,
+                order_type=OrderType.MARKET, protective_stop=None, strategy="manual",
+            )
+        )
+
+        assert result.placed is False
+        assert not any(r.method == "POST" for r in transport.requests)
+
+def Path_to_risk_config():
+    """The repository's own risk file, so the test uses real limits."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[1] / "config" / "risk.yaml"

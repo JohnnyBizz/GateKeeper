@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 491 tests including the eight critical refusals
+- [x] 498 tests including the eight critical refusals
 - [x] Architecture, schema, adapter, pipeline, risk, AI, paper, testing docs
 
 ## Safety repair pass (2026-10-01)

@@ -42,7 +42,15 @@ def build_runtime(
     *,
     data_directory: Path | None = None,
     starting_cash: str = "100000",
+    oanda_transport=None,
 ) -> TradingRuntime:
+    """Assemble the runtime this deployment will use.
+
+    *oanda_transport* is a test seam: it lets the suite exercise this
+    exact wiring against a stub HTTP transport, so the bootstrap path is
+    covered rather than only the adapters it builds. Production passes
+    nothing and gets a real connection.
+    """
     limits = load_risk_limits(settings)
 
     if settings.oanda_configured:
@@ -57,6 +65,7 @@ def build_runtime(
             environment=settings.oanda_environment,
             deployment_allows_live=settings.allow_live_trading,
             timeout_seconds=settings.oanda_timeout_seconds,
+            transport=oanda_transport,
         )
         data.client.limiter.per_second = settings.oanda_requests_per_second
         log_event(

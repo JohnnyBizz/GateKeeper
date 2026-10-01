@@ -51,7 +51,7 @@ python -m gtcc serve          # http://127.0.0.1:8000
 Tests:
 
 ```bash
-pytest                       # 491
+pytest                       # 498
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -83,7 +83,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.example.yaml
 migrations/      Alembic
-tests/           491 tests
+tests/           498 tests
 ```
 
 ## Documentation

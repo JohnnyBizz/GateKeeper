@@ -1,6 +1,6 @@
 # Testing strategy
 
-491 tests, all passing. `cd gtcc && pytest`.
+498 tests, all passing. `cd gtcc && pytest`.
 
 ## The seven that matter most
 
