@@ -26,7 +26,12 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 498 tests including the eight critical refusals
+- [x] 520 tests including the eight critical refusals
+- [x] `gtcc risk`, which states every limit in money, names the ceiling
+      that actually binds each market, and sizes one real trade through
+      the engine rather than describing what it would do
+- [x] `config/risk.yaml` tracked, so a change to a limit has the same
+      history as a change to the engine
 - [x] Architecture, schema, adapter, pipeline, risk, AI, paper, testing docs
 
 ## Safety repair pass (2026-10-01)
@@ -124,23 +129,31 @@ authorisation from the account owner.
 
 ## Known limitations today
 
-1. No margin model in the paper broker. Documented in `07-paper-trading.md`.
-2. Rate limiting is per-process. Redis is needed behind more than one instance.
-3. Risk state persistence writes on change and reads on startup, so the
-   loss tally and its breakers survive a restart. It is not guarded
-   against two processes writing the same account concurrently; a single
-   instance is fine, more than one needs row locking.
-4. The execution latch is persisted and survives a restart; live arming
-   is not and does not. See `docs/05-risk-engine.md` for why those two
-   rules are deliberately opposite.
-5. No real market data adapter, so the platform still cannot trade
-   anything. It is the remaining Phase 2 blocker and needs a provider
-   decision before any code is useful.
-8. **No strategy has been validated.** `trend_continuation` is UNTESTED
+1. **No strategy has been validated.** `trend_continuation` is UNTESTED
    and the framework refuses to let it propose anything in paper or
    live. That is correct, not a bug: its edge has never been measured.
    The backtester that could change that arrives in Phase 4.
-6. Journal rows are not yet written by the runtime; the table and schema exist.
-7. The paper broker's `buying_power` equals equity, because no margin
-   model exists. For leveraged instruments the `BUYING_POWER` check is
-   therefore weaker than it reads.
+2. **OANDA's response field names are unverified.** The API documentation
+   was unreachable from the build container, so they are assumptions.
+   They are parsed strictly, so a wrong one fails loudly naming the
+   endpoint and field rather than substituting a default, and
+   `gtcc oanda-check` confirms them against a real account. That run has
+   not happened.
+3. No margin model in the paper broker. Documented in `07-paper-trading.md`.
+   Its `buying_power` therefore equals equity, which makes the
+   `BUYING_POWER` check weaker than it reads for leveraged instruments.
+4. Rate limiting is per-process. Redis is needed behind more than one instance.
+5. Risk state persistence writes on change and reads on startup, so the
+   loss tally and its breakers survive a restart. It is not guarded
+   against two processes writing the same account concurrently; a single
+   instance is fine, more than one needs row locking.
+6. The execution latch is persisted and survives a restart; live arming
+   is not and does not. See `docs/05-risk-engine.md` for why those two
+   rules are deliberately opposite.
+7. Journal rows are not yet written by the runtime; the table and schema exist.
+8. Under the configured limits, a forex position's face value is capped
+   by the market exposure limit well before the per-trade risk budget is
+   reached, so forex trades risk materially less than `max_risk_pct`
+   suggests. This is a deliberate choice, not an oversight —
+   `gtcc risk` prints the crossover — but it means the headline
+   risk-per-trade number is a ceiling rarely reached on that market.
