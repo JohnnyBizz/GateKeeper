@@ -49,3 +49,58 @@ not report zero. The dashboard shows "no mark" and `exposure_from_positions`
 reports exposure as unknown, which the risk engine turns into a refusal:
 section 42 forbids trading when account state cannot be reliably
 determined.
+
+## A paper position can close
+
+The simulated venue triggers its own protective exits. Without that a
+paper trade with a stop at 95 stays open while price goes to 50: the loss
+shows as unrealised forever, no loss breaker ever trips because nothing is
+realised, and the journal row that planned the trade never records what
+happened. The simulation would be systematically kinder than reality in
+the one direction that matters, and the kindness would be invisible —
+an open position looks like a position that has not finished yet.
+
+### The fill is never better than the price observed
+
+If a long's stop was 59,000 and the mark is 50,000, the only price this
+simulation has actually seen is 50,000. Filling at the stop level would
+claim a fill at a price that was never observed, which is precisely how a
+simulator hides gap risk.
+
+This is not a rounding detail. When the rule was inverted as a test, the
+difference was large enough that a loss which **should** have latched the
+daily breaker no longer did — the flattering fill price hid a
+breaker-worthy loss. Pessimism applies to targets too: a gap past the
+target pays the target, not the better mark.
+
+### Settling happens before new risk is evaluated
+
+`submit()` settles protective exits first, and that ordering is a safety
+requirement rather than housekeeping. An unsettled stop means today's
+realised loss is understated, so a loss breaker that should already have
+latched has not, and the next order would be approved against a tally
+missing the loss that should have stopped it. There is a test for exactly
+that sequence.
+
+`POST /api/positions/settle` exists for an operator who is not placing
+anything and wants the account brought up to date. It reports what it
+closed **and** whether the settlement latched execution, because a caller
+reading only the list of exits would not know trading had stopped.
+
+### What a close writes to the journal
+
+The outcome lands on the row that planned it — realised P&L, R multiple,
+exit price, exit reason and the closing time — matched on the most recent
+TAKEN row for that symbol and strategy with no outcome yet.
+
+A close with no matching row is logged at ERROR and **no row is created**.
+Inventing one would produce a journal entry with no setup behind it, which
+reads as a trade nobody planned; a loud gap is better than a quiet
+fabrication.
+
+### A real venue is not simulated here
+
+At a live broker the stop sits at the venue (OANDA's `stopLossOnFill`),
+and the close arrives as a fill through reconciliation. `settle_protective_exits`
+returns nothing for a broker that does not offer the simulation, which is
+the correct answer rather than a missing feature.

@@ -358,3 +358,60 @@ class TradeJournalRepository:
             for row in rows:
                 counts[row.outcome] = counts.get(row.outcome, 0) + 1
             return counts
+
+    def record_outcome(
+        self,
+        account_external_id: str,
+        *,
+        symbol: str,
+        strategy: str,
+        opened_at: datetime,
+        exit_price: Decimal,
+        exit_size: Decimal,
+        realised_pnl: Decimal,
+        r_multiple: Decimal | None,
+        exit_reason: str,
+        closed_at: datetime,
+    ) -> int | None:
+        """Fill in the result on the row this close belongs to.
+
+        Matched on the most recent TAKEN row for the symbol and strategy
+        that has no outcome yet. Deliberately NOT also filtered on the row
+        having been opened before this close: that compares two timestamps
+        which can come from different clocks, and when they disagreed the
+        symptom was every close silently failing to match. Returns the row id, or None when no row
+        matched — which the caller must treat as a real condition rather
+        than a no-op: a closed position with no journal row means the
+        platform cannot explain a trade it made.
+
+        Nothing is created here. Inventing a row for an unmatched close
+        would produce a journal entry with no setup behind it, which reads
+        as a trade nobody planned.
+        """
+        with self._session_factory() as session:
+            account = session.scalar(
+                select(TradingAccount).where(
+                    TradingAccount.external_id == account_external_id
+                )
+            )
+            if account is None:
+                return None
+            row = session.scalar(
+                select(TradeJournalEntry)
+                .where(TradeJournalEntry.account_id == account.id)
+                .where(TradeJournalEntry.symbol == symbol)
+                .where(TradeJournalEntry.strategy == strategy)
+                .where(TradeJournalEntry.outcome == "TAKEN")
+                .where(TradeJournalEntry.realised_pnl.is_(None))
+                .order_by(TradeJournalEntry.considered_at.desc())
+            )
+            if row is None:
+                return None
+            row.actual_exit = exit_price
+            row.actual_size = exit_size
+            row.realised_pnl = realised_pnl
+            row.r_multiple = r_multiple
+            row.exit_reason = exit_reason[:64]
+            row.closed_at = closed_at
+            session.commit()
+            return row.id

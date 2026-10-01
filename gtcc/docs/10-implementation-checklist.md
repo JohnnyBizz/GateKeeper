@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 668 tests including the eight critical refusals
+- [x] 690 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -176,10 +176,10 @@ authorisation from the account owner.
 6. The execution latch is persisted and survives a restart; live arming
    is not and does not. See `docs/05-risk-engine.md` for why those two
    rules are deliberately opposite.
-7. Journal rows carry no outcome yet: `realised_pnl`, `r_multiple`, MFE
-   and MAE stay NULL because nothing closes a position and measures it.
-   The row is written when the setup is considered; the result has to be
-   filled in by the position tracking that arrives with Phase 4.
+7. Journal rows record their outcome when a paper position closes:
+   realised P&L, R multiple, exit price and exit reason. MFE and MAE are
+   still NULL — measuring the excursion while a position is open needs a
+   tick or bar feed being polled, which is not wired up.
 8. Under the configured limits, a forex position's face value is capped
    by the market exposure limit well before the per-trade risk budget is
    reached, so forex trades risk materially less than `max_risk_pct`

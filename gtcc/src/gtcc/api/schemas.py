@@ -298,3 +298,29 @@ class JournalOut(BaseModel):
 
     counts: dict[str, int]
     rows: list[JournalRowOut]
+
+
+class ProtectiveExitOut(BaseModel):
+    symbol: str
+    strategy: str
+    reason: str
+    quantity: Decimal
+    entry_price: Decimal
+    exit_price: Decimal
+    realised_pnl: Decimal
+    r_multiple: Decimal | None = None
+    closed_at: datetime
+
+
+class SettlementOut(BaseModel):
+    """What settling closed, and what it did to the account.
+
+    `breaker_tripped` is here because a settlement can latch execution: a
+    realised loss that crosses a limit stops trading, and a caller that
+    only read `exits` would not know that happened.
+    """
+
+    exits: list[ProtectiveExitOut]
+    realised_today: Decimal
+    breaker_tripped: bool
+    trips: list[str] = []

@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Callable
 
 from gtcc.adapters.base import AdapterRegistry, BrokerAdapter, MarketDataAdapter
+from gtcc.adapters.paper import ProtectiveExit
 from gtcc.adapters.errors import AdapterError, FeatureUnavailable
 from gtcc.config import Settings
 from gtcc.data.quality import DataQualityReport, check_quote
@@ -353,6 +354,14 @@ class TradingRuntime:
         journal. They are advisory data about why this order exists and
         reach no decision: the risk engine never sees them.
         """
+        # Settle any protective exit the market has already reached, BEFORE
+        # new risk is evaluated. This is a safety requirement rather than
+        # housekeeping: an unsettled stop means today's realised loss is
+        # understated, so a loss breaker that should already have latched has
+        # not, and this order would be approved against a tally that is
+        # missing the loss that should have stopped it.
+        self.settle_protective_exits()
+
         context, refusal = self._context_or_refusal(request, **kwargs)
         if refusal is not None:
             # Journalled too. A setup refused because the venue was
@@ -390,7 +399,9 @@ class TradingRuntime:
                 verdict=verdict, order=None, placed=False, detail=verdict.explain()
             )
 
-        order = self.oms.register(request, verdict, mode=self.ensure_execution().mode)
+        order = self.oms.register(
+            request, verdict, mode=self.ensure_execution().mode, now=self.clock()
+        )
         self.oms.mark_submitted(order.client_order_id)
 
         try:
@@ -681,6 +692,72 @@ class TradingRuntime:
                 if tripped:
                     self.trip(reason, f"realised {realised_pnl} breached the limit")
         return self._persist(state)
+
+    def settle_protective_exits(self) -> list[ProtectiveExit]:
+        """Close positions the market has stopped out or taken to target.
+
+        Drives the paper broker's protective exits, folds each result into
+        the risk tally (which may trip a loss breaker) and writes the
+        outcome onto the journal row that planned it.
+
+        A broker with no protective simulation returns nothing, which is
+        correct for a real venue: there the stop lives at the venue and the
+        close arrives as a fill through reconciliation instead.
+        """
+        settle = getattr(self.broker, "settle_protective_exits", None)
+        if settle is None:
+            return []
+
+        exits: list[ProtectiveExit] = settle()
+        for closed in exits:
+            log_event(
+                logger, logging.INFO, "protective exit",
+                symbol=closed.symbol, reason=str(closed.reason),
+                realised_pnl=str(closed.realised_pnl),
+                exit_price=str(closed.exit_price),
+            )
+            self.record_settled_trade(closed.realised_pnl)
+            self._journal_outcome(closed)
+        return exits
+
+    def _journal_outcome(self, closed: ProtectiveExit) -> None:
+        """Write a close onto the row that planned it. Never raises.
+
+        An unmatched close is logged at ERROR rather than ignored: a
+        position the platform closed and cannot find a plan for means the
+        journal no longer describes what the account did.
+        """
+        if self.journal_store is None:
+            return
+        record_outcome = getattr(self.journal_store, "record_outcome", None)
+        if record_outcome is None:  # pragma: no cover - older store
+            return
+        try:
+            row_id = record_outcome(
+                self._account_id(),
+                symbol=closed.symbol,
+                strategy=closed.strategy,
+                opened_at=closed.opened_at,
+                exit_price=closed.exit_price,
+                exit_size=closed.quantity,
+                realised_pnl=closed.realised_pnl,
+                r_multiple=closed.r_multiple,
+                exit_reason=str(closed.reason),
+                closed_at=closed.closed_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            log_event(
+                logger, logging.ERROR, "could not journal a closed position",
+                symbol=closed.symbol, error=str(exc),
+            )
+            return
+        if row_id is None:
+            log_event(
+                logger, logging.ERROR,
+                "a position closed with no journal row to record it against",
+                symbol=closed.symbol, strategy=closed.strategy,
+                realised_pnl=str(closed.realised_pnl),
+            )
 
     def account(self) -> Account:
         return self.broker.get_account()
