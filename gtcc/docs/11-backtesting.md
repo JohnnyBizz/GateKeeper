@@ -223,3 +223,24 @@ sizes positions against the tick size and lot step that were true when the
 bars were taken rather than whatever the venue reports today. A recording
 without a spec is refused rather than backtested against a guessed one — a
 wrong tick size mis-sizes every position in the run, quietly.
+
+## Paper results are measured by this code, not beside it
+
+A platform that scores its backtests one way and its paper trading another
+cannot answer the only question worth asking of a backtest: did the thing
+it predicted actually happen. Any difference between the two measurements
+is then indistinguishable from a difference in the strategy.
+
+So `journal/analysis.py` converts journal rows into the same `ClosedTrade`
+the backtester produces, and every statistic comes from the same functions
+— the metrics, the breakdowns, the ten-trade bucket rule, the thirty-trade
+sample caveat. The conversion is the only new code; nothing recomputes a
+statistic. A test runs identical inputs through both paths and asserts the
+two `Metrics` objects are equal.
+
+Only rows with an outcome convert. A refused setup is not a trade with a
+P&L of zero, and neither is an open one; counting either as flat would drag
+every average toward nothing. They are reported separately, and the
+refusals are tallied per failing check — because a strategy whose every
+idea is refused looks identical to one with no ideas if only taken trades
+are shown.

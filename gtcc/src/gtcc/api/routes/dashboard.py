@@ -40,7 +40,7 @@ PAGES = [
     ("agents", "/agents", "Agent Room", 3, False),
     ("positions", "/positions", "Positions", 1, True),
     ("journal", "/journal", "Journal", 2, True),
-    ("analytics", "/analytics", "Analytics", 4, False),
+    ("analytics", "/analytics", "Analytics", 4, True),
     ("backtest", "/backtest", "Backtest Lab", 4, False),
     ("risk", "/risk", "Risk Center", 1, True),
     ("settings", "/settings", "Settings", 1, True),
@@ -298,8 +298,41 @@ def journal_page(
 
 
 @router.get("/terminal", response_class=HTMLResponse)
-@router.get("/agents", response_class=HTMLResponse)
 @router.get("/analytics", response_class=HTMLResponse)
+def analytics_page(
+    request: Request,
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(current_principal),
+) -> HTMLResponse:
+    """What the account actually did, measured like a backtest.
+
+    Deliberately the same functions the backtester uses. Scoring paper
+    trading one way and backtests another makes the only question worth
+    asking of a backtest — did what it predicted happen — unanswerable,
+    because any difference is then indistinguishable from a difference in
+    measurement.
+    """
+    from gtcc.journal.analysis import summarise
+
+    data = _base(request, context, "analytics")
+    store = context.runtime.journal_store
+    if store is None:
+        data.update({"journal_configured": False, "summary": None})
+        return TEMPLATES.TemplateResponse(request, "analytics.html", data)
+
+    rows = store.recent(context.runtime.account().account_id, limit=1000)
+    data.update(
+        {
+            "journal_configured": True,
+            "summary": summarise(
+                rows, starting_equity=context.runtime.account().equity
+            ),
+        }
+    )
+    return TEMPLATES.TemplateResponse(request, "analytics.html", data)
+
+
+@router.get("/agents", response_class=HTMLResponse)
 @router.get("/backtest", response_class=HTMLResponse)
 def pending_page(
     request: Request,
