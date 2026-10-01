@@ -173,6 +173,21 @@ for forbidden in ("random", "shuffle", "sample", "choice"):
         f"no split in the backtester calls {forbidden}",
     )
 
+# A clean robustness report must never read as an endorsement. The phrases
+# a reader would take as "this works" are the ones to keep out of it.
+robustness_source = (
+    SRC / "gtcc" / "backtest" / "robustness.py"
+).read_text(encoding="utf-8")
+for claim in ("is robust", "is validated", "proven", "will be profitable"):
+    check(
+        claim not in robustness_source.lower(),
+        f"the robustness report never claims a strategy {claim!r}",
+    )
+check(
+    "NOT evidence" in robustness_source,
+    "a clean robustness report states it is not evidence the strategy works",
+)
+
 # Every way out of submit() writes a journal row. Section 24 keeps the
 # refusals, and a path that returns without journalling would silently
 # make the journal a record of only the trades that worked — which is the

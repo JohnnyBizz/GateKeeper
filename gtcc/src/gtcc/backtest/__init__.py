@@ -13,6 +13,14 @@ from gtcc.backtest.engine import (
     ExitReason,
 )
 from gtcc.backtest.metrics import Metrics, measure
+from gtcc.backtest.robustness import (
+    Finding,
+    Flag,
+    RobustnessReport,
+    assess,
+    out_of_sample_degradation,
+    rising_costs,
+)
 from gtcc.backtest.splits import (
     OutOfSampleLedger,
     Split,
@@ -31,6 +39,12 @@ __all__ = [
     "ExitReason",
     "Metrics",
     "measure",
+    "Finding",
+    "Flag",
+    "RobustnessReport",
+    "assess",
+    "out_of_sample_degradation",
+    "rising_costs",
     "OutOfSampleLedger",
     "Split",
     "SplitError",

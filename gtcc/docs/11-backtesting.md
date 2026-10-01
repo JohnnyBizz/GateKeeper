@@ -109,3 +109,57 @@ liquidity.** A stop is assumed to fill at the stop price. In a real gap it
 fills worse, so results here are optimistic in exactly that respect and
 nowhere else — which is worth knowing when a strategy's edge turns out to
 live in its stops.
+
+## Attacking a result before believing it
+
+A backtest produces a number, and the number's job is to feel like
+evidence — which it does whether or not it is. The strategies that lose
+money live are overwhelmingly the ones whose backtest nobody attacked. So
+`robustness.assess()` attacks it five ways, each answering a specific way
+a result lies.
+
+**Out-of-sample degradation.** Positive in-sample and negative on held-out
+data means the result describes the data it was built on. This is the
+clearest signal there is, and the reason the splits exist. Some decay is
+normal and is not flagged; turning negative is. A fall of 70% or more is
+reported but not called disqualifying, because a weakened edge may still
+be real and calling it fatal would be a judgement this module is not
+entitled to make.
+
+**One lucky trade.** Remove the single best trade. If expectancy turns
+negative, the strategy has one outlier and a crowd of noise around it. An
+already-losing strategy is not flagged for this, because it has a
+different problem and naming this one would mislead.
+
+**One lucky period.** Split the trades in half by time. All the profit in
+one half describes a market condition that has ended.
+
+**Costs.** Re-run at rising cost assumptions and report at what level the
+edge dies. An edge that dies within twice the assumed cost is flagged, but
+**the headroom multiple is always reported whether or not it is flagged**:
+the threshold is a judgement and the ratio is a fact the reader can judge
+for themselves. Surviving every level tested is reported as "the range
+tested, not a claim about higher costs".
+
+**Parameters.** Nudge each parameter and re-run. An edge that exists at
+exactly 14 and vanishes at 13 and 15 belongs to the number, not to the
+market. One bad neighbour out of four is tolerated; half or more is a
+finding.
+
+### A clean report is not an endorsement
+
+This is the property most worth protecting, and CI protects it. A report
+with no findings says:
+
+> No finding from the checks that were run. This is NOT evidence the
+> strategy works — it means these particular ways of being wrong were not
+> detected.
+
+The words "robust", "validated" and "proven" do not appear in the module,
+and CI greps for them. "Passed robustness checks" would be read as "this
+works", and it does not mean that.
+
+Checks that were not run are visible by their absence from `checks_run`,
+and a result rendered with no robustness report at all says so explicitly
+— because figures with nothing attacking them are the most favourable
+reading available, and that should be stated rather than assumed.

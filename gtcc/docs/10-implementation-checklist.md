@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 597 tests including the eight critical refusals
+- [x] 625 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -115,8 +115,12 @@ Findings from an external review of Phase 1, all closed:
       nothing uncomputable reported as zero
 - [ ] The remaining section 21 breakdowns (by regime, session, strategy)
 - [ ] Analytics and Backtest Lab pages
-- [ ] Parameter sensitivity and fee/slippage stress testing
-- [ ] Anti-overfitting flags for edges that vanish under small changes
+- [x] Parameter sensitivity and fee/slippage stress testing, with the cost
+      headroom reported as a multiple whether or not it trips a threshold
+- [x] Anti-overfitting flags: out-of-sample degradation, dependence on one
+      trade, profit confined to one period, fragility to costs and to
+      parameters. A clean report states in words that it is not evidence the
+      strategy works, and CI greps the module for endorsement language
 
 ## Phase 5 — paper forward
 
