@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 642 tests including the eight critical refusals
+- [x] 668 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -84,6 +84,11 @@ Findings from an external review of Phase 1, all closed:
       exhaustion is stated instead of looking like an empty market
 - [x] Scanner and Journal pages on the server-rendered dashboard, each
       showing what it could not read as prominently as what it could
+- [x] A recorder that saves a venue's candles, with the contract
+      specification beside the data so a backtest runs offline and sizes
+      against the spec that was true when the bars were taken
+- [x] `gtcc record` and `gtcc backtest`, so a broker token becomes a
+      measured result in two commands
 - [ ] Next.js terminal with charts, against the existing JSON API
 - [ ] Order book and order-flow analysis where a feed genuinely exists
 - [x] Journal writer: every considered setup, taken or refused, written by

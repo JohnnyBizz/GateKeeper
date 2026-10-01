@@ -173,6 +173,32 @@ for forbidden in ("random", "shuffle", "sample", "choice"):
         f"no split in the backtester calls {forbidden}",
     )
 
+# No branch of main() may re-import a name the module already imports at
+# top level: inside a function that makes the name local for the WHOLE
+# function, so every other branch raises UnboundLocalError. This happened,
+# and 657 unit tests missed it because none of them called main().
+main_source = (SRC / "gtcc" / "__main__.py").read_text(encoding="utf-8")
+main_tree = ast.parse(main_source)
+_top_level_imports: set[str] = set()
+for node in main_tree.body:
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        for alias in node.names:
+            _top_level_imports.add(alias.asname or alias.name.split(".")[0])
+_shadowed: set[str] = set()
+for node in ast.walk(main_tree):
+    if isinstance(node, ast.FunctionDef):
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                for alias in inner.names:
+                    name = alias.asname or alias.name.split(".")[0]
+                    if name in _top_level_imports:
+                        _shadowed.add(name)
+check(
+    not _shadowed,
+    "no command re-imports a module-level name "
+    + (f"(shadowed: {sorted(_shadowed)})" if _shadowed else ""),
+)
+
 # A clean robustness report must never read as an endorsement. The phrases
 # a reader would take as "this works" are the ones to keep out of it.
 robustness_source = (

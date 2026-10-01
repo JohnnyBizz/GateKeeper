@@ -23,6 +23,7 @@ from gtcc.logging_setup import log_event
 from gtcc.risk.limits import RiskConfigError, RiskLimits, load_limits
 from gtcc.runtime import TradingRuntime
 from gtcc.storage import db
+from gtcc.strategies.trend_continuation import TrendContinuation
 from gtcc.storage.repositories import (
     ExecutionLatchRepository,
     RiskStateRepository,
@@ -123,6 +124,12 @@ def build_runtime(
         latch_store=latch_store,
         journal_store=journal_store,
     )
+    # The shipped strategy, registered so it can be scanned and backtested.
+    # It is UNTESTED, which the framework reads as "may not propose anything
+    # in paper or live" — registering it does not enable it, it only makes it
+    # possible to measure, which is the only way it could ever stop being
+    # UNTESTED.
+    runtime.strategies.register(TrendContinuation())
     log_event(
         logger,
         logging.INFO,

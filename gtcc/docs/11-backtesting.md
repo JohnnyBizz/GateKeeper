@@ -199,3 +199,27 @@ first.
 The regime recorded on a trade is **the regime at the decision**, not at
 the exit. Attributing a trade to the conditions it ended in answers a
 different question from the one a breakdown is read for.
+
+## Getting data to measure
+
+`gtcc record` saves a venue's candles as CSV recordings the backtester
+replays. Three rules, all tested.
+
+**Only closed bars are written.** A forming candle's close is wherever
+price happened to be when the request landed. Recording it would put a
+value in a file that the next request contradicts, and every backtest
+afterwards would read a price that never existed at that timestamp.
+
+**An existing recording is extended, never silently rewritten.** Bars merge
+by timestamp and the ones on disk are kept. A venue revising history is a
+real thing; a recorder that overwrote on every run would let two backtests
+of the same period disagree with no record of why. Changed bars are
+reported as conflicts and left alone unless `--overwrite` is passed, so
+earlier results stay reproducible.
+
+**The contract specification is saved beside the data.** This makes a
+recording self-contained: `gtcc backtest` needs no live connection, and it
+sizes positions against the tick size and lot step that were true when the
+bars were taken rather than whatever the venue reports today. A recording
+without a spec is refused rather than backtested against a guessed one — a
+wrong tick size mis-sizes every position in the run, quietly.
