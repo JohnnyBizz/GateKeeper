@@ -1,6 +1,6 @@
 # Testing strategy
 
-313 tests, all passing. `cd gtcc && pytest`.
+432 tests, all passing. `cd gtcc && pytest`.
 
 ## The seven that matter most
 
@@ -34,6 +34,9 @@ in a way no other test catches.
 | `test_money_and_pricing.py` | Non-finite rejection at every boundary, tick rounding direction for limits, stops and targets, and that a paper fill cannot violate its limit |
 | `test_adapter_failures.py` | Stale data, crossed quotes, provider exceptions, rate limiting, broker disconnect, broker rejection, unvaluable positions, reconciliation failure, strict-fixture enforcement |
 | `test_migrations.py` | Alembic upgrade from empty to head, drift check, downgrade, and the application running against the migrated schema |
+| `test_features.py` | Indicator values against hand arithmetic and an independently written reference, series alignment, and warm-up behaviour |
+| `test_structure.py` | Swings, sequence, breaks, gaps, sweeps, ranges, and the look-ahead guards |
+| `test_regime_and_strategies.py` | Regime classification, the validation and regime gates, proposal coherence, and the registry |
 
 ## Principles
 
@@ -85,8 +88,8 @@ while building, and each now has a test naming the symptom:
 
 ## Not yet covered
 
-Strategy logic, backtest look-ahead, feature calculations, agent outputs,
-live broker adapters. Those arrive with the phases that introduce them.
+Backtest look-ahead, agent outputs, live broker adapters, the scanner.
+Those arrive with the phases that introduce them.
 The backtest engine in particular needs a test that **proves** it cannot
 see the future, not just a comment saying it does not.
 

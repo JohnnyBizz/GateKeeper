@@ -51,7 +51,7 @@ python -m gtcc serve          # http://127.0.0.1:8000
 Tests:
 
 ```bash
-pytest                       # 313
+pytest                       # 432
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -67,7 +67,10 @@ deployment cannot quietly run on numbers chosen by a stranger.
 
 ```
 src/gtcc/
-  domain/        value objects, Decimal money, instrument arithmetic
+  domain/        value objects, Decimal money, instrument and price arithmetic
+  features/      indicators and the regime classifier
+  structure/     market structure, every detection carrying its rule
+  strategies/    strategy framework, gates, and the first module
   data/          validation: GOOD / DEGRADED / INVALID
   risk/          limits, state, sizing, the deterministic engine
   execution/     paper fill engine, order state machine
@@ -80,7 +83,7 @@ src/gtcc/
 docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
 config/          risk.example.yaml
 migrations/      Alembic
-tests/           313 tests
+tests/           432 tests
 ```
 
 ## Documentation

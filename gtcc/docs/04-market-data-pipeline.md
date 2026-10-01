@@ -49,15 +49,51 @@ Three mechanisms, because this is the bias that silently invents an edge:
 3. The Phase 4 backtester will be event-driven, so a strategy is called
    with a bar only once that bar has closed.
 
-## Phase 2 additions
+## The feature engine
 
-Feature engine (EMA, SMA, VWAP, anchored VWAP, RSI, MACD, ATR, ADX,
-Bollinger, stochastic, ROC, OBV, relative volume, historical
-volatility), market-structure engine (HH/HL/LH/LL, BOS, CHoCH, ranges,
-sweeps, fair value gaps — each storing the exact rule that identified
-it, per section 6), and the regime classifier.
+`gtcc/features/indicators.py`. Every function takes closed bars and
+returns a series aligned to them, with `None` through the warm-up
+rather than zero: an RSI of 0 means a collapse, and using it for "no
+value yet" would make the start of every series look like one.
 
-Section 6's caution is a design constraint, not a disclaimer: these
-concepts are partly subjective, so each detector records its parameters
-alongside its output and nothing presents a swing label as a
-mathematical certainty.
+Unclosed bars are refused outright. A strategy reading the close of a
+forming candle is using information that did not exist, which is the
+cheapest way to invent an edge that evaporates in production.
+
+ADX ships alongside `directional_movement`, which exposes +DI and -DI.
+ADX is deliberately direction-agnostic, and keeping the directional
+lines next to it makes that harder to forget.
+
+## Market structure
+
+`gtcc/structure/engine.py`. Section 6's caution is a design constraint,
+not a disclaimer: these concepts are partly subjective, so every
+`Detection` carries the rule in plain language and the exact parameters
+that produced it, and is marked OBJECTIVE or INTERPRETED. A fair value
+gap is arithmetic; a liquidity sweep is a judgement about a threshold
+somebody chose, and the threshold travels with the result.
+
+The causal walks register a swing at the bar where it becomes
+**knowable**, not at the bar where it occurred. A pivot needs
+`swing_lookback` bars after it before anyone could confirm it. The
+first version registered swings at their own index, which let a
+breakout bar's own swing raise the ceiling it was breaking and let a
+break of structure cite a level that was not yet established. Both
+produced entirely plausible output, which is why there is now a test
+asserting that analysing a prefix agrees with analysing the whole
+series.
+
+## Regime
+
+`gtcc/features/regime.py` reports one primary regime and any number of
+qualifiers, because trend and volatility are different axes and a
+market can be trending and volatile at once. An imminent high-impact
+release overrides the technical reading. Every reading carries its
+evidence and its thresholds, so a journal entry can be re-read later
+against different numbers.
+
+## Still to come in this phase
+
+A live data adapter, the scanner, the Next.js terminal, order-flow
+analysis where a real feed exists, and writing the structure and regime
+context onto journal rows.

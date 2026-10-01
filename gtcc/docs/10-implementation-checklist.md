@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 313 tests including the eight critical refusals
+- [x] 432 tests including the eight critical refusals
 - [x] Architecture, schema, adapter, pipeline, risk, AI, paper, testing docs
 
 ## Safety repair pass (2026-10-01)
@@ -60,16 +60,22 @@ Findings from an external review of Phase 1, all closed:
 
 ## Phase 2 — real data and analysis
 
+- [x] Feature engine: EMA, SMA, VWAP, anchored VWAP, RSI, MACD, ATR, ADX,
+      +DI/-DI, Bollinger, stochastic, ROC, OBV, volume averages, relative
+      volume, historical volatility
+- [x] Market structure: swings, HH/HL/LH/LL, BOS, CHoCH, ranges, breakouts
+      and failed breakouts, equal highs and lows, sweeps, fair value gaps,
+      support and resistance, each storing the rule and parameters that
+      found it
+- [x] Regime classifier with its thresholds recorded alongside each reading
+- [x] Strategy framework with validation-status and regime gates, and the
+      first strategy module
 - [ ] First live data adapter against a sandbox, with its own test suite
-- [ ] Feature engine: EMA, SMA, VWAP, anchored VWAP, RSI, MACD, ATR, ADX,
-      Bollinger, stochastic, ROC, OBV, relative volume, historical volatility
-- [ ] Market structure: HH/HL/LH/LL, BOS, CHoCH, ranges, S/R, supply/demand,
-      sweeps, fair value gaps, each storing the rule that found it
-- [ ] Regime classifier, stored with every trade
+      **(blocked: needs a provider decision and credentials)**
 - [ ] Market scanner and its columns
 - [ ] Next.js terminal with charts, against the existing JSON API
-- [ ] Strategy framework and the first strategy module
 - [ ] Order book and order-flow analysis where a feed genuinely exists
+- [ ] Writing the regime and structure context onto journal rows
 
 ## Phase 3 — Grok and the agents
 
@@ -125,8 +131,13 @@ authorisation from the account owner.
 4. The execution latch is persisted and survives a restart; live arming
    is not and does not. See `docs/05-risk-engine.md` for why those two
    rules are deliberately opposite.
-5. No real market data adapter, so the platform cannot currently trade
-   anything. This is the correct state for Phase 1 and the first Phase 2 item.
+5. No real market data adapter, so the platform still cannot trade
+   anything. It is the remaining Phase 2 blocker and needs a provider
+   decision before any code is useful.
+8. **No strategy has been validated.** `trend_continuation` is UNTESTED
+   and the framework refuses to let it propose anything in paper or
+   live. That is correct, not a bug: its edge has never been measured.
+   The backtester that could change that arrives in Phase 4.
 6. Journal rows are not yet written by the runtime; the table and schema exist.
 7. The paper broker's `buying_power` equals equity, because no margin
    model exists. For leveraged instruments the `BUYING_POWER` check is
