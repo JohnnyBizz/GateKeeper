@@ -51,7 +51,7 @@ from gtcc.domain.instruments import InstrumentSpec
 from gtcc.domain.market_data import Bar, Quote
 from gtcc.domain.money import D, ZERO
 from gtcc.domain.orders import Account, OrderRequest
-from gtcc.features.regime import RegimeClassifier
+from gtcc.features.regime import RegimeClassifier, RegimeReading
 from gtcc.risk.engine import RiskContext, RiskEngine, RiskVerdict
 from gtcc.risk.limits import RiskLimits
 from gtcc.risk.safety import initial_state
@@ -253,7 +253,9 @@ class Backtester:
             # Only bars up to and including this one exist as far as the
             # strategy is concerned. The slice is the enforcement.
             visible = closed[: index + 1]
-            proposal = self._ask(strategy, visible, instrument, settings, bar)
+            proposal, regime = self._ask(
+                strategy, visible, instrument, settings, bar
+            )
             if proposal is None or not proposal.is_actionable:
                 continue
 
@@ -274,7 +276,8 @@ class Backtester:
             # Fill at the NEXT bar's open, with costs against us.
             fill_bar = closed[index + 1]
             position = self._open(
-                proposal, verdict, fill_bar, index + 1, settings, instrument
+                proposal, verdict, fill_bar, index + 1, settings, instrument,
+                regime=regime,
             )
 
         open_at_end = position is not None
@@ -313,7 +316,7 @@ class Backtester:
         instrument: InstrumentSpec,
         settings: BacktestSettings,
         bar: Bar,
-    ) -> Proposal | None:
+    ) -> tuple[Proposal | None, RegimeReading]:
         report = self.structure.analyse(visible)
         regime = self.classifier.classify(visible, structure=report)
         context = StrategyContext(
@@ -329,7 +332,7 @@ class Backtester:
             regime=regime,
             now=bar.timestamp,
         )
-        return strategy.propose(context, TradingMode.BACKTEST)
+        return strategy.propose(context, TradingMode.BACKTEST), regime
 
     def _evaluate(
         self,
@@ -414,6 +417,8 @@ class Backtester:
         fill_index: int,
         settings: BacktestSettings,
         instrument: InstrumentSpec,
+        *,
+        regime: RegimeReading,
     ) -> "_OpenPosition":
         side = proposal.side or Side.BUY
         # Costs move the entry against us, always.
@@ -433,6 +438,10 @@ class Backtester:
             strategy=proposal.strategy,
             rationale=proposal.rationale,
             entry_cost=raw * quantity * drag,
+            # The regime AT THE DECISION, not at the exit. Attributing a
+            # trade to the conditions it ended in would answer a different
+            # question from the one anybody asks of a breakdown.
+            regime=str(regime.regime) if regime.confident else None,
         )
 
     @staticmethod
@@ -503,6 +512,7 @@ class Backtester:
             costs=costs,
             pnl=pnl,
             r_multiple=(pnl / risk) if risk > ZERO else None,
+            regime=position.regime,
             rationale=position.rationale,
         )
         return trade, equity + pnl
@@ -520,3 +530,7 @@ class _OpenPosition:
     strategy: str
     rationale: str
     entry_cost: Decimal
+    #: None when the classifier had no confident reading. Not "UNKNOWN":
+    #: a breakdown bucket named UNKNOWN reads as a regime, and this is the
+    #: absence of one.
+    regime: str | None = None

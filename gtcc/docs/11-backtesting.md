@@ -163,3 +163,39 @@ Checks that were not run are visible by their absence from `checks_run`,
 and a result rendered with no robustness report at all says so explicitly
 — because figures with nothing attacking them are the most favourable
 reading available, and that should be stated rather than assumed.
+
+## Where the result came from
+
+A breakdown table is the most persuasive object in trading software and
+the easiest to mislead with. Forty trades across five regimes and five
+sessions gives twenty-five cells averaging under two trades each, and a
+naive implementation gives every cell a win rate to one decimal place. The
+table looks like analysis; it is arithmetic on noise, and a reader
+skimming for "my best session" cannot tell which cells are which.
+
+Two rules, both tested.
+
+**A bucket below ten trades reports no ratios at all** — not small ratios,
+none. Its count and its P&L are facts and are shown; its win rate,
+expectancy and average R are absent, and `rated` is False with a caveat
+saying why. When no bucket in a table reaches the minimum, the table says
+in words that it shows where the trades fell and nothing about which
+conditions work better.
+
+Ten is lower than the thirty required of a whole backtest, because a
+breakdown is read as a comparison between buckets rather than as a result
+on its own. It is still a convention, stated as one.
+
+**A bucket that does not exist is absent, not zero.** A strategy that
+never traded a high-volatility regime has no high-volatility row; printing
+one at 0% would read as "tried it and it failed". A trade whose regime was
+never recorded is counted as unattributed rather than put in an "UNKNOWN"
+bucket, because an unknown row invites comparison against the real ones.
+
+Buckets sort by trade count, not by P&L. Sorting by profit puts a
+two-trade fluke at the top of the table, which is where a reader looks
+first.
+
+The regime recorded on a trade is **the regime at the decision**, not at
+the exit. Attributing a trade to the conditions it ended in answers a
+different question from the one a breakdown is read for.

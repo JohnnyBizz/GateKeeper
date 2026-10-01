@@ -9,6 +9,7 @@ already formed an impression by the time the caveat arrives.
 from __future__ import annotations
 
 from gtcc.backtest.engine import BacktestResult
+from gtcc.backtest.attribution import all_breakdowns
 from gtcc.backtest.metrics import measure
 from gtcc.backtest.robustness import RobustnessReport
 
@@ -44,6 +45,12 @@ def render(
             "  These are kept because a backtest that discards them cannot say "
             "whether the limits cost money or saved it."
         )
+
+    if result.trades:
+        lines += ["", "WHERE IT CAME FROM", ""]
+        for report in all_breakdowns(result.trades):
+            lines += report.describe()
+            lines.append("")
 
     if robustness is not None:
         lines += ["", "ROBUSTNESS", ""] + robustness.describe()

@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 625 tests including the eight critical refusals
+- [x] 642 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -113,7 +113,9 @@ Findings from an external review of Phase 1, all closed:
 - [x] Performance metrics that carry their own reliability: untrustworthy
       below 30 closed trades, caveat printed before the statistics, and
       nothing uncomputable reported as zero
-- [ ] The remaining section 21 breakdowns (by regime, session, strategy)
+- [x] Section 21 breakdowns by strategy, regime, session, direction and
+      weekday, where a bucket under ten trades reports no ratios at all and a
+      bucket that was never traded has no row
 - [ ] Analytics and Backtest Lab pages
 - [x] Parameter sensitivity and fee/slippage stress testing, with the cost
       headroom reported as a multiple whether or not it trips a threshold
