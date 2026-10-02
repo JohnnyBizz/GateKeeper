@@ -22,7 +22,9 @@ from gtcc.api.schemas import (
     OrderOut,
     OrderRequestIn,
     PositionOut,
+    ProtectiveExitOut,
     RiskStateOut,
+    SettlementOut,
     SubmissionOut,
     ToggleIn,
     VerdictOut,
@@ -215,6 +217,57 @@ def evaluate_order(
 
 
 # -- orders -------------------------------------------------------------------------
+
+
+@router.post("/positions/settle", response_model=SettlementOut)
+def settle_positions(
+    request: Request,
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(require_owner),
+    db: DbSession = Depends(get_db),
+) -> SettlementOut:
+    """Close positions whose stop or target the market has reached.
+
+    A POST because it changes the account: it realises P&L, can latch a
+    loss breaker, and completes journal rows. Submitting an order settles
+    first anyway — an unsettled stop understates today's loss — so this
+    endpoint exists for an operator who is not placing anything and wants
+    the account brought up to date.
+    """
+    runtime = context.runtime
+    exits = runtime.settle_protective_exits()
+    state = runtime.ensure_state()
+    execution = runtime.ensure_execution()
+    audit(
+        db,
+        "positions.settle",
+        user_id=principal.user.id,
+        ip_address=request.client.host if request.client else None,
+        detail={
+            "closed": len(exits),
+            "realised": str(sum((e.realised_pnl for e in exits), D("0"))),
+            "breaker_tripped": execution.tripped,
+        },
+    )
+    return SettlementOut(
+        exits=[
+            ProtectiveExitOut(
+                symbol=closed.symbol,
+                strategy=closed.strategy,
+                reason=str(closed.reason),
+                quantity=closed.quantity,
+                entry_price=closed.entry_price,
+                exit_price=closed.exit_price,
+                realised_pnl=closed.realised_pnl,
+                r_multiple=closed.r_multiple,
+                closed_at=closed.closed_at,
+            )
+            for closed in exits
+        ],
+        realised_today=state.realised_pnl_today,
+        breaker_tripped=execution.tripped,
+        trips=[str(trip.reason) for trip in execution.trips],
+    )
 
 
 @router.get("/orders", response_model=list[OrderOut])

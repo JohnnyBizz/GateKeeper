@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Callable, Sequence
 
 from gtcc.adapters.base import AdapterHealth, BrokerAdapter, Capability
@@ -36,6 +37,50 @@ from gtcc.domain.market_data import OrderBook, Quote, utcnow
 from gtcc.domain.money import ZERO, D
 from gtcc.domain.orders import Account, Fill, Order, OrderRequest, Position, new_id
 from gtcc.execution.paper_engine import FillModel, PaperFillEngine
+
+class ExitReason(StrEnum):
+    """Why a protective exit fired. The same vocabulary the backtester uses,
+    so a paper result and a backtest result can be compared without
+    translating between two sets of names."""
+
+    STOP = "STOP"
+    TARGET = "TARGET"
+
+
+@dataclass(frozen=True, slots=True)
+class ProtectiveExit:
+    """One position closed by its own stop or target."""
+
+    symbol: str
+    strategy: str
+    side: Side
+    quantity: Decimal
+    entry_price: Decimal
+    exit_price: Decimal
+    realised_pnl: Decimal
+    reason: ExitReason
+    protective_stop: Decimal | None
+    target: Decimal | None
+    opened_at: datetime
+    closed_at: datetime
+
+    @property
+    def r_multiple(self) -> Decimal | None:
+        """Result as a multiple of the risk taken. None when the stop was
+        never set, because there is no risk unit to divide by."""
+        if self.protective_stop is None:
+            return None
+        risk = abs(self.entry_price - self.protective_stop) * self.quantity
+        if risk <= ZERO:
+            return None
+        return self.realised_pnl / risk
+
+    def describe(self) -> str:
+        return (
+            f"{self.symbol} {self.reason} at {self.exit_price} "
+            f"({self.realised_pnl:+,.2f})"
+        )
+
 
 QuoteSource = Callable[[str], Quote]
 BookSource = Callable[[str], OrderBook | None]
@@ -152,7 +197,9 @@ class PaperBroker(BrokerAdapter):
         outcome = self.fill_engine.execute(order, spec, quote, book=book, now=now)
 
         if outcome.status is OrderStatus.REJECTED:
-            order = _replace_status(order, OrderStatus.REJECTED, outcome.reason)
+            order = _replace_status(
+                order, OrderStatus.REJECTED, outcome.reason, now=self.clock()
+            )
         for fill in outcome.fills:
             order = order.with_fill(fill)
             self._fills.append(fill)
@@ -167,7 +214,9 @@ class PaperBroker(BrokerAdapter):
             raise OrderRejected(
                 self.name, f"order is already {order.status}", order_id
             )
-        order = _replace_status(order, OrderStatus.CANCELED, "canceled by request")
+        order = _replace_status(
+            order, OrderStatus.CANCELED, "canceled by request", now=self.clock()
+        )
         self._orders[order_id] = order
         return order
 
@@ -201,6 +250,108 @@ class PaperBroker(BrokerAdapter):
         if self.quote_source is None:
             return AdapterHealth.down("no quote source configured")
         return AdapterHealth.ok("paper broker ready")
+
+    # -- protective exits -------------------------------------------------------------
+
+    def settle_protective_exits(self) -> list["ProtectiveExit"]:
+        """Close any position whose stop or target the market has reached.
+
+        Without this a paper position with a stop at 95 sits open while
+        price goes to 50: the equity curve shows the loss as unrealised
+        forever, no loss breaker ever trips, and the journal row never
+        closes. The simulation would be systematically kinder than reality
+        in the one direction that matters.
+
+        Two rules, both the honest choice rather than the flattering one.
+
+        The stop is evaluated before the target. Unlike the backtester,
+        which sees a bar's high and low at once and must genuinely choose,
+        a mark here is a single price: reaching both levels would require
+        the target to sit between the mark and the stop, which is an
+        inverted plan the risk engine refuses. The ordering is therefore
+        defensive rather than load-bearing, and it is the safe way round.
+
+        The fill is the WORSE of the protective level and the price
+        actually observed. If a long's stop was 95 and the mark is 90, the
+        only price this simulation has seen is 90; filling at 95 would
+        claim a fill at a price that was never observed, which is exactly
+        how a backtest hides gap risk.
+        """
+        exits: list[ProtectiveExit] = []
+        for symbol in list(self._positions):
+            position = self._positions[symbol]
+            if position.is_flat:
+                continue
+            mark = self._mark(position)
+            if mark is None:
+                continue
+
+            long = position.quantity > ZERO
+            stop = position.protective_stop
+            target = position.targets[0] if position.targets else None
+
+            hit_stop = stop is not None and (mark <= stop if long else mark >= stop)
+            hit_target = target is not None and (
+                mark >= target if long else mark <= target
+            )
+
+            if hit_stop:
+                assert stop is not None
+                level = min(stop, mark) if long else max(stop, mark)
+                reason = ExitReason.STOP
+            elif hit_target:
+                assert target is not None
+                level = min(target, mark) if long else max(target, mark)
+                reason = ExitReason.TARGET
+            else:
+                continue
+
+            exits.append(self._close_at(position, level, reason))
+        return exits
+
+    def _close_at(
+        self, position: Position, price: Decimal, reason: "ExitReason"
+    ) -> "ProtectiveExit":
+        spec = self._spec(position.symbol)
+        contract_size = spec.contract_size if spec else D(1)
+        quantity = abs(position.quantity)
+        direction = D(1) if position.quantity > ZERO else D(-1)
+        realised = (
+            (price - position.average_entry_price) * quantity * direction * contract_size
+        )
+        self._realised_pnl += realised
+
+        closing_side = Side.SELL if position.quantity > ZERO else Side.BUY
+        fill = Fill(
+            order_id=f"protective-{position.symbol}",
+            symbol=position.symbol,
+            side=closing_side,
+            quantity=quantity,
+            price=price,
+            fee=ZERO,
+            timestamp=self.clock(),
+            liquidity="TAKER",
+        )
+        self._fills.append(fill)
+        self._positions[position.symbol] = _replace_position(
+            position, quantity=ZERO,
+            average_entry_price=position.average_entry_price,
+            fill=fill, realised=realised,
+        )
+        return ProtectiveExit(
+            symbol=position.symbol,
+            strategy=position.strategy,
+            side=closing_side,
+            quantity=quantity,
+            entry_price=position.average_entry_price,
+            exit_price=price,
+            realised_pnl=realised,
+            reason=reason,
+            protective_stop=position.protective_stop,
+            target=position.targets[0] if position.targets else None,
+            opened_at=position.opened_at,
+            closed_at=fill.timestamp,
+        )
 
     # -- ledger -----------------------------------------------------------------------
 
@@ -299,10 +450,21 @@ class PaperBroker(BrokerAdapter):
         return order
 
 
-def _replace_status(order: Order, status: OrderStatus, reason: str) -> Order:
+def _replace_status(
+    order: Order, status: OrderStatus, reason: str, *, now: datetime | None = None
+) -> Order:
+    """Stamp a status change with the caller's clock.
+
+    Reaching for utcnow() here is the same bug that made journal matching
+    fail: a broker whose clock was injected produced order timestamps from
+    the real wall clock, disagreeing with everything else in the runtime.
+    """
     from dataclasses import replace
 
-    return replace(order, status=status, reject_reason=reason, updated_at=utcnow())
+    return replace(
+        order, status=status, reject_reason=reason,
+        updated_at=now if now is not None else utcnow(),
+    )
 
 
 def _with_mark(position: Position, mark: Decimal) -> Position:

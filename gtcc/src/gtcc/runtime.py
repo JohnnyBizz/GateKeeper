@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Callable
 
 from gtcc.adapters.base import AdapterRegistry, BrokerAdapter, MarketDataAdapter
+from gtcc.adapters.paper import ProtectiveExit
 from gtcc.adapters.errors import AdapterError, FeatureUnavailable
 from gtcc.config import Settings
 from gtcc.data.quality import DataQualityReport, check_quote
@@ -26,7 +27,8 @@ from gtcc.domain.enums import RiskAction, TradingMode
 from gtcc.domain.instruments import InstrumentSpec
 from gtcc.domain.market_data import Quote, utcnow
 from gtcc.domain.money import ZERO, D
-from gtcc.domain.orders import Account, Order, OrderRequest
+from gtcc.domain.orders import Account, Order, OrderRequest, new_id
+from gtcc.journal.entry import TradeAnnotations, entry_for
 from gtcc.execution.oms import OrderManager, Reconciliation
 from gtcc.logging_setup import log_event
 from gtcc.risk.engine import (
@@ -45,6 +47,8 @@ from gtcc.risk.safety import (
     initial_state,
 )
 from gtcc.risk.state import RiskState, fresh_state
+from gtcc.scanner import ScanSettings, Scanner
+from gtcc.strategies.registry import StrategyRegistry
 
 logger = logging.getLogger("gtcc.runtime")
 
@@ -92,6 +96,14 @@ class TradingRuntime:
     state_store: object | None = None
     #: Set by the last reconciliation. A dirty result stops live trading.
     last_reconciliation: Reconciliation | None = None
+    #: Strategies this deployment knows about. Consulted by the scanner and
+    #: by analysis; a proposal from one is an opinion that still has to pass
+    #: the risk engine like anything else.
+    strategies: StrategyRegistry = field(default_factory=StrategyRegistry)
+    #: When set, every considered setup is written here — taken or refused.
+    #: See `_journal` for why a write failure is treated differently
+    #: depending on whether an order actually reached the venue.
+    journal_store: object | None = None
 
     # -- wiring ---------------------------------------------------------------
 
@@ -147,6 +159,15 @@ class TradingRuntime:
     @property
     def data(self) -> MarketDataAdapter:
         return self.registry.data(self.data_name)
+
+    def scanner(self, settings: ScanSettings | None = None) -> Scanner:
+        """A scanner over this deployment's data adapter.
+
+        It is handed the data adapter and the strategy registry, and
+        nothing else. Passing it `self` would give analysis code a route
+        to `submit`, and there is exactly one path to a broker by design.
+        """
+        return Scanner(self.data, registry=self.strategies, settings=settings)
 
     def ensure_state(self) -> RiskState:
         if self.state is None:
@@ -320,10 +341,37 @@ class TradingRuntime:
         assert context is not None
         return self.engine.evaluate(request, context)
 
-    def submit(self, request: OrderRequest, **kwargs) -> SubmissionResult:
-        """The only way an order reaches a broker."""
+    def submit(
+        self,
+        request: OrderRequest,
+        *,
+        annotations: TradeAnnotations | None = None,
+        **kwargs,
+    ) -> SubmissionResult:
+        """The only way an order reaches a broker.
+
+        *annotations* carry the analysis context behind the setup for the
+        journal. They are advisory data about why this order exists and
+        reach no decision: the risk engine never sees them.
+        """
+        # Settle any protective exit the market has already reached, BEFORE
+        # new risk is evaluated. This is a safety requirement rather than
+        # housekeeping: an unsettled stop means today's realised loss is
+        # understated, so a loss breaker that should already have latched has
+        # not, and this order would be approved against a tally that is
+        # missing the loss that should have stopped it.
+        self.settle_protective_exits()
+
         context, refusal = self._context_or_refusal(request, **kwargs)
         if refusal is not None:
+            # Journalled too. A setup refused because the venue was
+            # unreachable or the symbol unknown is still a setup the
+            # platform considered, and leaving it out would make the
+            # journal a record of the days the plumbing worked.
+            self._journal(
+                request, refusal, order=None, placed=False,
+                context=None, annotations=annotations,
+            )
             return SubmissionResult(
                 verdict=refusal, order=None, placed=False, detail=refusal.explain()
             )
@@ -343,11 +391,17 @@ class TradingRuntime:
         )
 
         if not verdict.allowed:
+            self._journal(
+                request, verdict, order=None, placed=False,
+                context=context, annotations=annotations,
+            )
             return SubmissionResult(
                 verdict=verdict, order=None, placed=False, detail=verdict.explain()
             )
 
-        order = self.oms.register(request, verdict, mode=self.ensure_execution().mode)
+        order = self.oms.register(
+            request, verdict, mode=self.ensure_execution().mode, now=self.clock()
+        )
         self.oms.mark_submitted(order.client_order_id)
 
         try:
@@ -358,9 +412,14 @@ class TradingRuntime:
                 logger, logging.WARNING, "broker rejected order",
                 client_order_id=order.client_order_id, error=str(exc),
             )
+            rejected = self.oms.get(order.client_order_id)
+            self._journal(
+                request, verdict, order=rejected, placed=False,
+                context=context, annotations=annotations,
+                venue_detail=f"the venue rejected this order: {exc}",
+            )
             return SubmissionResult(
-                verdict=verdict, order=self.oms.get(order.client_order_id),
-                placed=False, detail=str(exc),
+                verdict=verdict, order=rejected, placed=False, detail=str(exc),
             )
 
         tracked = self.oms.mark_accepted(
@@ -369,12 +428,89 @@ class TradingRuntime:
         for fill in placed.fills:
             tracked = self.oms.apply_fill(order.client_order_id, fill)
 
+        self._journal(
+            request, verdict, order=tracked, placed=True,
+            context=context, annotations=annotations,
+        )
         return SubmissionResult(
             verdict=verdict,
             order=tracked,
             placed=True,
             detail=f"{tracked.status}: filled {tracked.filled_quantity} of {tracked.quantity}",
         )
+
+    # -- journal ----------------------------------------------------------------------
+
+    def _journal(
+        self,
+        request: OrderRequest,
+        verdict: RiskVerdict,
+        *,
+        order: Order | None,
+        placed: bool,
+        context: RiskContext | None,
+        annotations: TradeAnnotations | None,
+        venue_detail: str | None = None,
+    ) -> None:
+        """Record one considered setup. Never raises.
+
+        The failure handling is deliberately asymmetric, because the two
+        failures mean different things.
+
+        A refusal that cannot be journalled is a lost record of something
+        that never happened at a venue. It is bad for later analysis and
+        harmless to the account, so it logs an error and trading continues.
+
+        A PLACED order that cannot be journalled is a position at a venue
+        with no local record of why it was opened. The next reconciliation
+        will find an order it cannot explain, and the platform's view of
+        its own account is now incomplete — which is the exact condition
+        section 42 says must stop trading. So that latches the breaker.
+        """
+        if self.journal_store is None:
+            return
+
+        account_id = "unknown"
+        equity = ZERO
+        if context is not None:
+            account_id = context.account.account_id
+            equity = context.account.equity
+
+        try:
+            entry = entry_for(
+                request,
+                verdict,
+                trade_id=new_id("trade"),
+                account_external_id=account_id,
+                now=self.clock(),
+                mode=self.ensure_execution().mode,
+                order=order,
+                placed=placed,
+                data_quality=(
+                    str(context.data_quality.status) if context is not None else None
+                ),
+                annotations=annotations,
+                venue_detail=venue_detail,
+            )
+            self.journal_store.record(entry, equity=equity)
+        except Exception as exc:  # noqa: BLE001 - the handling is the point
+            log_event(
+                logger,
+                logging.ERROR,
+                "could not write the trade journal",
+                symbol=request.symbol,
+                placed=placed,
+                error=str(exc),
+            )
+            if placed:
+                self.trip(
+                    TripReason.ACCOUNT_STATE_UNKNOWN,
+                    (
+                        f"an order was placed for {request.symbol} and could not be "
+                        f"journalled ({exc}); the platform cannot account for its "
+                        "own position"
+                    ),
+                )
 
     # -- operations -------------------------------------------------------------------
 
@@ -556,6 +692,72 @@ class TradingRuntime:
                 if tripped:
                     self.trip(reason, f"realised {realised_pnl} breached the limit")
         return self._persist(state)
+
+    def settle_protective_exits(self) -> list[ProtectiveExit]:
+        """Close positions the market has stopped out or taken to target.
+
+        Drives the paper broker's protective exits, folds each result into
+        the risk tally (which may trip a loss breaker) and writes the
+        outcome onto the journal row that planned it.
+
+        A broker with no protective simulation returns nothing, which is
+        correct for a real venue: there the stop lives at the venue and the
+        close arrives as a fill through reconciliation instead.
+        """
+        settle = getattr(self.broker, "settle_protective_exits", None)
+        if settle is None:
+            return []
+
+        exits: list[ProtectiveExit] = settle()
+        for closed in exits:
+            log_event(
+                logger, logging.INFO, "protective exit",
+                symbol=closed.symbol, reason=str(closed.reason),
+                realised_pnl=str(closed.realised_pnl),
+                exit_price=str(closed.exit_price),
+            )
+            self.record_settled_trade(closed.realised_pnl)
+            self._journal_outcome(closed)
+        return exits
+
+    def _journal_outcome(self, closed: ProtectiveExit) -> None:
+        """Write a close onto the row that planned it. Never raises.
+
+        An unmatched close is logged at ERROR rather than ignored: a
+        position the platform closed and cannot find a plan for means the
+        journal no longer describes what the account did.
+        """
+        if self.journal_store is None:
+            return
+        record_outcome = getattr(self.journal_store, "record_outcome", None)
+        if record_outcome is None:  # pragma: no cover - older store
+            return
+        try:
+            row_id = record_outcome(
+                self._account_id(),
+                symbol=closed.symbol,
+                strategy=closed.strategy,
+                opened_at=closed.opened_at,
+                exit_price=closed.exit_price,
+                exit_size=closed.quantity,
+                realised_pnl=closed.realised_pnl,
+                r_multiple=closed.r_multiple,
+                exit_reason=str(closed.reason),
+                closed_at=closed.closed_at,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            log_event(
+                logger, logging.ERROR, "could not journal a closed position",
+                symbol=closed.symbol, error=str(exc),
+            )
+            return
+        if row_id is None:
+            log_event(
+                logger, logging.ERROR,
+                "a position closed with no journal row to record it against",
+                symbol=closed.symbol, strategy=closed.strategy,
+                realised_pnl=str(closed.realised_pnl),
+            )
 
     def account(self) -> Account:
         return self.broker.get_account()

@@ -18,6 +18,8 @@ from gtcc.api.deps import AppContext
 from gtcc.api.routes import auth as auth_routes
 from gtcc.api.routes import dashboard as dashboard_routes
 from gtcc.api.routes import health as health_routes
+from gtcc.api.routes import journal as journal_routes
+from gtcc.api.routes import scan as scan_routes
 from gtcc.api.routes import trading as trading_routes
 from gtcc.api.security import CookieSigner, RateLimiter
 from gtcc.config import Settings, get_settings
@@ -115,6 +117,8 @@ def create_app(
     app.include_router(health_routes.router)
     app.include_router(auth_routes.router)
     app.include_router(trading_routes.router)
+    app.include_router(scan_routes.router)
+    app.include_router(journal_routes.router)
     app.include_router(dashboard_routes.router)
 
     static_dir = WEB_ROOT / "static"

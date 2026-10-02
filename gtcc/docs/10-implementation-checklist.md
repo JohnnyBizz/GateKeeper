@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 520 tests including the eight critical refusals
+- [x] 723 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -79,10 +79,22 @@ Findings from an external review of Phase 1, all closed:
       with 59 tests and a read-only verifier the owner runs themselves
       **(awaiting one `oanda-check` run against a real token to confirm
       the response field names)**
-- [ ] Market scanner and its columns
+- [x] Market scanner: a row per symbol **requested**, so an unreadable
+      symbol is reported rather than dropped, with a request budget whose
+      exhaustion is stated instead of looking like an empty market
+- [x] Scanner and Journal pages on the server-rendered dashboard, each
+      showing what it could not read as prominently as what it could
+- [x] A recorder that saves a venue's candles, with the contract
+      specification beside the data so a backtest runs offline and sizes
+      against the spec that was true when the bars were taken
+- [x] `gtcc record` and `gtcc backtest`, so a broker token becomes a
+      measured result in two commands
 - [ ] Next.js terminal with charts, against the existing JSON API
 - [ ] Order book and order-flow analysis where a feed genuinely exists
-- [ ] Writing the regime and structure context onto journal rows
+- [x] Journal writer: every considered setup, taken or refused, written by
+      the single submission path, with the risk verdict and the analysis
+      context attached. A read-only endpoint, and no way to edit a row
+      afterwards
 
 ## Phase 3 — Grok and the agents
 
@@ -95,13 +107,31 @@ Findings from an external review of Phase 1, all closed:
 
 ## Phase 4 — measurement
 
-- [ ] Event-driven backtester with a **test proving** it cannot see the future
-- [ ] In-sample / validation / out-of-sample splits and walk-forward
-- [ ] Journal writer, including rejected setups
-- [ ] Performance metrics and the breakdowns in section 21
-- [ ] Analytics and Backtest Lab pages
-- [ ] Parameter sensitivity and fee/slippage stress testing
-- [ ] Anti-overfitting flags for edges that vanish under small changes
+- [x] Event-driven backtester with **tests proving** it cannot see the
+      future: a decision fills no earlier than the next bar, a prefix run
+      gives the same trades as a full run, and an ambiguous bar resolves as
+      a stop. All three verified by reintroducing the bug
+- [x] Chronological in-sample / validation / out-of-sample splits and
+      walk-forward windows, never shuffled, with a ledger counting how often
+      held-out data has been looked at
+- [x] Journal writer, including rejected setups
+- [x] Performance metrics that carry their own reliability: untrustworthy
+      below 30 closed trades, caveat printed before the statistics, and
+      nothing uncomputable reported as zero
+- [x] Section 21 breakdowns by strategy, regime, session, direction and
+      weekday, where a bucket under ten trades reports no ratios at all and a
+      bucket that was never traded has no row
+- [x] Analytics page, measuring real paper trades with the backtester's own
+      metrics and breakdowns so the two are comparable
+- [x] Backtest Lab page: lists recordings with their provenance, marks the
+      ones with no contract specification unusable rather than hiding them,
+      and renders the report verbatim
+- [x] Parameter sensitivity and fee/slippage stress testing, with the cost
+      headroom reported as a multiple whether or not it trips a threshold
+- [x] Anti-overfitting flags: out-of-sample degradation, dependence on one
+      trade, profit confined to one period, fragility to costs and to
+      parameters. A clean report states in words that it is not evidence the
+      strategy works, and CI greps the module for endorsement language
 
 ## Phase 5 — paper forward
 
@@ -114,7 +144,7 @@ Findings from an external review of Phase 1, all closed:
 ## Phase 6 — sandbox brokers
 
 - [ ] Alpaca paper adapter
-- [ ] OANDA practice adapter
+- [x] OANDA practice adapter **(built; never run against a real token)**
 - [ ] Crypto testnet adapter
 - [ ] Reconciliation against each, proven under induced failures
 
@@ -150,7 +180,10 @@ authorisation from the account owner.
 6. The execution latch is persisted and survives a restart; live arming
    is not and does not. See `docs/05-risk-engine.md` for why those two
    rules are deliberately opposite.
-7. Journal rows are not yet written by the runtime; the table and schema exist.
+7. Journal rows record their outcome when a paper position closes:
+   realised P&L, R multiple, exit price and exit reason. MFE and MAE are
+   still NULL — measuring the excursion while a position is open needs a
+   tick or bar feed being polled, which is not wired up.
 8. Under the configured limits, a forex position's face value is capped
    by the market exposure limit well before the per-trade risk budget is
    reached, so forex trades risk materially less than `max_risk_pct`

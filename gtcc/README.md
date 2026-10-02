@@ -42,8 +42,21 @@ python -m gtcc init-db
 python -m gtcc create-user you@example.com
 python -m gtcc check          # configuration and adapter health
 python -m gtcc risk           # what your risk numbers mean in money
+python -m gtcc scan EUR_USD GBP_USD   # analyse symbols, honestly
 python -m gtcc serve          # http://127.0.0.1:8000
 ```
+
+Once a broker token is configured, these two turn it into measurable
+results, and `backtest` needs no connection at all:
+
+```bash
+python -m gtcc record EUR_USD GBP_USD --timeframe 15m   # save candles
+python -m gtcc backtest EUR_USD --stress                 # measure, and attack it
+```
+
+A recording keeps the contract specification beside the data, so a backtest
+sizes positions against what was true when the bars were taken rather than
+against whatever the venue reports today — and it runs offline.
 
 `gtcc risk` is the one to read before trading anything. It converts every
 limit into money for a given account size, names the ceiling that
@@ -60,7 +73,7 @@ python -m gtcc risk --example      # read the shipped example first
 Tests:
 
 ```bash
-pytest                       # 520
+pytest                       # 723
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -92,7 +105,11 @@ src/gtcc/
   features/      indicators and the regime classifier
   structure/     market structure, every detection carrying its rule
   strategies/    strategy framework, gates, and the first module
-  data/          validation: GOOD / DEGRADED / INVALID
+  scanner/       many symbols at once, reporting what it could not read
+  journal/       every considered setup, including the refused ones
+  backtest/      event-driven replay that cannot see the next bar, and
+                 the checks that try to break its results
+  data/          validation: GOOD / DEGRADED / INVALID, and the recorder
   risk/          limits, state, sizing, the deterministic engine
   execution/     paper fill engine, order state machine
   adapters/      broker and market-data interfaces, paper broker, CSV replay
@@ -101,10 +118,10 @@ src/gtcc/
   api/           FastAPI app, auth, routes
   web/           dashboard templates and stylesheet
   runtime.py     the application container and the single submission path
-docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing
+docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing, backtesting
 config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           520 tests
+tests/           723 tests
 ```
 
 ## Documentation

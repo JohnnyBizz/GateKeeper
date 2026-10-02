@@ -627,10 +627,59 @@ class TestTheDashboardRenders:
         assert "mode-PAPER" in owner_api.get("/").text
 
     def test_pages_for_later_phases_say_so_rather_than_showing_figures(self, owner_api):
-        text = owner_api.get("/scanner").text
+        # /agents is Phase 3. /scanner used to be the example here and now
+        # has an engine behind it, which is why this points somewhere else.
+        text = owner_api.get("/agents").text
 
         assert "No data to show yet" in text
-        assert "Phase 2" in text
+        assert "Phase 3" in text
+
+    def test_the_scanner_page_scans_nothing_until_asked(self, owner_api):
+        text = owner_api.get("/scanner").text
+
+        assert "Nothing scanned yet" in text
+        assert "mistaken for a reading of the market" in text
+
+    def test_the_scanner_page_separates_what_it_could_not_read(self, owner_api):
+        text = owner_api.get("/scanner?symbols=NOSUCHTHING").text
+
+        assert "Not analysed" in text
+        assert "not findings about these symbols" in text
+        assert "UNAVAILABLE" in text
+
+    def test_the_nav_badge_marks_unbuilt_pages_only(self, owner_api):
+        """A working page must not advertise a phase it already passed.
+
+        Derived from PAGES rather than hardcoded, so shipping a page does
+        not break this test — only breaking the badge logic does. The
+        earlier version asserted "P4 is present", which failed the moment
+        the last Phase 4 page shipped, which is exactly backwards.
+        """
+        from collections import Counter
+
+        from gtcc.api.routes.dashboard import PAGES
+
+        text = owner_api.get("/").text
+        expected = Counter(
+            f"P{phase}" for _, _, _, phase, built in PAGES if not built
+        )
+
+        for badge, count in expected.items():
+            assert text.count(badge) == count, badge
+        # And no badge for a page that is built.
+        built_only = {
+            f"P{phase}" for _, _, _, phase, built in PAGES if built
+        } - set(expected)
+        for badge in built_only:
+            assert badge not in text, f"{badge} marks a page that is built"
+
+    def test_the_journal_page_says_when_there_is_no_journal(self, owner_api, runtime):
+        runtime.journal_store = None
+
+        text = owner_api.get("/journal").text
+
+        assert "No journal is configured" in text
+        assert "not a quiet week" in text
 
     def test_a_tripped_breaker_is_visible_on_every_page(self, owner_api, runtime):
         from gtcc.risk.safety import TripReason

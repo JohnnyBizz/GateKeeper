@@ -126,6 +126,144 @@ for forbidden in ("arm_live", "reset_breaker", "gtcc.risk", "place_order"):
 config_source = (SRC / "gtcc" / "config.py").read_text(encoding="utf-8")
 check("frozen=True" in config_source, "settings are declared frozen")
 
+# The backtester measures the real system. A backtest whose risk engine is
+# not the live risk engine, or that relaxes a check because the mode is
+# BACKTEST, produces numbers for a platform that does not exist — and the
+# numbers would be better than the real ones, which is the direction that
+# gets a strategy promoted.
+backtest_source = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (SRC / "gtcc" / "backtest").glob("*.py")
+)
+check(
+    "RiskEngine()" in backtest_source and "self.engine.evaluate" in backtest_source,
+    "the backtester sizes through the real risk engine",
+)
+for smell in ("skip_risk", "bypass", "ignore_limits", "force=True"):
+    check(smell not in backtest_source, f"the backtester has no {smell}")
+# Shuffling a time series split leaks the future through autocorrelation:
+# tomorrow's bar ends up in-sample while today's is held out. Checked on the
+# parsed source, since the module docstring explains the rule in words and a
+# grep would fail on the explanation.
+
+
+def _names(source: str) -> set[str]:
+    """Imported modules, attribute names and called names in a module."""
+    found: set[str] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module.split(".")[0])
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+        elif isinstance(node, ast.Name):
+            found.add(node.id)
+    return found
+
+
+backtest_names: set[str] = set()
+for path in (SRC / "gtcc" / "backtest").glob("*.py"):
+    backtest_names |= _names(path.read_text(encoding="utf-8"))
+for forbidden in ("random", "shuffle", "sample", "choice"):
+    check(
+        forbidden not in backtest_names,
+        f"no split in the backtester calls {forbidden}",
+    )
+
+# No branch of main() may re-import a name the module already imports at
+# top level: inside a function that makes the name local for the WHOLE
+# function, so every other branch raises UnboundLocalError. This happened,
+# and 657 unit tests missed it because none of them called main().
+main_source = (SRC / "gtcc" / "__main__.py").read_text(encoding="utf-8")
+main_tree = ast.parse(main_source)
+_top_level_imports: set[str] = set()
+for node in main_tree.body:
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        for alias in node.names:
+            _top_level_imports.add(alias.asname or alias.name.split(".")[0])
+_shadowed: set[str] = set()
+for node in ast.walk(main_tree):
+    if isinstance(node, ast.FunctionDef):
+        for inner in ast.walk(node):
+            if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                for alias in inner.names:
+                    name = alias.asname or alias.name.split(".")[0]
+                    if name in _top_level_imports:
+                        _shadowed.add(name)
+check(
+    not _shadowed,
+    "no command re-imports a module-level name "
+    + (f"(shadowed: {sorted(_shadowed)})" if _shadowed else ""),
+)
+
+# A test that cannot fail is worse than no test: it occupies the name of a
+# check nobody is performing. Two shapes of this shipped during development
+# — `assert x is None or isinstance(x, str)` and a bare `assert True` — so
+# the patterns are checked rather than trusted.
+for path in sorted((SRC.parent / "tests").glob("*.py")):
+    source = path.read_text(encoding="utf-8")
+    offenders = []
+    for number, line in enumerate(source.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("assert "):
+            continue
+        if " is None or " in stripped or stripped in ("assert True", "assert True;"):
+            offenders.append(number)
+    check(
+        not offenders,
+        f"{path.name} has no assertion that cannot fail"
+        + (f" (lines {offenders})" if offenders else ""),
+    )
+
+# A clean robustness report must never read as an endorsement. The phrases
+# a reader would take as "this works" are the ones to keep out of it.
+robustness_source = (
+    SRC / "gtcc" / "backtest" / "robustness.py"
+).read_text(encoding="utf-8")
+for claim in ("is robust", "is validated", "proven", "will be profitable"):
+    check(
+        claim not in robustness_source.lower(),
+        f"the robustness report never claims a strategy {claim!r}",
+    )
+check(
+    "NOT evidence" in robustness_source,
+    "a clean robustness report states it is not evidence the strategy works",
+)
+
+# Every way out of submit() writes a journal row. Section 24 keeps the
+# refusals, and a path that returns without journalling would silently
+# make the journal a record of only the trades that worked — which is the
+# shape of journal that cannot answer whether the refusals were right.
+submit_source = runtime_source.split("def submit(")[1].split("\n    def ")[0]
+returns = submit_source.count("return SubmissionResult(")
+journals = submit_source.count("self._journal(")
+check(
+    returns == journals and returns >= 4,
+    f"every exit from submit journals ({returns} returns, {journals} journal writes)",
+)
+
+# The scanner analyses and cannot trade. It is handed a market-data
+# adapter and the strategy registry; giving it the runtime, a broker or the
+# risk engine would create a second route to a venue, and the whole design
+# rests on there being exactly one.
+scanner_sources = "\n".join(
+    path.read_text(encoding="utf-8") for path in (SRC / "gtcc" / "scanner").glob("*.py")
+)
+for forbidden in (
+    "place_order", "submit", "BrokerAdapter", "gtcc.runtime", "RiskEngine",
+):
+    check(
+        forbidden not in scanner_sources,
+        f"the scanner package never references {forbidden}",
+    )
+
+# The scan route may read the runtime, but must not submit through it.
+scan_route = (SRC / "gtcc" / "api" / "routes" / "scan.py").read_text(encoding="utf-8")
+check(".submit(" not in scan_route, "the scan route never submits an order")
+
 # The suite must stand alone. A test that reads the deployment's own risk
 # file passes on the machine where that file exists and fails everywhere
 # else, and couples its assertions to numbers the owner is free to change.

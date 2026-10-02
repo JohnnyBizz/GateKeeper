@@ -56,14 +56,24 @@ class StrictDataAdapter(MarketDataAdapter):
         instrument_error: Exception | None = None,
         quote_age: timedelta | None = None,
         unlisted: set[str] | None = None,
+        bars: dict[str, list] | None = None,
+        bars_error: Exception | None = None,
         now: datetime = NOW,
     ) -> None:
         self._instruments = instruments
         self._quotes = quotes
+        #: OHLCV series per symbol. While this is empty the adapter serves
+        #: no bars at all, which is what the Phase 1 tests expect. Once a
+        #: test gives it any series, asking for a symbol it does not cover
+        #: is a setup error rather than an empty market: a scan that reads
+        #: "no bars" for a symbol it meant to analyse would report the
+        #: market as unreadable and look like a finding.
+        self._bars = bars or {}
         self.healthy = healthy
         self.health_detail = health_detail
         self.quote_error = quote_error
         self.instrument_error = instrument_error
+        self.bars_error = bars_error
         self.quote_age = quote_age
         #: Symbols this venue genuinely does not offer. Asking for one
         #: raises FeatureUnavailable, exactly as production would. Any
@@ -112,7 +122,22 @@ class StrictDataAdapter(MarketDataAdapter):
 
     def get_bars(self, symbol, timeframe, *, limit=500, start=None, end=None):
         self.calls.append(("get_bars", symbol))
-        return []
+        if self.bars_error is not None:
+            raise self.bars_error
+        if symbol in self.unlisted:
+            raise FeatureUnavailable(self.name, "bars", f"{symbol} is not listed")
+        if not self._bars:
+            return []
+        try:
+            series = self._bars[symbol]
+        except KeyError:
+            raise FixtureMisuse(
+                f"the test asked for bars for {symbol!r}, which this fixture was "
+                f"not given. Known: {sorted(self._bars)}. An empty series here "
+                "reads as an unreadable market, which is a finding rather than "
+                "a missing fixture."
+            ) from None
+        return list(series[-limit:])
 
     def health(self) -> AdapterHealth:
         return (

@@ -140,6 +140,7 @@ class OrderManager:
         verdict: RiskVerdict,
         *,
         mode: TradingMode = TradingMode.PAPER,
+        now: datetime | None = None,
     ) -> Order:
         """Turn an approved request into a VALIDATED order.
 
@@ -170,6 +171,12 @@ class OrderManager:
             client_order_id=request.client_order_id,
             mode=mode,
             strategy=request.strategy,
+            # From the caller's clock when it has one. Order defaults to the
+            # real wall clock, which silently disagrees with a runtime whose
+            # clock was injected — and a journal row whose opened_at comes
+            # from one clock and closed_at from another is wrong data, not
+            # just an inconvenience.
+            **({"created_at": now, "updated_at": now} if now is not None else {}),
         )
         order = self._transition(order, OrderStatus.VALIDATED)
         self.orders[order.client_order_id] = order

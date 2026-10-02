@@ -17,10 +17,10 @@
 </header>
 <div class="shell">
   <nav class="side">
-    {% for key, href, label, phase in pages %}
+    {% for key, href, label, phase, built in pages %}
     <a href="{{ href }}" class="{{ 'active' if active == key else '' }}">
       <span>{{ label }}</span>
-      {% if phase > 1 %}<span class="phase">P{{ phase }}</span>{% endif %}
+      {% if not built %}<span class="phase">P{{ phase }}</span>{% endif %}
     </a>
     {% endfor %}
   </nav>

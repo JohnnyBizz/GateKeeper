@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Analytics — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Analytics</h1>
+<p class="subtitle">
+  Your closed paper trades, measured by the same code that measures a
+  backtest — so a backtest and a paper result are comparable rather than two
+  different arithmetics.
+</p>
+
+{% if not journal_configured %}
+<div class="banner warn">
+  <strong>No journal is configured</strong>
+  There is no database behind this deployment, so nothing has been recorded
+  to measure. That is a configuration fact, not a flat month.
+</div>
+{% elif summary is none or summary.metrics.trades == 0 %}
+<div class="panel">
+  <div class="empty">
+    <strong>Nothing has closed yet</strong>
+    {% if summary and summary.unmeasured %}
+    {{ summary.unmeasured }} position(s) are open or unmeasured. They are not
+    counted here as flat trades.<br>
+    {% endif %}
+    {% if summary and summary.refused %}
+    {{ summary.refused }} setup(s) were refused by the risk engine — see the
+    Journal. A strategy whose every idea is refused looks identical to one
+    with no ideas if only taken trades are shown.
+    {% else %}
+    This panel stays empty rather than showing zeros that could be read as
+    a result.
+    {% endif %}
+  </div>
+</div>
+{% else %}
+
+{% if summary.metrics.sample_warning %}
+<div class="banner warn">
+  <strong>Read this before the numbers</strong>
+  {{ summary.metrics.sample_warning }}
+</div>
+{% endif %}
+
+<div class="grid cols-4">
+  <div class="panel stat">
+    <div class="label">Closed trades</div>
+    <div class="value">{{ summary.metrics.trades }}</div>
+    <div class="note">{{ summary.metrics.wins }} won, {{ summary.metrics.losses }} lost</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Net P&amp;L</div>
+    <div class="value {{ 'pos' if summary.metrics.total_pnl > 0 else ('neg' if summary.metrics.total_pnl < 0 else 'muted') }}">
+      {{ '{:+,.2f}'.format(summary.metrics.total_pnl) }}</div>
+    <div class="note">
+      {{ '{:+.2f}%'.format(summary.metrics.return_pct) if summary.metrics.return_pct is not none else '—' }}
+      of starting equity</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Average result</div>
+    <div class="value {{ 'pos' if summary.metrics.average_r and summary.metrics.average_r > 0 else 'neg' }}">
+      {{ '{:+.2f}R'.format(summary.metrics.average_r) if summary.metrics.average_r is not none else '—' }}</div>
+    <div class="note">expectancy
+      {{ '{:+,.2f}'.format(summary.metrics.expectancy) if summary.metrics.expectancy is not none else '—' }}
+      per trade</div>
+  </div>
+  <div class="panel stat">
+    <div class="label">Worst drawdown</div>
+    <div class="value neg">{{ '{:,.2f}'.format(summary.metrics.max_drawdown) }}</div>
+    <div class="note">
+      {{ '{:.2f}%'.format(summary.metrics.max_drawdown_pct) if summary.metrics.max_drawdown_pct is not none else '—' }}
+      from the peak</div>
+  </div>
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Summary</h2>
+    <span class="tag {{ 'ok' if summary.metrics.trustworthy else 'warn' }}">
+      {{ 'rated' if summary.metrics.trustworthy else 'too few trades to rate' }}</span>
+  </div>
+  <table>
+    <tbody>
+      <tr><td>Win rate</td><td class="r num">
+        {{ '{:.1f}%'.format(summary.metrics.win_rate) if summary.metrics.win_rate is not none else '—' }}</td></tr>
+      <tr><td>Profit factor</td><td class="r num">
+        {{ '{:.2f}'.format(summary.metrics.profit_factor) if summary.metrics.profit_factor is not none else 'undefined — no losing trade' }}</td></tr>
+      <tr><td>Longest losing streak</td><td class="r num">{{ summary.metrics.longest_losing_streak }}</td></tr>
+      <tr><td>Stopped out / took target</td><td class="r num">
+        {{ summary.metrics.stopped_out }} / {{ summary.metrics.took_target }}</td></tr>
+      {% if summary.unmeasured %}
+      <tr><td class="muted">Open or unmeasured</td><td class="r num muted">{{ summary.unmeasured }}</td></tr>
+      {% endif %}
+      {% if summary.refused %}
+      <tr><td class="muted">Refused by risk</td><td class="r num muted">{{ summary.refused }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    A dash is a statistic that cannot be computed, not a zero.
+  </p>
+</div>
+
+{% if summary.refusal_reasons %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Why setups were refused</h2>
+    <span class="tag">{{ summary.refused }}</span></div>
+  <table>
+    <thead><tr><th>Check</th><th class="r">Times</th></tr></thead>
+    <tbody>
+    {% for code, count in summary.refusal_reasons %}
+      <tr><td class="muted">{{ code }}</td><td class="r num">{{ count }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    Kept because a limit that refuses everything is otherwise invisible: a
+    strategy with no ideas and one whose every idea is refused look identical.
+  </p>
+</div>
+{% endif %}
+
+{% for report in summary.breakdowns %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>By {{ report.dimension }}</h2></div>
+  {% if report.buckets %}
+  <table>
+    <thead><tr><th>{{ report.dimension | capitalize }}</th><th class="r">Trades</th>
+      <th class="r">P&amp;L</th><th class="r">Won</th><th class="r">Avg R</th><th>Exits</th></tr></thead>
+    <tbody>
+    {% for bucket in report.buckets %}
+      <tr>
+        <td>{{ bucket.key }}</td>
+        <td class="r num">{{ bucket.trades }}</td>
+        <td class="r num {{ 'pos' if bucket.total_pnl > 0 else ('neg' if bucket.total_pnl < 0 else 'muted') }}">
+          {{ '{:+,.2f}'.format(bucket.total_pnl) }}</td>
+        <td class="r num">{{ '{:.1f}%'.format(bucket.win_rate) if bucket.win_rate is not none else '—' }}</td>
+        <td class="r num">{{ '{:+.2f}'.format(bucket.average_r) if bucket.average_r is not none else '—' }}</td>
+        <td class="muted">{{ bucket.stopped_out }} stopped / {{ bucket.took_target }} target</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if not report.buckets | selectattr('rated') | list %}
+  <p class="subtitle" style="margin:10px 0 0">
+    No bucket reaches the minimum, so this table shows where the trades fell
+    and <strong>nothing</strong> about which conditions work better.
+  </p>
+  {% endif %}
+  {% if report.unattributed %}
+  <p class="subtitle" style="margin:6px 0 0">
+    {{ report.unattributed }} trade(s) had no {{ report.dimension }} recorded
+    and are left out rather than bundled into a bucket.
+  </p>
+  {% endif %}
+  {% else %}
+  <div class="empty">
+    <strong>No value recorded</strong>
+    No trade carried a {{ report.dimension }}.
+    {% if report.dimension == 'regime' %}
+    A regime is recorded when a strategy proposes the trade and passes what
+    it saw. An order placed by hand has none, and nothing invents one —
+    so this table being empty says the orders were manual, not that the
+    classifier failed.
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}
