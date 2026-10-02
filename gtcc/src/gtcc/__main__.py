@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("symbols", nargs="+")
     rec.add_argument("--timeframe", default="15m")
     rec.add_argument("--limit", type=int, default=5000)
-    rec.add_argument("--directory", default="recordings")
+    rec.add_argument("--directory", default=None)
     rec.add_argument(
         "--overwrite", action="store_true",
         help="take the venue's version of bars that differ from the recording",
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     back.add_argument("symbol")
     back.add_argument("--timeframe", default="15m")
-    back.add_argument("--directory", default="recordings")
+    back.add_argument("--directory", default=None)
     back.add_argument("--strategy", default="trend_continuation")
     back.add_argument("--equity", default="100000")
     back.add_argument("--warmup", type=int, default=120)
@@ -186,7 +186,9 @@ def main(argv: list[str] | None = None) -> int:
         for symbol in args.symbols:
             try:
                 report = _record(
-                    runtime.data, _P(args.directory), symbol, timeframe,
+                    runtime.data,
+                    _P(args.directory or settings.recordings_path),
+                    symbol, timeframe,
                     limit=args.limit, overwrite=args.overwrite,
                 )
             except Exception as exc:  # noqa: BLE001 - reported, not hidden
@@ -219,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
         from gtcc.risk.limits import RiskConfigError, load_limits
 
         timeframe = Timeframe(args.timeframe)
-        adapter = ReplayAdapter(directory=_P(args.directory))
+        directory = _P(args.directory or settings.recordings_path)
+        adapter = ReplayAdapter(directory=directory)
         try:
             bars = adapter.get_bars(args.symbol, timeframe, limit=0)
         except Exception as exc:  # noqa: BLE001
@@ -251,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         # live connection. Falling back to the live venue is second best.
         instrument = None
         try:
-            sidecar = read_sidecar(_P(args.directory), args.symbol, timeframe)
+            sidecar = read_sidecar(directory, args.symbol, timeframe)
             if "instrument" in sidecar:
                 instrument = spec_from_dict(sidecar["instrument"])
                 print(

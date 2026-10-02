@@ -41,7 +41,7 @@ PAGES = [
     ("positions", "/positions", "Positions", 1, True),
     ("journal", "/journal", "Journal", 2, True),
     ("analytics", "/analytics", "Analytics", 4, True),
-    ("backtest", "/backtest", "Backtest Lab", 4, False),
+    ("backtest", "/backtest", "Backtest Lab", 4, True),
     ("risk", "/risk", "Risk Center", 1, True),
     ("settings", "/settings", "Settings", 1, True),
 ]
@@ -332,8 +332,111 @@ def analytics_page(
     return TEMPLATES.TemplateResponse(request, "analytics.html", data)
 
 
-@router.get("/agents", response_class=HTMLResponse)
 @router.get("/backtest", response_class=HTMLResponse)
+def backtest_page(
+    request: Request,
+    recording: str = "",
+    strategy: str = "",
+    segment: str = "in_sample",
+    warmup: int = 120,
+    stress: str = "",
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(current_principal),
+) -> HTMLResponse:
+    """List recordings and replay one.
+
+    Read-only: it builds a Backtester, which holds no broker. The report is
+    rendered verbatim as fixed-width text rather than reformatted into the
+    page's own tables, so presentation cannot change a figure.
+    """
+    from gtcc.adapters.replay import ReplayAdapter
+    from gtcc.backtest import BacktestSettings, Backtester, BarCosts, assess, rising_costs, split
+    from gtcc.backtest.report import render
+    from gtcc.data.recorder import list_recordings, read_sidecar, spec_from_dict
+    from gtcc.domain.enums import Timeframe
+    from gtcc.risk.limits import RiskConfigError, load_limits
+
+    runtime = context.runtime
+    directory = context.settings.recordings_path
+    recordings = list_recordings(directory)
+    names = sorted(runtime.strategies.strategies)
+
+    data = _base(request, context, "backtest")
+    data.update(
+        {
+            "recordings": recordings,
+            "directory": str(directory),
+            "strategies": names,
+            "strategy": strategy or (names[0] if names else ""),
+            "segments": ["in_sample", "validation", "out_of_sample", "all"],
+            "segment": segment,
+            "warmup": warmup,
+            "stress": bool(stress),
+            "chosen": recording,
+            "report_lines": None,
+            "error": None,
+        }
+    )
+
+    if not recording:
+        return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+    symbol, _, timeframe_text = recording.partition("|")
+    try:
+        timeframe = Timeframe(timeframe_text)
+    except ValueError:
+        data["error"] = f"{timeframe_text!r} is not a timeframe this platform knows"
+        return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+    try:
+        bars = ReplayAdapter(directory=directory).get_bars(symbol, timeframe, limit=0)
+        sidecar = read_sidecar(directory, symbol, timeframe)
+        instrument = spec_from_dict(sidecar["instrument"])
+        limits = load_limits(context.settings.risk_config_path)
+        chosen_strategy = runtime.strategies.get(data["strategy"])
+    except (KeyError, ValueError, FileNotFoundError, RiskConfigError) as exc:
+        data["error"] = str(exc)
+        return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+    except Exception as exc:  # noqa: BLE001 - surfaced, never a blank page
+        data["error"] = f"{type(exc).__name__}: {exc}"
+        return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+    if not bars:
+        data["error"] = f"the recording for {symbol} {timeframe} is empty"
+        return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+    costs = BarCosts()
+    if segment == "all":
+        series = list(bars)
+    else:
+        try:
+            series = list(getattr(split(bars), segment))
+        except (AttributeError, Exception) as exc:  # noqa: BLE001
+            data["error"] = f"could not split the series: {exc}"
+            return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+    backtester = Backtester(limits=limits)
+
+    def run(with_costs: BarCosts):
+        return backtester.run(
+            chosen_strategy, series, instrument,
+            BacktestSettings(
+                symbol=symbol, timeframe=timeframe, warmup_bars=warmup,
+                costs=with_costs,
+            ),
+        )
+
+    result = run(costs)
+    robustness = (
+        assess(result, cost_runner=run, cost_levels=rising_costs(costs))
+        if data["stress"]
+        else None
+    )
+    data["report_lines"] = render(result, robustness)
+    return TEMPLATES.TemplateResponse(request, "backtest.html", data)
+
+
+@router.get("/agents", response_class=HTMLResponse)
 def pending_page(
     request: Request,
     context: AppContext = Depends(get_context),

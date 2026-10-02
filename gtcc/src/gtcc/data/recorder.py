@@ -336,3 +336,64 @@ def record(
         overwrite=overwrite,
         now=now,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Available:
+    """One recording on disk, as the UI lists it."""
+
+    symbol: str
+    timeframe: str
+    bars: int | None
+    first_at: str | None
+    last_at: str | None
+    venue: str | None
+    recorded_at: str | None
+    has_spec: bool
+
+    @property
+    def backtestable(self) -> bool:
+        """A recording with no contract specification cannot be sized.
+
+        Listed anyway, with this False, so the owner sees it exists and why
+        it cannot be used — rather than wondering where their file went.
+        """
+        return self.has_spec
+
+
+def list_recordings(directory: Path) -> list[Available]:
+    """Every recording in *directory*, whether or not it is usable.
+
+    A file with no sidecar is listed with its counts unknown rather than
+    omitted: it exists, the owner put it there, and silence about it would
+    be the least helpful possible response.
+    """
+    directory = Path(directory)
+    if not directory.exists():
+        return []
+    out: list[Available] = []
+    for path in sorted(directory.glob("*.csv")):
+        stem = path.stem
+        symbol, _, timeframe = stem.rpartition("_")
+        if not symbol:
+            symbol, timeframe = stem, "?"
+        sidecar = path.with_suffix(".json")
+        meta: dict = {}
+        if sidecar.exists():
+            try:
+                meta = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                meta = {}
+        out.append(
+            Available(
+                symbol=symbol,
+                timeframe=timeframe,
+                bars=meta.get("bars"),
+                first_at=meta.get("first_at"),
+                last_at=meta.get("last_at"),
+                venue=meta.get("venue"),
+                recorded_at=meta.get("recorded_at"),
+                has_spec="instrument" in meta,
+            )
+        )
+    return out

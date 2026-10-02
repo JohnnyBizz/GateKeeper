@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Backtest Lab — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Backtest Lab</h1>
+<p class="subtitle">
+  Replays a recording through a strategy and the real risk engine. Reads
+  only — a backtest cannot place anything.
+</p>
+
+<div class="panel">
+  <div class="panel-head"><h2>Recordings</h2>
+    <span class="tag">{{ recordings | length }}</span></div>
+  {% if recordings %}
+  <table>
+    <thead><tr><th>Symbol</th><th>Timeframe</th><th class="r">Bars</th>
+      <th>Covering</th><th>Recorded</th><th>Usable</th></tr></thead>
+    <tbody>
+    {% for rec in recordings %}
+      <tr>
+        <td>{{ rec.symbol }}</td>
+        <td class="muted">{{ rec.timeframe }}</td>
+        <td class="r num">{{ rec.bars if rec.bars is not none else '—' }}</td>
+        <td class="muted">
+          {{ (rec.first_at[:10] ~ ' to ' ~ rec.last_at[:10]) if rec.first_at and rec.last_at else 'unknown' }}</td>
+        <td class="muted">{{ rec.venue or 'unknown' }}{{ (', ' ~ rec.recorded_at[:10]) if rec.recorded_at else '' }}</td>
+        <td>
+          {% if rec.backtestable %}<span class="tag ok">yes</span>
+          {% else %}<span class="tag warn">no contract spec</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="subtitle" style="margin:10px 0 0">
+    A recording with no contract specification cannot be sized, so it cannot
+    be backtested — a guessed tick size would mis-size every position in the
+    run. Re-record it to attach one.
+  </p>
+  {% else %}
+  <div class="empty">
+    <strong>No recordings in {{ directory }}</strong>
+    Save some first:
+    <code>python -m gtcc record EUR_USD --timeframe 15m</code><br>
+    That needs a broker token configured. Until then there is nothing to
+    replay, and this page will not invent a series to replay instead.
+  </div>
+  {% endif %}
+</div>
+
+{% if recordings %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Run</h2></div>
+  <form method="get" action="/backtest" class="scanform">
+    <label>Recording
+      <select name="recording">
+        {% for rec in recordings if rec.backtestable %}
+        <option value="{{ rec.symbol }}|{{ rec.timeframe }}"
+          {{ 'selected' if chosen == (rec.symbol ~ '|' ~ rec.timeframe) else '' }}>
+          {{ rec.symbol }} {{ rec.timeframe }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Strategy
+      <select name="strategy">
+        {% for name in strategies %}
+        <option value="{{ name }}" {{ 'selected' if name == strategy else '' }}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Segment
+      <select name="segment">
+        {% for key in segments %}
+        <option value="{{ key }}" {{ 'selected' if key == segment else '' }}>{{ key }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Warm-up bars
+      <input type="number" name="warmup" value="{{ warmup }}" min="1" max="5000" size="6">
+    </label>
+    <label style="flex-direction:row;align-items:center;gap:6px">
+      <input type="checkbox" name="stress" value="1" {{ 'checked' if stress else '' }}>
+      Attack the result
+    </label>
+    <button type="submit">Run</button>
+  </form>
+  <p class="subtitle" style="margin:10px 0 0">
+    Out-of-sample is held back by default. Every look at it makes it less
+    held-out, which is why the segment is a deliberate choice rather than
+    everything at once.
+  </p>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="banner warn" style="margin-top:14px">
+  <strong>Could not run it</strong>{{ error }}
+</div>
+{% endif %}
+
+{% if report_lines %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Result</h2>
+    {% if not stress %}<span class="tag warn">nothing attacked it</span>{% endif %}
+  </div>
+  <pre class="report">{% for line in report_lines %}{{ line }}
+{% endfor %}</pre>
+</div>
+{% endif %}
+{% endblock %}

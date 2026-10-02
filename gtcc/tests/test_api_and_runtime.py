@@ -648,14 +648,30 @@ class TestTheDashboardRenders:
         assert "UNAVAILABLE" in text
 
     def test_the_nav_badge_marks_unbuilt_pages_only(self, owner_api):
-        """A working page must not advertise a phase it already passed."""
-        text = owner_api.get("/").text
+        """A working page must not advertise a phase it already passed.
 
-        assert "P3" in text, "the Agent Room is genuinely unbuilt"
-        assert "P4" in text, "so are Analytics and the Backtest Lab"
-        # The scanner and journal are built; only the Trade Terminal is a
-        # Phase 2 page still pending, so exactly one P2 badge remains.
-        assert text.count("P2") == 1
+        Derived from PAGES rather than hardcoded, so shipping a page does
+        not break this test — only breaking the badge logic does. The
+        earlier version asserted "P4 is present", which failed the moment
+        the last Phase 4 page shipped, which is exactly backwards.
+        """
+        from collections import Counter
+
+        from gtcc.api.routes.dashboard import PAGES
+
+        text = owner_api.get("/").text
+        expected = Counter(
+            f"P{phase}" for _, _, _, phase, built in PAGES if not built
+        )
+
+        for badge, count in expected.items():
+            assert text.count(badge) == count, badge
+        # And no badge for a page that is built.
+        built_only = {
+            f"P{phase}" for _, _, _, phase, built in PAGES if built
+        } - set(expected)
+        for badge in built_only:
+            assert badge not in text, f"{badge} marks a page that is built"
 
     def test_the_journal_page_says_when_there_is_no_journal(self, owner_api, runtime):
         runtime.journal_store = None

@@ -79,7 +79,9 @@ def build_runtime(
             account_id=settings.oanda_account_id,
         )
     else:
-        data = ReplayAdapter(directory=data_directory or Path("data/recordings"))
+        data = ReplayAdapter(
+            directory=data_directory or settings.recordings_path
+        )
         broker = PaperBroker(
             starting_cash=D(starting_cash),
             quote_source=data.get_quote,

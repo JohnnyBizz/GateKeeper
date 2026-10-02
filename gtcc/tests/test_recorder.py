@@ -254,3 +254,61 @@ class TestTheWholeChain:
 
         assert len(result.trades) == 1
         assert result.trades[0].quantity > 0
+
+
+class TestListingWhatIsOnDisk:
+    def test_a_recording_is_listed_with_its_provenance(self, tmp_path):
+        from gtcc.data.recorder import list_recordings
+
+        write_recording(
+            tmp_path, "EUR_USD", Timeframe.M15,
+            [_bar(index, f"1.0{index}") for index in range(4)],
+            venue="oanda", spec=_spec(),
+        )
+
+        found = list_recordings(tmp_path)
+
+        assert len(found) == 1
+        assert found[0].symbol == "EUR_USD"
+        assert found[0].timeframe == "15m"
+        assert found[0].bars == 4
+        assert found[0].venue == "oanda"
+        assert found[0].has_spec and found[0].backtestable
+
+    def test_a_recording_with_no_sidecar_is_listed_as_unusable_not_hidden(
+        self, tmp_path
+    ):
+        """It exists and the owner put it there; silence would not help."""
+        from gtcc.data.recorder import list_recordings
+
+        (tmp_path / "MYSTERY_15m.csv").write_text(
+            "timestamp,open,high,low,close,volume\n"
+            "2026-01-01T00:00:00+00:00,1,1,1,1,1\n",
+            encoding="utf-8",
+        )
+
+        found = list_recordings(tmp_path)
+
+        assert len(found) == 1
+        assert found[0].symbol == "MYSTERY"
+        assert found[0].bars is None, "unknown, not zero"
+        assert not found[0].has_spec
+        assert not found[0].backtestable
+
+    def test_a_missing_directory_lists_nothing_rather_than_raising(self, tmp_path):
+        from gtcc.data.recorder import list_recordings
+
+        assert list_recordings(tmp_path / "not-there") == []
+
+    def test_a_symbol_containing_an_underscore_still_parses(self, tmp_path):
+        """EUR_USD_15m must split on the LAST underscore, not the first."""
+        from gtcc.data.recorder import list_recordings
+
+        write_recording(
+            tmp_path, "EUR_USD", Timeframe.H1, [_bar(0, "1.08")], spec=_spec()
+        )
+
+        found = list_recordings(tmp_path)
+
+        assert found[0].symbol == "EUR_USD"
+        assert found[0].timeframe == "1h"

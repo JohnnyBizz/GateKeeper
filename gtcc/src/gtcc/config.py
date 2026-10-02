@@ -121,6 +121,10 @@ class Settings(BaseSettings):
 
     # -- risk ----------------------------------------------------------------
     risk_config_path: Path = Path("config/risk.yaml")
+    #: Where `gtcc record` writes and the backtester reads. One setting so
+    #: the CLI, the replay adapter and the Backtest Lab cannot disagree about
+    #: where the data is — three hardcoded paths is three places to be wrong.
+    recordings_path: Path = Path("data/recordings")
 
     # -- data quality gates --------------------------------------------------
     max_quote_age_seconds: float = Field(default=5.0, gt=0, le=3600)
@@ -243,6 +247,7 @@ class Settings(BaseSettings):
         "secure_cookies",
         "login_rate_limit_per_minute",
         "risk_config_path",
+        "recordings_path",
         "max_quote_age_seconds",
         "max_bar_age_multiple",
         "max_clock_skew_seconds",
