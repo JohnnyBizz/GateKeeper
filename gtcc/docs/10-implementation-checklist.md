@@ -114,7 +114,7 @@ Findings from an external review of Phase 1, all closed:
 - [x] Chronological in-sample / validation / out-of-sample splits and
       walk-forward windows, never shuffled, with a ledger counting how often
       held-out data has been looked at
-- [ ] Journal writer, including rejected setups
+- [x] Journal writer, including rejected setups
 - [x] Performance metrics that carry their own reliability: untrustworthy
       below 30 closed trades, caveat printed before the statistics, and
       nothing uncomputable reported as zero
@@ -144,7 +144,7 @@ Findings from an external review of Phase 1, all closed:
 ## Phase 6 — sandbox brokers
 
 - [ ] Alpaca paper adapter
-- [ ] OANDA practice adapter
+- [x] OANDA practice adapter **(built; never run against a real token)**
 - [ ] Crypto testnet adapter
 - [ ] Reconciliation against each, proven under induced failures
 
