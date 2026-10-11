@@ -260,6 +260,40 @@ for forbidden in (
         f"the scanner package never references {forbidden}",
     )
 
+# The opportunity finder suggests; a person decides. It is handed a data
+# adapter, a track-record lookup and an optional dry-run risk check, and must
+# never be able to reach a broker or submit anything itself.
+opportunities_sources = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in (SRC / "gtcc" / "opportunities").glob("*.py")
+)
+for forbidden in ("place_order", ".submit(", "BrokerAdapter", "gtcc.runtime"):
+    check(
+        forbidden not in opportunities_sources,
+        f"the opportunity finder never references {forbidden}",
+    )
+opportunity_names: set[str] = set()
+for path in (SRC / "gtcc" / "opportunities").glob("*.py"):
+    opportunity_names |= _names(path.read_text(encoding="utf-8"))
+check("random" not in opportunity_names, "the opportunity finder uses no randomness")
+# Measuring a setup must never promote it.
+track_source = (SRC / "gtcc" / "opportunities" / "track_record.py").read_text(encoding="utf-8")
+# Checked as references to the enum members, not substrings: a constant
+# like MIN_OUT_OF_SAMPLE_TRADES is not a promotion, and the first version of
+# this check said it was.
+check(
+    "validation = ValidationStatus.UNTESTED" in track_source
+    and not any(
+        f"ValidationStatus.{status}" in track_source
+        for status in ("IN_SAMPLE", "OUT_OF_SAMPLE", "PAPER_VALIDATED")
+    ),
+    "measuring a setup leaves it UNTESTED; nothing in track_record promotes it",
+)
+# The routes that show ideas pass a dry run, never the submission path.
+dashboard_source = (SRC / "gtcc" / "api" / "routes" / "dashboard.py").read_text(encoding="utf-8")
+check("vet=runtime.submit" not in dashboard_source and "vet=runtime.submit" not in main_source,
+      "ideas are vetted with a dry run, never by submitting")
+
 # The scan route may read the runtime, but must not submit through it.
 scan_route = (SRC / "gtcc" / "api" / "routes" / "scan.py").read_text(encoding="utf-8")
 check(".submit(" not in scan_route, "the scan route never submits an order")

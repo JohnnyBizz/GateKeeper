@@ -6,6 +6,8 @@
     python -m gtcc check          report configuration and adapter health, then exit
     python -m gtcc risk           state the risk limits in money, with a worked example
     python -m gtcc scan           analyse symbols and report what could not be read
+    python -m gtcc ideas          find trade ideas with the evidence for and against
+    python -m gtcc track-record   measure each setup on the recordings
     python -m gtcc record         save a venue's candles for replay
     python -m gtcc backtest       replay a recording through a strategy
     python -m gtcc oanda-check    verify the OANDA connection and response shapes
@@ -90,6 +92,25 @@ def main(argv: list[str] | None = None) -> int:
         "--stress", action="store_true",
         help="also run the cost sweep and the other robustness checks",
     )
+    ideas = sub.add_parser(
+        "ideas", help="find trade ideas, each with the evidence for and against"
+    )
+    ideas.add_argument("symbols", nargs="+", help="symbols as the venue names them")
+    ideas.add_argument("--timeframe", default="15m")
+    ideas.add_argument(
+        "--min-reasons", type=int, default=4,
+        help="independent families of evidence an idea needs (default 4)",
+    )
+
+    track = sub.add_parser(
+        "track-record",
+        help="measure every setup on every recording, in-sample and held out",
+    )
+    track.add_argument("--symbol", default=None, help="only this symbol")
+    track.add_argument("--spread-bps", default=None,
+                       help="assumed spread; default: the venue's live spread")
+    track.add_argument("--slippage-bps", default="0.5")
+    track.add_argument("--commission-bps", default="0")
     oanda = sub.add_parser(
         "oanda-check",
         help="verify the OANDA connection and response shapes (read-only)",
@@ -318,6 +339,92 @@ def main(argv: list[str] | None = None) -> int:
             )
         for line in render(result, robustness):
             print(line)
+        return 0
+
+    if args.command == "ideas":
+        from gtcc.domain.enums import Timeframe
+        from gtcc.opportunities.finder import FinderSettings, OpportunityFinder
+        from gtcc.opportunities.report import render as render_ideas
+        from gtcc.opportunities.track_record import TrackRecordStore
+
+        runtime = build_runtime(settings)
+        store = TrackRecordStore(settings.recordings_path / "track_record.json")
+        finder = OpportunityFinder(
+            runtime.data,
+            settings=FinderSettings(
+                timeframe=Timeframe(args.timeframe),
+                min_reward_risk=runtime.limits.min_reward_risk,
+                min_supporting_families=args.min_reasons,
+            ),
+            records=store.lookup,
+            # A dry run: the risk engine sizes the idea and may refuse it.
+            # It places nothing.
+            vet=runtime.evaluate,
+        )
+        result = finder.find(args.symbols, now=runtime.clock())
+        for line in render_ideas(result):
+            print(line)
+        return 0
+
+    if args.command == "track-record":
+        from gtcc.adapters.replay import ReplayAdapter
+        from gtcc.backtest import BarCosts
+        from gtcc.data.recorder import list_recordings, read_sidecar, spec_from_dict
+        from gtcc.domain.enums import Timeframe
+        from gtcc.domain.money import D as _D
+        from gtcc.opportunities.setups import ALL_SETUPS
+        from gtcc.opportunities.track_record import TrackRecordStore, measure
+        from gtcc.risk.limits import RiskConfigError, load_limits
+
+        directory = settings.recordings_path
+        available = [
+            r for r in list_recordings(directory)
+            if r.backtestable and (args.symbol is None or r.symbol == args.symbol)
+        ]
+        if not available:
+            print(f"No usable recordings in {directory}.")
+            print("Record some first:  python -m gtcc record EUR_USD --timeframe 15m")
+            return 2
+        try:
+            limits = load_limits(settings.risk_config_path)
+        except RiskConfigError as exc:
+            print(exc)
+            return 2
+
+        runtime = build_runtime(settings)
+        store = TrackRecordStore(directory / "track_record.json")
+        replay = ReplayAdapter(directory=directory)
+        print(
+            "Costs decide short-timeframe results more than anything else: the "
+            "same chart can show no viable trades at one cost assumption and "
+            "plenty at another. Each record below states the costs it assumed.\n"
+        )
+        for rec in available:
+            timeframe = Timeframe(rec.timeframe)
+            spec = spec_from_dict(read_sidecar(directory, rec.symbol, timeframe)["instrument"])
+            bars = replay.get_bars(rec.symbol, timeframe, limit=0)
+
+            spread = _D(args.spread_bps) if args.spread_bps is not None else None
+            source = "as given"
+            if spread is None:
+                try:
+                    quote = runtime.data.get_quote(rec.symbol)
+                    spread = (quote.ask - quote.bid) / quote.mid * _D(10000)
+                    source = "the venue's spread right now — today's, not history's"
+                except Exception:  # noqa: BLE001 - reported below
+                    spread = _D("1.0")
+                    source = "a generic default; no live quote was available"
+            costs = BarCosts(
+                spread_bps=spread,
+                slippage_bps=_D(args.slippage_bps),
+                commission_bps=_D(args.commission_bps),
+            )
+            print(f"{rec.symbol} {rec.timeframe}: {costs.describe()} (spread from {source})")
+            for setup in ALL_SETUPS:
+                stored = store.save(measure(setup, bars, spec, timeframe, limits, costs=costs))
+                print(f"  {setup.name:18} {stored.verdict:14} {stored.describe()}")
+            print()
+        print(f"Saved to {store.path}. `gtcc ideas` now shows these on every pick.")
         return 0
 
     if args.command == "oanda-check":

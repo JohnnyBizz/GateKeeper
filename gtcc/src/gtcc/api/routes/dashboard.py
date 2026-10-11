@@ -35,6 +35,7 @@ TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parents[2] / 
 #: engine landed, so a working page looked unbuilt.
 PAGES = [
     ("command", "/", "Command Center", 1, True),
+    ("ideas", "/ideas", "Trade Ideas", 2, True),
     ("scanner", "/scanner", "Market Scanner", 2, True),
     ("terminal", "/terminal", "Trade Terminal", 2, False),
     ("agents", "/agents", "Agent Room", 3, False),
@@ -230,6 +231,58 @@ def scanner_page(
         }
     )
     return TEMPLATES.TemplateResponse(request, "scanner.html", data)
+
+
+@router.get("/ideas", response_class=HTMLResponse)
+def ideas_page(
+    request: Request,
+    symbols: str = "",
+    timeframe: str = "15m",
+    context: AppContext = Depends(get_context),
+    principal: Principal = Depends(current_principal),
+) -> HTMLResponse:
+    """Find trade ideas and show the case for and against each.
+
+    The finder is handed the data adapter, the track-record lookup and a
+    dry-run risk check. It cannot place anything; the person decides on the
+    chart, which the page links to.
+    """
+    from gtcc.domain.enums import Timeframe
+    from gtcc.opportunities.evidence import FAMILY_LABEL
+    from gtcc.opportunities.finder import FinderSettings, OpportunityFinder
+    from gtcc.opportunities.setups import ALL_SETUPS
+    from gtcc.opportunities.track_record import TrackRecordStore
+
+    runtime = context.runtime
+    try:
+        chosen = Timeframe(timeframe)
+    except ValueError:
+        chosen = Timeframe.M15
+    finder_settings = FinderSettings(
+        timeframe=chosen, min_reward_risk=runtime.limits.min_reward_risk
+    )
+    data = _base(request, context, "ideas")
+    requested = [part for part in symbols.replace(",", " ").split() if part]
+    result = None
+    if requested:
+        store = TrackRecordStore(context.settings.recordings_path / "track_record.json")
+        result = OpportunityFinder(
+            runtime.data, settings=finder_settings,
+            records=store.lookup, vet=runtime.evaluate,
+        ).find(requested, now=runtime.clock())
+    data.update(
+        {
+            "symbols_raw": symbols,
+            "timeframe": str(chosen),
+            "timeframes": [str(value) for value in Timeframe],
+            "venue": runtime.data.name,
+            "setups": ALL_SETUPS,
+            "labels": FAMILY_LABEL,
+            "min_reasons": finder_settings.min_supporting_families,
+            "result": result,
+        }
+    )
+    return TEMPLATES.TemplateResponse(request, "ideas.html", data)
 
 
 @router.get("/journal", response_class=HTMLResponse)

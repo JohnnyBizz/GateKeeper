@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Trade Ideas — {{ app_name }}{% endblock %}
+{% block content %}
+<h1>Trade Ideas</h1>
+<p class="subtitle">
+  Five setups checked on every symbol. An idea only appears here with at least
+  {{ min_reasons }} independent reasons in favour and its reasons against shown
+  in full. Nothing on this page places an order.
+</p>
+
+<div class="panel">
+  <div class="panel-head"><h2>Scan</h2></div>
+  <form method="get" action="/ideas" class="scanform">
+    <label>Symbols
+      <input type="text" name="symbols" value="{{ symbols_raw }}"
+             placeholder="EUR_USD GBP_USD USD_JPY" size="44">
+    </label>
+    <label>Timeframe
+      <select name="timeframe">
+        {% for tf in timeframes %}
+        <option value="{{ tf }}" {{ 'selected' if tf == timeframe else '' }}>{{ tf }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Find ideas</button>
+  </form>
+  <p class="subtitle" style="margin:10px 0 0">
+    Data comes from <strong>{{ venue }}</strong>, not from TradingView —
+    TradingView's terms allow its data to be displayed to people, not read by
+    software. Each idea links to the same chart on TradingView for you to check.
+  </p>
+</div>
+
+{% if result is none %}
+<div class="panel" style="margin-top:14px">
+  <div class="empty">
+    <strong>Nothing scanned yet</strong>
+    Enter symbols above. The setups looked for:
+    <ul style="text-align:left;margin:10px auto 0;max-width:640px">
+      {% for setup in setups %}
+      <li><strong>{{ setup.label }}</strong> — {{ setup.summary }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% else %}
+
+<div class="banner {{ '' if result.picks else 'warn' }}" style="margin-top:14px">
+  <strong>{{ result.summary() }}</strong>
+  Most charts, most of the time, offer nothing worth taking. An empty result
+  is the finder doing its job.
+</div>
+
+{% for pick in result.picks %}
+<div class="panel idea" style="margin-top:14px">
+  <div class="panel-head">
+    <h2>{{ pick.symbol }} {{ pick.timeframe }}
+      <span class="{{ 'pos' if pick.candidate.direction == 'LONG' else 'neg' }}">{{ pick.candidate.direction }}</span>
+      — {{ pick.candidate.label }}</h2>
+    <a class="tvbutton" href="{{ pick.chart_url }}" target="_blank" rel="noopener noreferrer">Open in TradingView ↗</a>
+  </div>
+
+  <div class="edge {{ 'edge-ok' if pick.measured_edge else 'edge-none' }}">{{ pick.edge_label }}</div>
+
+  <div class="levels">
+    <div><span class="muted">Entry ~</span> <span class="num">{{ pick.candidate.entry }}</span></div>
+    <div><span class="muted">Stop</span> <span class="num neg">{{ pick.candidate.stop }}</span></div>
+    <div><span class="muted">Target</span> <span class="num pos">{{ pick.candidate.target }}</span></div>
+    <div><span class="muted">Reward:risk</span> <span class="num">{{ '{:.2f}'.format(pick.net_reward_risk) if pick.net_reward_risk is not none else '—' }}</span></div>
+    {% if pick.approved_quantity is not none %}
+    <div><span class="muted">Your size</span> <span class="num">{{ pick.approved_quantity }}</span>
+      {% if pick.risk_at_stop is not none %}<span class="muted">({{ '{:,.2f}'.format(pick.risk_at_stop) }} at risk)</span>{% endif %}</div>
+    {% endif %}
+  </div>
+  <p class="subtitle" style="margin:6px 0 10px">
+    {{ pick.headline.split(': ', 1)[1] }}. Entry is the last close when
+    scanned — the market will have moved; re-check the levels on the chart.
+    {% if not pick.exact_chart %}TradingView may show another exchange's prices
+    for this symbol; check the levels match.{% endif %}
+  </p>
+
+  <div class="grid cols-2">
+    <div>
+      <h3 class="pos">For</h3>
+      <ul class="evidence">
+      {% for item in pick.dossier.by_stance('FOR') %}
+        <li><span class="fam">{{ labels[item.family] }}</span> {{ item.statement }}</li>
+      {% endfor %}
+      </ul>
+    </div>
+    <div>
+      <h3 class="neg">Against</h3>
+      {% set opposed = pick.dossier.by_stance('AGAINST') %}
+      {% if opposed %}
+      <ul class="evidence">
+      {% for item in opposed %}
+        <li><span class="fam">{{ labels[item.family] }}</span> {{ item.statement }}</li>
+      {% endfor %}
+      </ul>
+      {% else %}
+      <p class="muted">Nothing found against — which is not the same as nothing being wrong.</p>
+      {% endif %}
+      <h3 class="muted" style="margin-top:12px">Not checked</h3>
+      <ul class="evidence">
+      {% for item in pick.dossier.by_stance('UNKNOWN') %}
+        <li><span class="fam">{{ labels[item.family] }}</span> {{ item.statement }}</li>
+      {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% if result.near_misses %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Near misses</h2><span class="tag">{{ result.near_misses | length }}</span></div>
+  <p class="subtitle" style="margin:0 0 10px">Patterns that were present but did not clear the bar — and exactly why.</p>
+  <table>
+    <thead><tr><th>Symbol</th><th>Setup</th><th>Why not</th></tr></thead>
+    <tbody>
+    {% for miss in result.near_misses %}
+      <tr>
+        <td>{{ miss.symbol }} <span class="{{ 'pos' if miss.candidate.direction == 'LONG' else 'neg' }}">{{ miss.candidate.direction }}</span></td>
+        <td class="muted">{{ miss.candidate.label }}</td>
+        <td class="muted">{% for reason in miss.reasons %}{{ reason }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% if result.unread %}
+<div class="panel" style="margin-top:14px">
+  <div class="panel-head"><h2>Not looked at</h2><span class="tag warn">{{ result.unread | length }}</span></div>
+  <p class="subtitle" style="margin:0 0 10px">These are <strong>not findings about these symbols</strong>.</p>
+  <table>
+    <tbody>
+    {% for item in result.unread %}
+      <tr><td>{{ item.symbol }}</td><td class="muted">{{ item.reason }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endif %}
+
+<p class="subtitle" style="margin-top:18px">
+  Nothing here is a prediction or advice. An idea means a stated pattern is
+  present with the evidence listed — not that it will work.
+</p>
+{% endblock %}

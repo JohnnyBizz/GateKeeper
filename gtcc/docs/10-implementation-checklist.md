@@ -26,7 +26,7 @@
 - [x] Dashboard shell: ten routed pages, honest empty states
 - [x] Operator controls: kill switch, pause, close position, reconcile, mode switch
 - [x] CLI: serve, init-db, create-user, check
-- [x] 723 tests including the eight critical refusals
+- [x] 776 tests including the eight critical refusals
 - [x] `gtcc risk`, which states every limit in money, names the ceiling
       that actually binds each market, and sizes one real trade through
       the engine rather than describing what it would do
@@ -89,6 +89,9 @@ Findings from an external review of Phase 1, all closed:
       against the spec that was true when the bars were taken
 - [x] `gtcc record` and `gtcc backtest`, so a broker token becomes a
       measured result in two commands
+- [x] Trade ideas: five named setups, evidence counted by family with
+      counter-evidence kept, a measured track record per setup, a dry-run
+      risk check, and a link to the same chart on TradingView
 - [ ] Next.js terminal with charts, against the existing JSON API
 - [ ] Order book and order-flow analysis where a feed genuinely exists
 - [x] Journal writer: every considered setup, taken or refused, written by

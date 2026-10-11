@@ -198,3 +198,46 @@ class TestTheRecordCommand:
         assert code == 1
         assert "FAILED" in out
         assert "Nothing was invented" in out
+
+
+class TestTheIdeasCommand:
+    def test_ideas_with_no_data_reports_what_it_could_not_read(self, cli_settings, capsys):
+        assert main(["ideas", "EUR_USD"]) == 0
+        out = capsys.readouterr().out
+        assert "NOT LOOKED AT" in out
+        assert "not findings about these symbols" in out
+
+    def test_track_record_without_recordings_says_how_to_make_them(
+        self, cli_settings, capsys
+    ):
+        assert main(["track-record"]) == 2
+        assert "python -m gtcc record" in capsys.readouterr().out
+
+    def test_track_record_measures_every_setup_and_saves_them(
+        self, cli_settings, recording, monkeypatch, capsys
+    ):
+        from gtcc.config import set_settings
+        from gtcc.opportunities.setups import ALL_SETUPS
+        from gtcc.opportunities.track_record import TrackRecordStore
+
+        set_settings(cli_settings.model_copy(update={"recordings_path": recording}))
+        code = main(["track-record", "--spread-bps", "0.5"])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        for setup in ALL_SETUPS:
+            assert setup.name in out
+        assert "spread from as given" in out
+        records = TrackRecordStore(recording / "track_record.json").all()
+        assert {r.setup for r in records} == {s.name for s in ALL_SETUPS}
+
+    def test_track_record_says_where_the_spread_came_from(
+        self, cli_settings, recording, capsys
+    ):
+        """No live quote on a replay venue, so it must say it used a default."""
+        from gtcc.config import set_settings
+
+        set_settings(cli_settings.model_copy(update={"recordings_path": recording}))
+        main(["track-record"])
+
+        assert "a generic default; no live quote was available" in capsys.readouterr().out

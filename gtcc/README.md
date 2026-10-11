@@ -43,6 +43,7 @@ python -m gtcc create-user you@example.com
 python -m gtcc check          # configuration and adapter health
 python -m gtcc risk           # what your risk numbers mean in money
 python -m gtcc scan EUR_USD GBP_USD   # analyse symbols, honestly
+python -m gtcc ideas EUR_USD GBP_USD  # trade ideas, with the case against each
 python -m gtcc serve          # http://127.0.0.1:8000
 ```
 
@@ -73,7 +74,7 @@ python -m gtcc risk --example      # read the shipped example first
 Tests:
 
 ```bash
-pytest                       # 723
+pytest                       # 776
 pytest -k TheSevenRefusals   # the critical risk tests
 ```
 
@@ -107,6 +108,7 @@ src/gtcc/
   strategies/    strategy framework, gates, and the first module
   scanner/       many symbols at once, reporting what it could not read
   journal/       every considered setup, including the refused ones
+  opportunities/ five setups, evidence counted by family, TradingView links
   backtest/      event-driven replay that cannot see the next bar, and
                  the checks that try to break its results
   data/          validation: GOOD / DEGRADED / INVALID, and the recorder
@@ -118,10 +120,10 @@ src/gtcc/
   api/           FastAPI app, auth, routes
   web/           dashboard templates and stylesheet
   runtime.py     the application container and the single submission path
-docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing, backtesting
+docs/            architecture, schema, adapters, pipeline, risk, AI, paper, testing, backtesting, trade ideas
 config/          risk.yaml and the example it was written from
 migrations/      Alembic
-tests/           723 tests
+tests/           776 tests
 ```
 
 ## Documentation
